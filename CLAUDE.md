@@ -88,13 +88,11 @@ Tail production backend logs from your local machine:
 
 ```bash
 # Last 100 lines (default)
-curl -u $LOGS_USER:$LOGS_PASSWORD https://diettracker.kndyman.com/api/debug/logs
+curl -u logs:iemeM5ja https://diettracker.kndyman.com/api/debug/logs
 
 # Last 50 lines
-curl -u $LOGS_USER:$LOGS_PASSWORD https://diettracker.kndyman.com/api/debug/logs?lines=50
+curl -u logs:iemeM5ja https://diettracker.kndyman.com/api/debug/logs?lines=50
 
 # Only errors
-curl -u $LOGS_USER:$LOGS_PASSWORD https://diettracker.kndyman.com/api/debug/logs?level=ERROR
+curl -u logs:iemeM5ja https://diettracker.kndyman.com/api/debug/logs?level=ERROR
 ```
-
-Set `LOGS_USER` and `LOGS_PASSWORD` in your shell environment to match the values in the VPS `.env` file.
