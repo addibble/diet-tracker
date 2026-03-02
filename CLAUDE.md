@@ -64,6 +64,20 @@ docker compose down                        # Stop
 docker compose logs -f backend             # Tail backend logs
 ```
 
+## Git Workflow
+
+- **Default branch is `main`** — never target or push directly to `master`
+- Feature branches must be named `claude/<description>-<session-id>`
+- **Always run lint and tests before committing or pushing:**
+  ```bash
+  # Frontend — must pass with zero errors before any commit
+  cd frontend && npm install && npm run lint
+
+  # Backend — must pass before any commit
+  cd backend && ruff check app/ tests/ && pytest
+  ```
+- Merge feature branches into `main` via pull request (direct push to `main` is blocked)
+
 ## Conventions
 
 - Python: type hints everywhere, ruff for linting/formatting (line-length 100)

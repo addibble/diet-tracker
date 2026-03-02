@@ -46,7 +46,14 @@ export default function DashboardPage() {
     setLoading(false)
   }
 
-  useEffect(() => { load() }, [date])
+  useEffect(() => {
+    let cancelled = false
+    getDailySummary(date)
+      .then(d => { if (!cancelled) { setData(d); setLoading(false) } })
+      .catch(() => { if (!cancelled) setLoading(false) })
+    // Cleanup resets loading to true before the next effect run (i.e. when date changes)
+    return () => { cancelled = true; setLoading(true) }
+  }, [date])
 
   // Close search dropdown on outside click
   useEffect(() => {

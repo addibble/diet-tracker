@@ -20,7 +20,9 @@ export default function RecipesPage() {
     setFoods(f)
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    Promise.all([getRecipes(), getFoods()]).then(([r, f]) => { setRecipes(r); setFoods(f) })
+  }, [])
 
   const addComponent = () => setComponents([...components, { food_id: '', amount_grams: '' }])
   const removeComponent = (i: number) => setComponents(components.filter((_, j) => j !== i))

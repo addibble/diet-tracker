@@ -25,7 +25,7 @@ export default function FoodsPage() {
   const [form, setForm] = useState<FormState>(emptyForm())
 
   const load = async () => { setFoods(await getFoods(search || undefined)) }
-  useEffect(() => { load() }, [search])
+  useEffect(() => { getFoods(search || undefined).then(setFoods) }, [search])
 
   const resetForm = () => { setForm(emptyForm()); setEditId(null); setShowForm(false) }
 
