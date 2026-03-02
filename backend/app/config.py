@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     secret_key: str = "change-this-to-a-random-string"
     database_url: str = "sqlite:///./data/diet_tracker.db"
     openrouter_api_key: str | None = None
+    logs_user: str = ""
+    logs_password: str = ""
 
     model_config = {
         "env_file": str(_env_file) if _env_file.exists() else ".env",
