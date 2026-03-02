@@ -18,22 +18,26 @@ export default function Layout() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <nav className="bg-white border-b border-gray-200">
+      {/* Top nav — pt accounts for Dynamic Island / notch safe area */}
+      <nav className="bg-white border-b border-gray-200 pt-[var(--safe-top)]">
         <div className="max-w-5xl mx-auto px-4 flex items-center justify-between h-14">
           <div className="flex items-center gap-6">
             <span className="font-semibold text-gray-900">Diet Tracker</span>
-            {navItems.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.to === '/'}
-                className={({ isActive }) =>
-                  `text-sm ${isActive ? 'text-blue-600 font-medium' : 'text-gray-600 hover:text-gray-900'}`
-                }
-              >
-                {item.label}
-              </NavLink>
-            ))}
+            {/* Desktop nav links — hidden on mobile, replaced by bottom tab bar */}
+            <div className="hidden md:flex items-center gap-6">
+              {navItems.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  end={item.to === '/'}
+                  className={({ isActive }) =>
+                    `text-sm ${isActive ? 'text-blue-600 font-medium' : 'text-gray-600 hover:text-gray-900'}`
+                  }
+                >
+                  {item.label}
+                </NavLink>
+              ))}
+            </div>
           </div>
           <button
             onClick={handleLogout}
@@ -43,9 +47,31 @@ export default function Layout() {
           </button>
         </div>
       </nav>
-      <main className="max-w-5xl mx-auto px-4 py-6">
+
+      {/* Main content — on mobile, reserve space at bottom for the tab bar */}
+      <main className="max-w-5xl mx-auto px-4 pt-4 md:pt-6 pb-[calc(3.5rem_+_var(--safe-bottom))] md:pb-6">
         <Outlet />
       </main>
+
+      {/* Mobile bottom tab bar — hidden on md+ */}
+      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 md:hidden z-50">
+        <div className="flex pb-[var(--safe-bottom)]">
+          {navItems.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.to === '/'}
+              className={({ isActive }) =>
+                `flex-1 flex items-center justify-center h-14 text-xs font-medium ${
+                  isActive ? 'text-blue-600' : 'text-gray-500'
+                }`
+              }
+            >
+              {item.label}
+            </NavLink>
+          ))}
+        </div>
+      </nav>
     </div>
   )
 }

@@ -45,19 +45,19 @@ function ProposedItemsCard({
       </p>
       <div className="space-y-1">
         {items.map((item, i) => (
-          <div key={i} className="flex justify-between text-sm">
+          <div key={i} className="flex justify-between text-sm gap-3">
             <span className={item.food_id === null ? 'text-gray-400 italic' : 'text-gray-700'}>
               {item.name}
               {item.food_id === null && ' (not in database)'}
             </span>
-            <span className="text-gray-500 whitespace-nowrap ml-4">
+            <span className="text-gray-500 whitespace-nowrap">
               {item.amount_grams}g
               {item.food_id !== null && ` · ${Math.round(computeItemMacro(item, 'calories'))} cal`}
             </span>
           </div>
         ))}
       </div>
-      <div className="border-t border-gray-200 mt-2 pt-2 flex flex-wrap gap-3 text-xs text-gray-500">
+      <div className="border-t border-gray-200 mt-2 pt-2 flex flex-wrap gap-2 text-xs text-gray-500">
         {MACRO_KEYS.map((m) => (
           <span key={m}>
             {MACRO_LABELS[m]}: <strong>{Math.round(totals[m])}</strong>{MACRO_UNITS[m]}
@@ -68,7 +68,7 @@ function ProposedItemsCard({
         <button
           type="button"
           onClick={onConfirm}
-          className="mt-3 px-4 py-1.5 bg-green-600 text-white text-sm font-medium rounded-md hover:bg-green-700"
+          className="mt-3 w-full py-2.5 bg-green-600 text-white text-sm font-medium rounded-md hover:bg-green-700 active:bg-green-800"
         >
           {isEdit ? 'Confirm Edit' : 'Confirm & Save'}
         </button>
@@ -155,47 +155,62 @@ export default function MealLogPage() {
   }
 
   return (
-    <div className="flex flex-col h-[calc(100vh-8rem)]">
-      {/* Header */}
-      <div className="flex gap-3 items-center mb-3">
-        <h1 className="text-xl font-semibold text-gray-900 mr-2">Log Meal</h1>
-        <input
-          type="date"
-          value={date}
-          onChange={(e) => setDate(e.target.value)}
-          className="px-2 py-1.5 border border-gray-300 rounded-md text-sm"
-        />
-        <select
-          value={mealType}
-          onChange={(e) => setMealType(e.target.value)}
-          className="px-2 py-1.5 border border-gray-300 rounded-md text-sm"
-        >
-          <option value="breakfast">Breakfast</option>
-          <option value="lunch">Lunch</option>
-          <option value="dinner">Dinner</option>
-          <option value="snack">Snack</option>
-        </select>
+    // Height formula: full dynamic viewport minus top nav (+ its safe-area-top padding) and
+    // main element's top/bottom padding (bottom includes the mobile tab bar + safe-area-bottom).
+    // On desktop the safe area vars resolve to 0px so this collapses to calc(100dvh - 8rem).
+    <div
+      className="flex flex-col"
+      style={{ height: 'calc(100dvh - var(--safe-top) - var(--safe-bottom) - 8rem)' }}
+    >
+      {/* Header — stacks vertically on mobile */}
+      <div className="flex flex-col gap-2 mb-3">
+        {/* Row 1: title + New Meal button */}
+        <div className="flex items-center justify-between gap-2">
+          <h1 className="text-xl font-semibold text-gray-900">Log Meal</h1>
+          {saved && (
+            <button
+              onClick={handleNewMeal}
+              className="px-3 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 active:bg-blue-800"
+            >
+              New Meal
+            </button>
+          )}
+        </div>
+
+        {/* Row 2: date + meal type side-by-side */}
+        <div className="flex gap-2">
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className="flex-1 min-w-0 px-2 py-2.5 border border-gray-300 rounded-md text-sm"
+          />
+          <select
+            value={mealType}
+            onChange={(e) => setMealType(e.target.value)}
+            className="flex-1 min-w-0 px-2 py-2.5 border border-gray-300 rounded-md text-sm"
+          >
+            <option value="breakfast">Breakfast</option>
+            <option value="lunch">Lunch</option>
+            <option value="dinner">Dinner</option>
+            <option value="snack">Snack</option>
+          </select>
+        </div>
+
+        {/* Row 3: notes full width */}
         <input
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           placeholder="Notes (optional)"
-          className="px-2 py-1.5 border border-gray-300 rounded-md text-sm flex-1"
+          className="w-full px-2 py-2.5 border border-gray-300 rounded-md text-sm"
         />
-        {saved && (
-          <button
-            onClick={handleNewMeal}
-            className="px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700"
-          >
-            New Meal
-          </button>
-        )}
       </div>
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto space-y-3 mb-3 pr-1">
         {messages.length === 0 && (
           <div className="flex items-center justify-center h-full">
-            <div className="text-center text-gray-400 max-w-md">
+            <div className="text-center text-gray-400 max-w-sm px-4">
               <p className="text-lg mb-2">Describe what you ate</p>
               <p className="text-sm">
                 e.g. "ham sandwich with Oroweat bread, 50g Hillshire Farm ham, and Kirkland cheddar"
@@ -210,7 +225,7 @@ export default function MealLogPage() {
             className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
           >
             <div
-              className={`max-w-[80%] rounded-lg px-4 py-2 ${
+              className={`max-w-[90%] md:max-w-[80%] rounded-lg px-4 py-2 ${
                 msg.role === 'user'
                   ? 'bg-blue-600 text-white'
                   : 'bg-white border border-gray-200 text-gray-700'
@@ -247,14 +262,14 @@ export default function MealLogPage() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={saved ? 'Meal saved — click New Meal to log another' : 'Describe what you ate...'}
-          className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm disabled:bg-gray-50"
+          placeholder={saved ? 'Meal saved — tap New Meal to log another' : 'Describe what you ate...'}
+          className="flex-1 px-3 py-2.5 border border-gray-300 rounded-md text-sm disabled:bg-gray-50"
           disabled={loading || saved}
         />
         <button
           onClick={() => handleSend()}
           disabled={loading || !input.trim() || saved}
-          className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 disabled:opacity-50"
+          className="px-4 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50"
         >
           Send
         </button>
