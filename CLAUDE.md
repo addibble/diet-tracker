@@ -68,10 +68,33 @@ docker compose logs -f backend             # Tail backend logs
 
 - Python: type hints everywhere, ruff for linting/formatting (line-length 100)
 - API routes prefixed with `/api`
-- Auth: all `/api` endpoints require auth except `/api/health` and `/api/auth/login`
+- Auth: all `/api` endpoints require auth except `/api/health`, `/api/auth/login`, and `/api/debug/logs` (HTTP Basic Auth)
 - 8 macros tracked: calories, fat, saturated_fat, cholesterol, sodium, carbs, fiber, protein
 - Macros stored **per serving** with `serving_size_grams` on each food; scale for actual amounts
 - Macro field list defined in `backend/app/macros.py` (MACRO_FIELDS) and `frontend/src/api.ts` (MACRO_KEYS)
 - `POST /api/meals/parse` — LLM parses meal description → matches DB foods → USDA lookup for unknowns
 - Frontend uses fetch with credentials: "include" for cookie auth
 - SQLite DB persisted via Docker volume at `/app/data/diet_tracker.db`
+
+## Production
+
+- **URL:** https://diettracker.kndyman.com/
+- **Deploy:** Push to `main` triggers GitHub Actions CD → builds images → pushes to ghcr.io → deploys to VPS
+- **VPS compose:** `docker-compose.prod.yml` is synced to VPS during deploy
+
+### Remote Log Tailing
+
+Tail production backend logs from your local machine:
+
+```bash
+# Last 100 lines (default)
+curl -u $LOGS_USER:$LOGS_PASSWORD https://diettracker.kndyman.com/api/debug/logs
+
+# Last 50 lines
+curl -u $LOGS_USER:$LOGS_PASSWORD https://diettracker.kndyman.com/api/debug/logs?lines=50
+
+# Only errors
+curl -u $LOGS_USER:$LOGS_PASSWORD https://diettracker.kndyman.com/api/debug/logs?level=ERROR
+```
+
+Set `LOGS_USER` and `LOGS_PASSWORD` in your shell environment to match the values in the VPS `.env` file.

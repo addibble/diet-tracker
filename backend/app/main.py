@@ -17,10 +17,17 @@ _parse_logger.addHandler(_fh)
 from app.auth import router as auth_router
 from app.database import create_db_and_tables
 from app.routers.daily import router as daily_router
+from app.routers.debug import ring_handler
+from app.routers.debug import router as debug_router
 from app.routers.foods import router as foods_router
 from app.routers.meals import router as meals_router
 from app.routers.parse import router as parse_router
 from app.routers.recipes import router as recipes_router
+
+
+# Attach ring buffer handler to root logger for remote log tailing
+logging.getLogger().addHandler(ring_handler)
+logging.getLogger().setLevel(logging.INFO)
 
 
 @asynccontextmanager
@@ -45,6 +52,7 @@ app.include_router(recipes_router)
 app.include_router(meals_router)
 app.include_router(daily_router)
 app.include_router(parse_router)
+app.include_router(debug_router)
 
 
 @app.get("/api/health")
