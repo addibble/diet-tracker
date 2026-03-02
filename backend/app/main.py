@@ -1,0 +1,52 @@
+import logging
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+# Configure parse logger to write to file
+_log_dir = Path(__file__).resolve().parent.parent / "logs"
+_log_dir.mkdir(exist_ok=True)
+_parse_logger = logging.getLogger("parse")
+_parse_logger.setLevel(logging.DEBUG)
+_fh = logging.FileHandler(_log_dir / "parse.log")
+_fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+_parse_logger.addHandler(_fh)
+
+from app.auth import router as auth_router
+from app.database import create_db_and_tables
+from app.routers.daily import router as daily_router
+from app.routers.foods import router as foods_router
+from app.routers.meals import router as meals_router
+from app.routers.parse import router as parse_router
+from app.routers.recipes import router as recipes_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    create_db_and_tables()
+    yield
+
+
+app = FastAPI(title="Diet Tracker", version="0.1.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(auth_router)
+app.include_router(foods_router)
+app.include_router(recipes_router)
+app.include_router(meals_router)
+app.include_router(daily_router)
+app.include_router(parse_router)
+
+
+@app.get("/api/health")
+def health():
+    return {"status": "ok"}

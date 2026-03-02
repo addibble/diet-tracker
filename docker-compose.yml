@@ -1,0 +1,22 @@
+services:
+  backend:
+    build: ./backend
+    env_file: .env
+    environment:
+      - DATABASE_URL=sqlite:////app/data/diet_tracker.db
+    volumes:
+      - db_data:/app/data
+    expose:
+      - "8000"
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  db_data:
