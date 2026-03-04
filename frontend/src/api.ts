@@ -1,10 +1,16 @@
 const BASE = '/api';
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const isFormData = options?.body instanceof FormData;
+  const headers = new Headers(options?.headers ?? {});
+  if (!isFormData && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
   const res = await fetch(`${BASE}${path}`, {
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
     ...options,
+    headers,
   });
   if (res.status === 401) {
     window.location.href = '/login';
@@ -71,6 +77,20 @@ export interface Food {
   fiber_per_serving: number;
   protein_per_serving: number;
   source: string;
+}
+
+export interface FoodImportResult {
+  name: string;
+  brand: string | null;
+  serving_size_grams: number;
+  calories_per_serving: number;
+  fat_per_serving: number;
+  saturated_fat_per_serving: number;
+  cholesterol_per_serving: number;
+  sodium_per_serving: number;
+  carbs_per_serving: number;
+  fiber_per_serving: number;
+  protein_per_serving: number;
 }
 
 export interface RecipeComponent extends Macros {
@@ -160,6 +180,15 @@ export const getFoods = (search?: string) =>
 
 export const createFood = (data: Omit<Food, 'id' | 'source'>) =>
   request<Food>('/foods', { method: 'POST', body: JSON.stringify(data) });
+
+export const importFoodLabel = async (file: File) => {
+  const form = new FormData();
+  form.append('image', file);
+  return request<FoodImportResult>('/foods/import-label', {
+    method: 'POST',
+    body: form,
+  });
+};
 
 export const updateFood = (id: number, data: Partial<Food>) =>
   request<Food>(`/foods/${id}`, { method: 'PUT', body: JSON.stringify(data) });

@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.auth import get_current_user
 from app.database import get_session
+from app.llm import parse_nutrition_label_image
 from app.models import Food
 
 router = APIRouter(prefix="/api/foods", tags=["foods"])
@@ -37,6 +38,20 @@ class FoodUpdate(BaseModel):
     fiber_per_serving: float | None = None
     protein_per_serving: float | None = None
     source: str | None = None
+
+
+class FoodImportResult(BaseModel):
+    name: str
+    brand: str | None = None
+    serving_size_grams: float
+    calories_per_serving: float
+    fat_per_serving: float
+    saturated_fat_per_serving: float
+    cholesterol_per_serving: float
+    sodium_per_serving: float
+    carbs_per_serving: float
+    fiber_per_serving: float
+    protein_per_serving: float
 
 
 @router.get("")
@@ -108,3 +123,28 @@ def delete_food(
         raise HTTPException(status_code=404, detail="Food not found")
     session.delete(food)
     session.commit()
+
+
+@router.post("/import-label", response_model=FoodImportResult)
+async def import_food_label(
+    image: UploadFile = File(...),
+    _user: str = Depends(get_current_user),
+):
+    if not image.content_type or not image.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Please upload an image file")
+
+    image_bytes = await image.read()
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded image is empty")
+
+    try:
+        result = await parse_nutrition_label_image(
+            image_bytes=image_bytes,
+            mime_type=image.content_type,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Label OCR failed: {exc}")
+
+    return FoodImportResult(**result)

@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { getFoods, createFood, updateFood, deleteFood, foodMacroPerServing, MACRO_KEYS, MACRO_LABELS, type Food } from '../api'
+import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
+import { getFoods, createFood, updateFood, deleteFood, foodMacroPerServing, importFoodLabel, MACRO_KEYS, MACRO_LABELS, type Food, type FoodImportResult } from '../api'
 
 const FOOD_MACRO_FIELDS = MACRO_KEYS.map((m) => `${m}_per_serving` as const)
 
@@ -17,19 +17,33 @@ function foodToForm(food: Food): FormState {
   return f
 }
 
+function importResultToForm(result: FoodImportResult): FormState {
+  const f: FormState = {
+    name: result.name,
+    brand: result.brand ?? '',
+    serving_size_grams: String(result.serving_size_grams),
+  }
+  for (const field of FOOD_MACRO_FIELDS) {
+    f[field] = String(result[field as keyof FoodImportResult] ?? 0)
+  }
+  return f
+}
+
 export default function FoodsPage() {
   const [foods, setFoods] = useState<Food[]>([])
   const [search, setSearch] = useState('')
   const [showForm, setShowForm] = useState(false)
   const [editId, setEditId] = useState<number | null>(null)
   const [form, setForm] = useState<FormState>(emptyForm())
+  const [importing, setImporting] = useState(false)
+  const [importError, setImportError] = useState<string | null>(null)
 
   const load = async () => { setFoods(await getFoods(search || undefined)) }
   useEffect(() => { load() }, [search])
 
-  const resetForm = () => { setForm(emptyForm()); setEditId(null); setShowForm(false) }
+  const resetForm = () => { setForm(emptyForm()); setEditId(null); setShowForm(false); setImportError(null) }
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     const data: Record<string, unknown> = {
       name: form.name,
@@ -48,15 +62,58 @@ export default function FoodsPage() {
 
   const startEdit = (food: Food) => { setForm(foodToForm(food)); setEditId(food.id); setShowForm(true) }
 
+  const handleImportImage = async (e: ChangeEvent<HTMLInputElement>) => {
+    const target = e.target
+    const file = target.files?.[0]
+    target.value = ''
+    if (!file) return
+
+    setImportError(null)
+    setImporting(true)
+    try {
+      const imported = await importFoodLabel(file)
+      setForm(importResultToForm(imported))
+      setEditId(null)
+      setShowForm(true)
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : 'Failed to import nutrition label')
+    } finally {
+      setImporting(false)
+    }
+  }
+
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-semibold text-gray-900">Foods</h1>
-        <button onClick={() => { resetForm(); setShowForm(!showForm) }}
-          className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700">
-          {showForm ? 'Cancel' : 'Add Food'}
-        </button>
+        <div className="flex items-center gap-2">
+          <label
+            className={`px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-md ${
+              importing ? 'opacity-60 cursor-not-allowed' : 'hover:bg-emerald-700 cursor-pointer'
+            }`}
+          >
+            <input
+              type="file"
+              accept="image/*"
+              capture="environment"
+              onChange={handleImportImage}
+              className="sr-only"
+              disabled={importing}
+            />
+            {importing ? 'Importing...' : 'Import Label'}
+          </label>
+          <button onClick={() => { resetForm(); setShowForm(!showForm) }}
+            className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700">
+            {showForm ? 'Cancel' : 'Add Food'}
+          </button>
+        </div>
       </div>
+
+      {importError && (
+        <div className="mb-4 px-3 py-2 rounded-md border border-red-200 bg-red-50 text-sm text-red-700">
+          {importError}
+        </div>
+      )}
 
       {showForm && (
         <form onSubmit={handleSubmit} className="bg-white p-4 rounded-lg border border-gray-200 mb-6">
@@ -117,7 +174,7 @@ export default function FoodsPage() {
                 <td className="px-3 py-2 text-right text-gray-400">{food.source}</td>
                 <td className="px-3 py-2 text-right whitespace-nowrap">
                   <button onClick={() => startEdit(food)} className="text-blue-500 hover:text-blue-700 mr-2">Edit</button>
-                  <button onClick={() => { deleteFood(food.id); load() }} className="text-red-500 hover:text-red-700">Delete</button>
+                  <button onClick={async () => { await deleteFood(food.id); load() }} className="text-red-500 hover:text-red-700">Delete</button>
                 </td>
               </tr>
             ))}
