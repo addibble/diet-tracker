@@ -35,6 +35,8 @@ jobs:
           context: ./frontend
           push: true
           tags: ${{ env.FRONTEND_IMAGE }}:latest
+          build-args: |
+            VITE_GIT_COMMIT=${{ github.sha }}
 
   deploy:
     needs: build-and-push

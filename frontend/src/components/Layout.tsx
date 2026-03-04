@@ -10,6 +10,8 @@ const navItems = [
 
 export default function Layout() {
   const navigate = useNavigate()
+  const gitCommit = (import.meta.env.VITE_GIT_COMMIT as string | undefined)?.trim()
+  const shortCommit = gitCommit ? gitCommit.slice(0, 6) : undefined
 
   const handleLogout = async () => {
     await logout()
@@ -39,12 +41,19 @@ export default function Layout() {
               ))}
             </div>
           </div>
-          <button
-            onClick={handleLogout}
-            className="text-sm text-gray-500 hover:text-gray-700"
-          >
-            Logout
-          </button>
+          <div className="flex items-center gap-3">
+            {shortCommit ? (
+              <span className="text-xs font-mono text-gray-400" title={gitCommit}>
+                {shortCommit}
+              </span>
+            ) : null}
+            <button
+              onClick={handleLogout}
+              className="text-sm text-gray-500 hover:text-gray-700"
+            >
+              Logout
+            </button>
+          </div>
         </div>
       </nav>
 
