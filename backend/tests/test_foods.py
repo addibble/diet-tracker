@@ -1,3 +1,6 @@
+from unittest.mock import AsyncMock, patch
+
+
 def test_create_food(client):
     resp = client.post("/api/foods", json={
         "name": "Chicken Breast", "serving_size_grams": 100,
@@ -144,3 +147,60 @@ def test_search_foods_by_brand(client):
     results = resp.json()
     assert len(results) == 1
     assert results[0]["brand"] == "Hillshire Farm"
+
+
+def test_import_food_label_success(client):
+    with patch(
+        "app.routers.foods.parse_nutrition_label_image",
+        new_callable=AsyncMock,
+    ) as mock_import:
+        mock_import.return_value = {
+            "name": "granola bar",
+            "brand": "Nature Valley",
+            "serving_size_grams": 40,
+            "calories_per_serving": 190,
+            "fat_per_serving": 7,
+            "saturated_fat_per_serving": 1,
+            "cholesterol_per_serving": 0,
+            "sodium_per_serving": 120,
+            "carbs_per_serving": 29,
+            "fiber_per_serving": 2,
+            "protein_per_serving": 3,
+        }
+        resp = client.post(
+            "/api/foods/import-label",
+            files={"image": ("label.jpg", b"fake-image-bytes", "image/jpeg")},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "granola bar"
+    assert data["brand"] == "Nature Valley"
+    assert data["serving_size_grams"] == 40
+    mock_import.assert_awaited_once()
+    assert mock_import.await_args.kwargs["mime_type"] == "image/jpeg"
+    assert mock_import.await_args.kwargs["image_bytes"] == b"fake-image-bytes"
+
+
+def test_import_food_label_rejects_non_image(client):
+    resp = client.post(
+        "/api/foods/import-label",
+        files={"image": ("label.txt", b"not-an-image", "text/plain")},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Please upload an image file"
+
+
+def test_import_food_label_handles_llm_validation_error(client):
+    with patch(
+        "app.routers.foods.parse_nutrition_label_image",
+        new_callable=AsyncMock,
+    ) as mock_import:
+        mock_import.side_effect = ValueError("Could not parse nutrition label")
+        resp = client.post(
+            "/api/foods/import-label",
+            files={"image": ("label.jpg", b"fake-image-bytes", "image/jpeg")},
+        )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Could not parse nutrition label"

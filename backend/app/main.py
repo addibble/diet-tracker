@@ -5,15 +5,6 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# Configure parse logger to write to file
-_log_dir = Path(__file__).resolve().parent.parent / "logs"
-_log_dir.mkdir(exist_ok=True)
-_parse_logger = logging.getLogger("parse")
-_parse_logger.setLevel(logging.DEBUG)
-_fh = logging.FileHandler(_log_dir / "parse.log")
-_fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-_parse_logger.addHandler(_fh)
-
 from app.auth import router as auth_router
 from app.database import create_db_and_tables
 from app.routers.daily import router as daily_router
@@ -23,6 +14,15 @@ from app.routers.foods import router as foods_router
 from app.routers.meals import router as meals_router
 from app.routers.parse import router as parse_router
 from app.routers.recipes import router as recipes_router
+
+# Configure parse logger to write to file
+_log_dir = Path(__file__).resolve().parent.parent / "logs"
+_log_dir.mkdir(exist_ok=True)
+_parse_logger = logging.getLogger("parse")
+_parse_logger.setLevel(logging.DEBUG)
+_fh = logging.FileHandler(_log_dir / "parse.log")
+_fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+_parse_logger.addHandler(_fh)
 
 
 # Attach ring buffer handler to root logger for remote log tailing

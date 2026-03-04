@@ -64,6 +64,16 @@ docker compose down                        # Stop
 docker compose logs -f backend             # Tail backend logs
 ```
 
+## Agent Validation Checklist
+
+For any new feature, bug fix, or refactor, agents must run the same checks as `.github/workflows/ci.yml` before handoff:
+
+```bash
+cd backend && source .venv/bin/activate && ruff check app/ tests/
+cd backend && source .venv/bin/activate && pytest -v
+cd frontend && npm ci && npm run build
+```
+
 ## Conventions
 
 - Python: type hints everywhere, ruff for linting/formatting (line-length 100)

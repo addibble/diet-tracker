@@ -42,7 +42,8 @@ def test_chat_confirms_and_saves(client):
 
     llm_response = (
         'Great, saving your meal!\n'
-        f'<ITEMS>[{{"food_id": {food["id"]}, "name": "Chicken Breast", "amount_grams": 200}}]</ITEMS>\n'
+        f'<ITEMS>[{{"food_id": {food["id"]}, "name": "Chicken Breast", '
+        '"amount_grams": 200}]</ITEMS>\n'
         '<CONFIRM/>'
     )
 
