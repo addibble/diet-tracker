@@ -1,4 +1,73 @@
 const BASE = '/api';
+const MAX_IMPORT_IMAGE_BYTES = 1_500_000;
+const MAX_IMPORT_IMAGE_DIMENSION = 1600;
+
+function blobToFile(blob: Blob, originalName: string): File {
+  const baseName = originalName.replace(/\.[^.]+$/, '') || 'upload';
+  return new File([blob], `${baseName}.jpg`, { type: 'image/jpeg' });
+}
+
+function loadImageFromFile(file: File): Promise<HTMLImageElement> {
+  const objectUrl = URL.createObjectURL(file);
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Could not read image'));
+    };
+    img.src = objectUrl;
+  });
+}
+
+function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  quality: number,
+): Promise<Blob | null> {
+  return new Promise((resolve) => {
+    canvas.toBlob((blob) => resolve(blob), 'image/jpeg', quality);
+  });
+}
+
+async function optimizeImageForUpload(file: File): Promise<File> {
+  if (!file.type.startsWith('image/')) return file;
+  if (file.size <= MAX_IMPORT_IMAGE_BYTES) return file;
+
+  try {
+    const img = await loadImageFromFile(file);
+    const maxDim = Math.max(img.naturalWidth, img.naturalHeight);
+    const scale = maxDim > MAX_IMPORT_IMAGE_DIMENSION ? MAX_IMPORT_IMAGE_DIMENSION / maxDim : 1;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return file;
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    const qualityCandidates = [0.82, 0.72, 0.62, 0.52];
+    let bestBlob: Blob | null = null;
+
+    for (const quality of qualityCandidates) {
+      const blob = await canvasToBlob(canvas, quality);
+      if (!blob) continue;
+      bestBlob = blob;
+      if (blob.size <= MAX_IMPORT_IMAGE_BYTES) {
+        return blobToFile(blob, file.name);
+      }
+    }
+
+    if (!bestBlob) return file;
+    if (bestBlob.size < file.size) return blobToFile(bestBlob, file.name);
+    return file;
+  } catch {
+    return file;
+  }
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const isFormData = options?.body instanceof FormData;
@@ -17,8 +86,21 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error('Unauthorized');
   }
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || 'Request failed');
+    if (res.status === 413) {
+      throw new Error('Image is too large. Please retake closer or crop the photo.');
+    }
+
+    let detail = '';
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const err = await res.json().catch(() => ({ detail: '' }));
+      detail = String(err.detail || '');
+    } else {
+      const text = await res.text().catch(() => '');
+      detail = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    throw new Error(detail || res.statusText || 'Request failed');
   }
   if (res.status === 204) return undefined as T;
   return res.json();
@@ -182,8 +264,9 @@ export const createFood = (data: Omit<Food, 'id' | 'source'>) =>
   request<Food>('/foods', { method: 'POST', body: JSON.stringify(data) });
 
 export const importFoodLabel = async (file: File) => {
+  const uploadFile = await optimizeImageForUpload(file);
   const form = new FormData();
-  form.append('image', file);
+  form.append('image', uploadFile, uploadFile.name);
   return request<FoodImportResult>('/foods/import-label', {
     method: 'POST',
     body: form,
