@@ -262,11 +262,17 @@ export interface ChatResponse {
 
 export const chatMeal = (
   messages: ChatMessage[],
-  date: string,
-  meal_type: string,
+  date?: string,
+  meal_type?: string,
   notes?: string,
-) =>
-  request<ChatResponse>('/meals/chat', {
+) => {
+  const payload: Record<string, unknown> = { messages }
+  if (date) payload.date = date
+  if (meal_type) payload.meal_type = meal_type
+  if (notes) payload.notes = notes
+
+  return request<ChatResponse>('/meals/chat', {
     method: 'POST',
-    body: JSON.stringify({ messages, date, meal_type, notes }),
-  });
+    body: JSON.stringify(payload),
+  })
+}

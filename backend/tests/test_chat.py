@@ -1,3 +1,4 @@
+from datetime import date, timedelta
 from unittest.mock import AsyncMock, patch
 
 
@@ -137,3 +138,33 @@ def test_chat_passes_full_history(client):
     assert len(messages) == 3
     assert messages[0]["content"] == "ham sandwich"
     assert messages[2]["content"] == "make it 70g ham"
+
+
+def test_chat_infers_date_and_meal_type_from_message(client):
+    food = client.post("/api/foods", json={
+        "name": "Greek Yogurt",
+        "calories_per_serving": 120, "fat_per_serving": 5,
+        "carbs_per_serving": 7, "protein_per_serving": 12,
+    }).json()
+
+    llm_response = (
+        "Saving now!\n"
+        f'<ITEMS>[{{"food_id": {food["id"]}, "name": "Greek Yogurt", '
+        '"amount_grams": 150}]</ITEMS>\n'
+        "<CONFIRM/>"
+    )
+
+    with patch("app.routers.parse.chat_meal", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = llm_response
+        resp = client.post("/api/meals/chat", json={
+            "messages": [
+                {"role": "user", "content": "Yesterday for dinner I had greek yogurt"},
+                {"role": "user", "content": "yes save it"},
+            ],
+        })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["saved_meal"] is not None
+    assert data["saved_meal"]["meal_type"] == "dinner"
+    assert data["saved_meal"]["date"] == str(date.today() - timedelta(days=1))

@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import {
+  createFood,
   chatMeal,
+  importFoodLabel,
   MACRO_KEYS, MACRO_LABELS, MACRO_UNITS,
-  type ChatMessage, type ChatProposedItem, type ChatResponse, type Meal, type Macros,
+  type ChatMessage, type ChatProposedItem, type ChatResponse, type Meal, type Macros, type FoodImportResult,
 } from '../api'
 
-function today() {
-  return new Date().toISOString().split('T')[0]
+function importedFoodToChatPrompt(food: FoodImportResult): string {
+  const descriptor = food.brand ? `${food.brand} ${food.name}` : food.name
+  return `I scanned a nutrition label and ate one serving (${food.serving_size_grams}g) of ${descriptor}.`
 }
 
 interface MessageBubble {
@@ -94,11 +97,10 @@ export default function MealLogPage() {
   const [messages, setMessages] = useState<MessageBubble[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
-  const [date, setDate] = useState(today())
-  const [mealType, setMealType] = useState('lunch')
-  const [notes, setNotes] = useState('')
+  const [importingImage, setImportingImage] = useState(false)
   const [saved, setSaved] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const cameraInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -121,7 +123,7 @@ export default function MealLogPage() {
         role: m.role,
         content: m.content,
       }))
-      const resp: ChatResponse = await chatMeal(apiHistory, date, mealType, notes || undefined)
+      const resp: ChatResponse = await chatMeal(apiHistory)
 
       const assistantBubble: MessageBubble = {
         role: 'assistant',
@@ -154,6 +156,28 @@ export default function MealLogPage() {
     setSaved(false)
   }
 
+  const handleImportImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const target = e.target
+    const file = target.files?.[0]
+    target.value = ''
+    if (!file || loading || importingImage || saved) return
+
+    setImportingImage(true)
+    try {
+      const imported = await importFoodLabel(file)
+      await createFood(imported)
+      await handleSend(importedFoodToChatPrompt(imported))
+    } catch (err) {
+      const errorText = err instanceof Error ? err.message : 'Failed to import image'
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: `Image import failed: ${errorText}` },
+      ])
+    } finally {
+      setImportingImage(false)
+    }
+  }
+
   return (
     // Height formula: full dynamic viewport minus top nav (+ its safe-area-top padding) and
     // main element's top/bottom padding (bottom includes the mobile tab bar + safe-area-bottom).
@@ -162,48 +186,17 @@ export default function MealLogPage() {
       className="flex flex-col"
       style={{ height: 'calc(100dvh - var(--safe-top) - var(--safe-bottom) - 8rem)' }}
     >
-      {/* Header — stacks vertically on mobile */}
-      <div className="flex flex-col gap-2 mb-3">
-        {/* Row 1: title + New Meal button */}
-        <div className="flex items-center justify-between gap-2">
-          <h1 className="text-xl font-semibold text-gray-900">Log Meal</h1>
-          {saved && (
-            <button
-              onClick={handleNewMeal}
-              className="px-3 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 active:bg-blue-800"
-            >
-              New Meal
-            </button>
-          )}
-        </div>
-
-        {/* Row 2: date + meal type side-by-side */}
-        <div className="flex gap-2">
-          <input
-            type="date"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-            className="flex-1 min-w-0 px-2 py-2.5 border border-gray-300 rounded-md text-sm"
-          />
-          <select
-            value={mealType}
-            onChange={(e) => setMealType(e.target.value)}
-            className="flex-1 min-w-0 px-2 py-2.5 border border-gray-300 rounded-md text-sm"
+      {/* Header */}
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <h1 className="text-xl font-semibold text-gray-900">Log Meal</h1>
+        {saved && (
+          <button
+            onClick={handleNewMeal}
+            className="px-3 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 active:bg-blue-800"
           >
-            <option value="breakfast">Breakfast</option>
-            <option value="lunch">Lunch</option>
-            <option value="dinner">Dinner</option>
-            <option value="snack">Snack</option>
-          </select>
-        </div>
-
-        {/* Row 3: notes full width */}
-        <input
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          placeholder="Notes (optional)"
-          className="w-full px-2 py-2.5 border border-gray-300 rounded-md text-sm"
-        />
+            New Meal
+          </button>
+        )}
       </div>
 
       {/* Messages */}
@@ -213,7 +206,7 @@ export default function MealLogPage() {
             <div className="text-center text-gray-400 max-w-sm px-4">
               <p className="text-lg mb-2">Describe what you ate</p>
               <p className="text-sm">
-                e.g. "ham sandwich with Oroweat bread, 50g Hillshire Farm ham, and Kirkland cheddar"
+                Tap the camera icon to scan a nutrition label, or type your meal.
               </p>
             </div>
           </div>
@@ -259,19 +252,47 @@ export default function MealLogPage() {
       {/* Input */}
       <div className="flex gap-2">
         <input
+          ref={cameraInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          onChange={handleImportImage}
+          className="hidden"
+          disabled={loading || saved || importingImage}
+        />
+        <button
+          type="button"
+          onClick={() => cameraInputRef.current?.click()}
+          disabled={loading || saved || importingImage}
+          className="px-3 py-2.5 border border-gray-300 rounded-md text-gray-600 hover:text-gray-900 hover:border-gray-400 disabled:opacity-50"
+          aria-label="Scan nutrition label"
+          title="Scan nutrition label"
+        >
+          <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path
+              d="M4 8.5C4 7.12 5.12 6 6.5 6H8l1.2-1.6A2 2 0 0 1 10.8 3.5h2.4a2 2 0 0 1 1.6.9L16 6h1.5A2.5 2.5 0 0 1 20 8.5V18a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18V8.5Z"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <circle cx="12" cy="13" r="3.5" stroke="currentColor" strokeWidth="1.8" />
+          </svg>
+        </button>
+        <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={saved ? 'Meal saved — tap New Meal to log another' : 'Describe what you ate...'}
           className="flex-1 px-3 py-2.5 border border-gray-300 rounded-md text-sm disabled:bg-gray-50"
-          disabled={loading || saved}
+          disabled={loading || saved || importingImage}
         />
         <button
           onClick={() => handleSend()}
-          disabled={loading || !input.trim() || saved}
+          disabled={loading || importingImage || !input.trim() || saved}
           className="px-4 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50"
         >
-          Send
+          {importingImage ? 'Importing...' : 'Send'}
         </button>
       </div>
     </div>

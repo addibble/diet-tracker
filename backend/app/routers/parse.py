@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from datetime import date as date_type
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -135,9 +136,62 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
-    date: str
-    meal_type: str
+    date: str | None = None
+    meal_type: str | None = None
     notes: str | None = None
+
+
+def _messages_user_text(messages: list[ChatMessage]) -> str:
+    return " ".join(m.content.lower() for m in messages if m.role == "user")
+
+
+def _infer_request_date(messages: list[ChatMessage], requested_date: str | None) -> date_type:
+    if requested_date:
+        try:
+            return date_type.fromisoformat(requested_date)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD") from exc
+
+    text = _messages_user_text(messages)
+    today = date_type.today()
+
+    explicit_date_match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
+    if explicit_date_match:
+        try:
+            return date_type.fromisoformat(explicit_date_match.group(1))
+        except ValueError:
+            logger.warning("Ignoring invalid date in chat text: %s", explicit_date_match.group(1))
+
+    if "yesterday" in text:
+        return today - timedelta(days=1)
+    if "tomorrow" in text:
+        return today + timedelta(days=1)
+    return today
+
+
+def _infer_meal_type(messages: list[ChatMessage], requested_meal_type: str | None) -> str:
+    if requested_meal_type and requested_meal_type.strip():
+        return requested_meal_type.strip().lower()
+
+    text = _messages_user_text(messages)
+    keyword_map = {
+        "breakfast": ("breakfast", "brunch", "morning"),
+        "lunch": ("lunch", "noon"),
+        "dinner": ("dinner", "supper", "tonight"),
+        "snack": ("snack",),
+    }
+    for meal_type, keywords in keyword_map.items():
+        if any(re.search(rf"\b{re.escape(keyword)}\b", text) for keyword in keywords):
+            return meal_type
+
+    hour = datetime.now().hour
+    if hour < 11:
+        return "breakfast"
+    if hour < 16:
+        return "lunch"
+    if hour < 21:
+        return "dinner"
+    return "snack"
 
 
 def _resolve_chat_items(raw_items: list[dict], session: Session) -> list[dict]:
@@ -182,7 +236,8 @@ async def chat_meal_endpoint(
     # Fetch today's meals so the LLM can reference/edit them
     from app.routers.meals import _build_meal_response
 
-    request_date = date_type.fromisoformat(data.date)
+    request_date = _infer_request_date(data.messages, data.date)
+    meal_type = _infer_meal_type(data.messages, data.meal_type)
     todays_logs = session.exec(
         select(MealLog).where(MealLog.date == request_date)
     ).all()
@@ -243,7 +298,7 @@ async def chat_meal_endpoint(
                 # Create new meal
                 meal = MealLog(
                     date=request_date,
-                    meal_type=data.meal_type,
+                    meal_type=meal_type,
                     notes=data.notes,
                 )
                 session.add(meal)
