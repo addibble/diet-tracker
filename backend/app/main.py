@@ -14,6 +14,7 @@ from app.routers.foods import router as foods_router
 from app.routers.meals import router as meals_router
 from app.routers.parse import router as parse_router
 from app.routers.recipes import router as recipes_router
+from app.routers.workouts import router as workouts_router
 
 # Configure parse logger to write to file
 _log_dir = Path(__file__).resolve().parent.parent / "logs"
@@ -53,6 +54,7 @@ app.include_router(meals_router)
 app.include_router(daily_router)
 app.include_router(parse_router)
 app.include_router(debug_router)
+app.include_router(workouts_router)
 
 
 @app.get("/api/health")

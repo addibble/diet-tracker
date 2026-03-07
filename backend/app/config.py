@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     secret_key: str = "change-this-to-a-random-string"
     database_url: str = "sqlite:///./data/diet_tracker.db"
     openrouter_api_key: str | None = None
+    api_token: str | None = None  # Bearer token for Shortcuts/external integrations
     logs_user: str = ""
     logs_password: str = ""
 

@@ -1,9 +1,9 @@
 import { useEffect, useState, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  getDailySummary, deleteMeal, updateMeal, getFoods, getRecipes,
+  getDailySummary, deleteMeal, updateMeal, getFoods, getRecipes, getWorkouts,
   MACRO_KEYS, MACRO_LABELS, MACRO_UNITS,
-  type DailySummary, type Meal, type Food, type Recipe,
+  type DailySummary, type Meal, type Food, type Recipe, type Workout,
 } from '../api'
 
 function today() {
@@ -22,6 +22,7 @@ interface EditItem {
 export default function DashboardPage() {
   const [date, setDate] = useState(today())
   const [data, setData] = useState<DailySummary | null>(null)
+  const [workouts, setWorkouts] = useState<Workout[]>([])
   const [loading, setLoading] = useState(true)
 
   // Edit state
@@ -42,7 +43,12 @@ export default function DashboardPage() {
   const load = async () => {
     setLoading(true)
     try {
-      setData(await getDailySummary(date))
+      const [summary, dayWorkouts] = await Promise.all([
+        getDailySummary(date),
+        getWorkouts(date),
+      ])
+      setData(summary)
+      setWorkouts(dayWorkouts)
     } catch { /* redirect handled by api */ }
     setLoading(false)
   }
@@ -348,6 +354,43 @@ export default function DashboardPage() {
                   )}
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Workouts */}
+          {workouts.length > 0 && (
+            <div className="mt-4">
+              <h2 className="text-lg font-semibold text-gray-900 mb-2">Workouts</h2>
+              <div className="space-y-2">
+                {workouts.map((w) => (
+                  <div key={w.id} className="bg-white p-3 rounded-lg border border-gray-200 flex items-center justify-between">
+                    <div>
+                      <span className="text-sm font-medium text-gray-900">{w.workout_type}</span>
+                      <span className="text-xs text-gray-400 ml-2">
+                        {Math.round(w.duration_minutes)} min
+                        {w.distance_km ? ` · ${w.distance_km.toFixed(1)} km` : ''}
+                      </span>
+                    </div>
+                    <span className="text-sm font-semibold text-orange-600">
+                      −{Math.round(w.active_calories)} kcal
+                    </span>
+                  </div>
+                ))}
+                {(() => {
+                  const totalBurned = workouts.reduce((s, w) => s + w.active_calories, 0)
+                  const netCalories = (data?.total_calories ?? 0) - totalBurned
+                  return (
+                    <div className="bg-white p-3 rounded-lg border border-gray-200 flex items-center justify-between">
+                      <span className="text-sm text-gray-500">
+                        Net calories ({Math.round(data?.total_calories ?? 0)} eaten − {Math.round(totalBurned)} burned)
+                      </span>
+                      <span className={`text-sm font-semibold ${netCalories < 0 ? 'text-green-600' : 'text-gray-900'}`}>
+                        {Math.round(netCalories)} kcal
+                      </span>
+                    </div>
+                  )
+                })()}
+              </div>
             </div>
           )}
 

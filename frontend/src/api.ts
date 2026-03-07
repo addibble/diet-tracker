@@ -310,6 +310,22 @@ export const updateMeal = (id: number, data: {
 export const deleteMeal = (id: number) =>
   request<void>(`/meals/${id}`, { method: 'DELETE' });
 
+// Workouts
+export interface Workout {
+  id: number;
+  sync_key: string;
+  date: string;
+  workout_type: string;
+  duration_minutes: number;
+  active_calories: number;
+  total_calories: number | null;
+  distance_km: number | null;
+  source: string | null;
+}
+
+export const getWorkouts = (date: string) =>
+  request<Workout[]>(`/workouts?date=${date}`);
+
 // Daily
 export const getDailySummary = (date: string) =>
   request<DailySummary>(`/daily/${date}`);

@@ -58,6 +58,21 @@ class MealItem(SQLModel, table=True):
     amount_grams: float
 
 
+class Workout(SQLModel, table=True):
+    __tablename__ = "workouts"
+    id: int | None = Field(default=None, primary_key=True)
+    # Client-provided deduplication key (e.g. "{date}T{start_time}_{type}")
+    sync_key: str = Field(unique=True, index=True)
+    date: date
+    workout_type: str          # "Running", "Cycling", "Strength Training", etc.
+    duration_minutes: float
+    active_calories: float     # calories burned during the workout
+    total_calories: float | None = None   # active + resting during workout
+    distance_km: float | None = None
+    source: str | None = None  # "Apple Watch", "iPhone", etc.
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
 class MealItemOverride(SQLModel, table=True):
     __tablename__ = "meal_item_overrides"
     id: int | None = Field(default=None, primary_key=True)
