@@ -146,19 +146,31 @@ function saveChatState(messages: MessageBubble[], saved: boolean) {
   sessionStorage.setItem(CHAT_SAVED_KEY, String(saved))
 }
 
-function TodayLogTab({ onRefresh }: { onRefresh?: number }) {
+function TodayLogTab() {
   const [data, setData] = useState<DailySummary | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
 
   useEffect(() => {
-    setLoading(true)
+    let cancelled = false
     getDailySummary(today())
-      .then(setData)
-      .catch(() => {})
-      .finally(() => setLoading(false))
-  }, [onRefresh])
+      .then((summary) => {
+        if (cancelled) return
+        setData(summary)
+        setLoadError(false)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setData(null)
+        setLoadError(true)
+      })
 
-  if (loading) return <p className="text-gray-400 text-sm py-4 text-center">Loading...</p>
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  if (!data && !loadError) return <p className="text-gray-400 text-sm py-4 text-center">Loading...</p>
+  if (loadError) return <p className="text-red-400 text-sm py-4 text-center">Failed to load today&apos;s log.</p>
   if (!data || data.meals.length === 0)
     return <p className="text-gray-400 text-sm py-4 text-center">No meals logged today.</p>
 
@@ -335,7 +347,7 @@ export default function MealLogPage() {
       </div>
 
       {/* Today's Log tab */}
-      {tab === 'log' && <TodayLogTab onRefresh={logRefresh} />}
+      {tab === 'log' && <TodayLogTab key={logRefresh} />}
 
       {/* Messages */}
       {tab === 'chat' && (

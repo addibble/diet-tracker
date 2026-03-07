@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import ScrollablePage from '../components/ScrollablePage'
 import {
   getDailySummary,
   getDashboardTrends,
@@ -344,7 +345,7 @@ export default function DashboardPage() {
   }, [date])
 
   return (
-    <div className="space-y-6">
+    <ScrollablePage className="space-y-6">
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Daily Summary</h1>
@@ -447,6 +448,6 @@ export default function DashboardPage() {
           )}
         </>
       ) : null}
-    </div>
+    </ScrollablePage>
   )
 }

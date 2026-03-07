@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getFoods, getRecipes, createRecipe, deleteRecipe, MACRO_KEYS, MACRO_LABELS, type Food, type Recipe } from '../api'
+import ScrollablePage from '../components/ScrollablePage'
 
 interface ComponentForm {
   food_id: string
@@ -20,7 +21,20 @@ export default function RecipesPage() {
     setFoods(f)
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    let cancelled = false
+    Promise.all([getRecipes(), getFoods()])
+      .then(([r, f]) => {
+        if (cancelled) return
+        setRecipes(r)
+        setFoods(f)
+      })
+      .catch(() => {})
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const addComponent = () => setComponents([...components, { food_id: '', amount_grams: '' }])
   const removeComponent = (i: number) => setComponents(components.filter((_, j) => j !== i))
@@ -45,7 +59,7 @@ export default function RecipesPage() {
   }
 
   return (
-    <div>
+    <ScrollablePage>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-semibold text-gray-900">Recipes</h1>
         <button onClick={() => setShowForm(!showForm)}
@@ -134,6 +148,6 @@ export default function RecipesPage() {
         ))}
         {recipes.length === 0 && <p className="text-gray-400 text-center py-8">No recipes yet</p>}
       </div>
-    </div>
+    </ScrollablePage>
   )
 }

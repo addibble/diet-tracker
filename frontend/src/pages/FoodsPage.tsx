@@ -1,5 +1,6 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
 import { getFoods, createFood, updateFood, deleteFood, foodMacroPerServing, importFoodLabel, MACRO_KEYS, MACRO_LABELS, type Food, type FoodImportResult } from '../api'
+import ScrollablePage from '../components/ScrollablePage'
 
 const FOOD_MACRO_FIELDS = MACRO_KEYS.map((m) => `${m}_per_serving` as const)
 
@@ -39,7 +40,20 @@ export default function FoodsPage() {
   const [importError, setImportError] = useState<string | null>(null)
 
   const load = async () => { setFoods(await getFoods(search || undefined)) }
-  useEffect(() => { load() }, [search])
+  useEffect(() => {
+    let cancelled = false
+    getFoods(search || undefined)
+      .then((nextFoods) => {
+        if (!cancelled) setFoods(nextFoods)
+      })
+      .catch(() => {
+        if (!cancelled) setFoods([])
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [search])
 
   const resetForm = () => { setForm(emptyForm()); setEditId(null); setShowForm(false); setImportError(null) }
 
@@ -83,7 +97,7 @@ export default function FoodsPage() {
   }
 
   return (
-    <div>
+    <ScrollablePage>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-semibold text-gray-900">Foods</h1>
         <div className="flex items-center gap-2">
@@ -184,6 +198,6 @@ export default function FoodsPage() {
           </tbody>
         </table>
       </div>
-    </div>
+    </ScrollablePage>
   )
 }
