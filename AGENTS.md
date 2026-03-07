@@ -88,6 +88,17 @@ cd backend && source .venv/bin/activate && pytest -v
 cd frontend && npm ci && npm run build
 ```
 
+## Lessons Learned
+
+### Python 3.14 + Pydantic: field name shadowing type imports
+If a Pydantic model field has the same name as its type import (e.g., `date: date | None = None`), Python 3.14's annotation evaluation resolves the field name to its default value (`None`) instead of the type. Fix by qualifying the type: `date: datetime.date | None = None` (with `import datetime`).
+
+### JSX conditional rendering must use parentheses for multi-line blocks
+`{condition && <div>...</div>}` fails to parse when the JSX spans multiple lines. Always wrap in parentheses: `{condition && (<div>...</div>)}`.
+
+### Tool definition dicts: watch line length
+Inline JSON-style tool definitions (OpenRouter/OpenAI function calling format) easily exceed the 100-char ruff limit. Break long description strings into parenthesized multi-line strings, and split property dicts across lines.
+
 ## Conventions
 
 - Python: type hints everywhere, ruff for linting/formatting (line-length 100)
