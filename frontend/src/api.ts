@@ -224,6 +224,7 @@ export interface Meal {
 export interface DailySummary {
   date: string;
   meals: Meal[];
+  active_macro_target: MacroTarget | null;
   total_calories: number;
   total_fat: number;
   total_saturated_fat: number;
@@ -245,6 +246,7 @@ export interface DashboardTrendDay {
   total_calories: number;
   macro_calories: MacroCalorieBreakdown;
   macro_calorie_percentages: MacroCalorieBreakdown;
+  active_macro_target: MacroTarget | null;
   weight_lb: number | null;
   weight_logged_at: string | null;
 }
@@ -270,6 +272,12 @@ export interface DashboardTrends {
   latest_weight_logged_at: string | null;
   days: DashboardTrendDay[];
   weight_regression: WeightRegression | null;
+}
+
+export interface MacroTarget extends Macros {
+  id: number;
+  day: string;
+  next_day: string | null;
 }
 
 // Parsed meal item from LLM
@@ -370,6 +378,21 @@ export const getDailySummary = (date: string) =>
 
 export const getDashboardTrends = (endDate: string) =>
   request<DashboardTrends>(`/dashboard/trends?end_date=${encodeURIComponent(endDate)}`);
+
+export const upsertMacroTarget = (
+  data: { day: string } & Macros,
+) => request<MacroTarget>('/macro-targets', {
+  method: 'POST',
+  body: JSON.stringify(data),
+});
+
+export const getMacroTargets = (startDate?: string, endDate?: string) => {
+  const query: string[] = []
+  if (startDate) query.push(`start_date=${encodeURIComponent(startDate)}`)
+  if (endDate) query.push(`end_date=${encodeURIComponent(endDate)}`)
+  const suffix = query.length > 0 ? `?${query.join('&')}` : ''
+  return request<MacroTarget[]>(`/macro-targets${suffix}`)
+}
 
 // Parse meal with LLM
 export const parseMeal = (description: string) =>

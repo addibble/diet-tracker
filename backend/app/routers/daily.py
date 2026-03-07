@@ -5,6 +5,7 @@ from sqlmodel import Session, select
 
 from app.auth import get_current_user
 from app.database import get_session
+from app.macro_targets import get_active_macro_target
 from app.macros import MACRO_FIELDS, sum_macros
 from app.models import MealLog
 from app.routers.meals import _build_meal_response
@@ -22,7 +23,12 @@ def build_daily_summary(day: date, session: Session) -> dict:
         for detail in meal_details
     ]
     totals = sum_macros(meal_totals)
-    return {"date": str(day), "meals": meal_details, **totals}
+    return {
+        "date": str(day),
+        "meals": meal_details,
+        "active_macro_target": get_active_macro_target(day, session),
+        **totals,
+    }
 
 
 @router.get("/{day}")

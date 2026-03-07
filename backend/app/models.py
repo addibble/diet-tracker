@@ -87,3 +87,18 @@ class WeightLog(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     weight_lb: float
     logged_at: datetime = Field(default_factory=_utcnow, index=True)
+
+
+class MacroTarget(SQLModel, table=True):
+    __tablename__ = "macro_targets"
+    id: int | None = Field(default=None, primary_key=True)
+    day: date = Field(index=True, unique=True)
+    calories: float
+    fat: float
+    saturated_fat: float
+    cholesterol: float
+    sodium: float
+    carbs: float
+    fiber: float
+    protein: float
+    created_at: datetime = Field(default_factory=_utcnow)

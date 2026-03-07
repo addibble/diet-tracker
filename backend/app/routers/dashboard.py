@@ -112,6 +112,7 @@ def dashboard_trends(
                 "total_calories": float(summary["total_calories"]),
                 "macro_calories": macro_calories,
                 "macro_calorie_percentages": macro_percentages,
+                "active_macro_target": summary.get("active_macro_target"),
                 "weight_lb": round(weight_log.weight_lb, 2) if weight_log else None,
                 "weight_logged_at": (
                     weight_log.logged_at.isoformat() if weight_log else None

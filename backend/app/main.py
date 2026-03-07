@@ -12,6 +12,7 @@ from app.routers.dashboard import router as dashboard_router
 from app.routers.debug import ring_handler
 from app.routers.debug import router as debug_router
 from app.routers.foods import router as foods_router
+from app.routers.macro_targets import router as macro_targets_router
 from app.routers.meals import router as meals_router
 from app.routers.parse import router as parse_router
 from app.routers.recipes import router as recipes_router
@@ -50,6 +51,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(foods_router)
+app.include_router(macro_targets_router)
 app.include_router(recipes_router)
 app.include_router(meals_router)
 app.include_router(daily_router)
