@@ -40,6 +40,9 @@ docker-compose.yml
 Run this sequence for every development cycle.
 
 ```bash
+# 0) One-time per worktree: enable versioned git hooks
+git config core.hooksPath .githooks
+
 # 1) Start clean and up to date
 git fetch origin main
 git rebase origin/main
@@ -63,13 +66,12 @@ At the end of each cycle, run validation, then commit locally. Do not push unles
 
 ```bash
 # Validation before check-in (same checks used in CI)
-cd backend && source .venv/bin/activate && ruff check app/ tests/
-cd backend && source .venv/bin/activate && pytest -v
-cd frontend && npm ci && npm run build
+./tools/run_test_cycle.sh
 
 # Local check-in
 git add -A
 git commit -m "Describe the completed cycle"
+# pre-commit hook runs ./tools/run_test_cycle.sh automatically
 # Do not push unless explicitly instructed.
 ```
 
@@ -117,16 +119,22 @@ git rebase origin/main
 Then run:
 
 ```bash
-# Backend lint + tests (run from repo root)
-source backend/.venv/bin/activate && cd backend && ruff check app/ tests/ && pytest -v && cd ..
-
-# Frontend build (run from repo root)
-cd frontend && npm run build && cd ..
+./tools/run_test_cycle.sh
 ```
 
 All tests must pass and there must be no lint or build errors before committing. Do not skip this step.
 
 Commit locally at the end of each development cycle, and do not push unless explicitly instructed.
+
+### Hook Setup
+
+Use versioned hooks in each worktree:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The repository pre-commit hook runs `./tools/run_test_cycle.sh` on every `git commit` and blocks the commit on failures.
 
 ## Agent Validation Checklist
 

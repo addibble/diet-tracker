@@ -2,11 +2,13 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   getDailySummary,
   getDashboardTrends,
+  getWorkouts,
   MACRO_KEYS,
   MACRO_LABELS,
   MACRO_UNITS,
   type DailySummary,
   type DashboardTrends,
+  type Workout,
 } from '../api'
 
 function today() {
@@ -314,21 +316,25 @@ export default function DashboardPage() {
   const [date, setDate] = useState(today())
   const [summary, setSummary] = useState<DailySummary | null>(null)
   const [trends, setTrends] = useState<DashboardTrends | null>(null)
+  const [workouts, setWorkouts] = useState<Workout[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     const load = async () => {
       setLoading(true)
       try {
-        const [dailyData, trendData] = await Promise.all([
+        const [dailyData, trendData, workoutData] = await Promise.all([
           getDailySummary(date),
           getDashboardTrends(date),
+          getWorkouts(date),
         ])
         setSummary(dailyData)
         setTrends(trendData)
+        setWorkouts(workoutData)
       } catch {
         setSummary(null)
         setTrends(null)
+        setWorkouts([])
       } finally {
         setLoading(false)
       }
@@ -389,6 +395,56 @@ export default function DashboardPage() {
           </div>
 
           <MacroBreakdownCard trends={trends} />
+
+          {workouts.length > 0 && (
+            <section className="bg-white border border-gray-200 rounded-2xl p-5">
+              <h2 className="text-lg font-semibold text-gray-900 mb-3">Workouts</h2>
+              <div className="space-y-2">
+                {workouts.map((workout) => (
+                  <div
+                    key={workout.id}
+                    className="bg-white p-3 rounded-lg border border-gray-200 flex items-center justify-between"
+                  >
+                    <div>
+                      <span className="text-sm font-medium text-gray-900">
+                        {workout.workout_type}
+                      </span>
+                      <span className="text-xs text-gray-400 ml-2">
+                        {Math.round(workout.duration_minutes)} min
+                        {workout.distance_km
+                          ? ` · ${workout.distance_km.toFixed(1)} km`
+                          : ''}
+                      </span>
+                    </div>
+                    <span className="text-sm font-semibold text-orange-600">
+                      −{Math.round(workout.active_calories)} kcal
+                    </span>
+                  </div>
+                ))}
+                {(() => {
+                  const totalBurned = workouts.reduce(
+                    (sum, workout) => sum + workout.active_calories,
+                    0,
+                  )
+                  const netCalories = summary.total_calories - totalBurned
+                  return (
+                    <div className="bg-white p-3 rounded-lg border border-gray-200 flex items-center justify-between">
+                      <span className="text-sm text-gray-500">
+                        Net calories ({Math.round(summary.total_calories)} eaten − {Math.round(totalBurned)} burned)
+                      </span>
+                      <span
+                        className={`text-sm font-semibold ${
+                          netCalories < 0 ? 'text-green-600' : 'text-gray-900'
+                        }`}
+                      >
+                        {Math.round(netCalories)} kcal
+                      </span>
+                    </div>
+                  )
+                })()}
+              </div>
+            </section>
+          )}
         </>
       ) : null}
     </div>
