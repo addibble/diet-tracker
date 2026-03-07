@@ -43,12 +43,16 @@ Run this sequence for every development cycle.
 # 0) One-time per worktree: enable versioned git hooks
 git config core.hooksPath .githooks
 
-# 1) Start clean and up to date
+# 1) Work on a branch (never develop directly on main)
+# Example:
+# git switch -c <feature-branch>
+
+# 2) Start clean and up to date
 git fetch origin main
 git rebase origin/main
 # Resolve any rebase conflicts before writing code.
 
-# 2) Fresh worktree setup (required when not on main, and recommended always)
+# 3) Fresh worktree setup (required when not on main, and recommended always)
 # Backend: per-worktree virtualenv
 cd backend
 python -m venv .venv
@@ -62,7 +66,7 @@ npm ci
 cd ..
 ```
 
-At the end of each cycle, run validation, then commit locally. Do not push unless explicitly told to push.
+At the end of each cycle, run validation, then commit locally.
 
 ```bash
 # Validation before check-in (same checks used in CI)
@@ -72,8 +76,30 @@ At the end of each cycle, run validation, then commit locally. Do not push unles
 git add -A
 git commit -m "Describe the completed cycle"
 # pre-commit hook runs ./tools/run_test_cycle.sh automatically
-# Do not push unless explicitly instructed.
 ```
+
+### Integration Cycle (Merge to Main, Then Push Main)
+When a branch is ready, integrate it into local `main`, then push `main`.
+
+```bash
+# 1) Ensure branch is up to date and committed
+git fetch origin main
+git rebase origin/main
+./tools/run_test_cycle.sh
+git add -A
+git commit -m "Final branch updates"   # if there are unstaged changes
+
+# 2) Merge branch into local main
+git switch main
+git pull --ff-only origin main
+git merge --ff-only <feature-branch>
+
+# 3) Validate on main and push main
+./tools/run_test_cycle.sh
+git push origin main
+```
+
+If `git merge --ff-only` fails, rebase the branch on latest `origin/main`, resolve conflicts, re-run the test cycle, and retry.
 
 ### Backend
 ```bash
@@ -124,7 +150,7 @@ Then run:
 
 All tests must pass and there must be no lint or build errors before committing. Do not skip this step.
 
-Commit locally at the end of each development cycle, and do not push unless explicitly instructed.
+Commit locally at the end of each development cycle. Integration should happen by merging into local `main` and pushing `main`; avoid direct feature development on `main`.
 
 ### Hook Setup
 
