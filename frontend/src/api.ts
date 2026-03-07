@@ -234,6 +234,44 @@ export interface DailySummary {
   total_protein: number;
 }
 
+export interface MacroCalorieBreakdown {
+  fat: number;
+  carbs: number;
+  protein: number;
+}
+
+export interface DashboardTrendDay {
+  date: string;
+  total_calories: number;
+  macro_calories: MacroCalorieBreakdown;
+  macro_calorie_percentages: MacroCalorieBreakdown;
+  weight_lb: number | null;
+  weight_logged_at: string | null;
+}
+
+export interface WeightRegressionPoint {
+  date: string;
+  weight_lb: number;
+}
+
+export interface WeightRegression {
+  points_used: number;
+  slope_lb_per_day: number;
+  slope_lb_per_week: number;
+  start_weight_lb: number;
+  end_weight_lb: number;
+  line: WeightRegressionPoint[];
+}
+
+export interface DashboardTrends {
+  start_date: string;
+  end_date: string;
+  latest_weight_lb: number | null;
+  latest_weight_logged_at: string | null;
+  days: DashboardTrendDay[];
+  weight_regression: WeightRegression | null;
+}
+
 // Parsed meal item from LLM
 export interface ParsedItem {
   name: string;
@@ -329,6 +367,9 @@ export const getWorkouts = (date: string) =>
 // Daily
 export const getDailySummary = (date: string) =>
   request<DailySummary>(`/daily/${date}`);
+
+export const getDashboardTrends = (endDate: string) =>
+  request<DashboardTrends>(`/dashboard/trends?end_date=${encodeURIComponent(endDate)}`);
 
 // Parse meal with LLM
 export const parseMeal = (description: string) =>

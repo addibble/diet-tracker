@@ -80,3 +80,10 @@ class MealItemOverride(SQLModel, table=True):
     original_food_id: int = Field(foreign_key="foods.id")
     replacement_food_id: int = Field(foreign_key="foods.id")
     replacement_grams: float
+
+
+class WeightLog(SQLModel, table=True):
+    __tablename__ = "weight_logs"
+    id: int | None = Field(default=None, primary_key=True)
+    weight_lb: float
+    logged_at: datetime = Field(default_factory=_utcnow, index=True)

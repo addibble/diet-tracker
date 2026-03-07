@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.auth import router as auth_router
 from app.database import create_db_and_tables
 from app.routers.daily import router as daily_router
+from app.routers.dashboard import router as dashboard_router
 from app.routers.debug import ring_handler
 from app.routers.debug import router as debug_router
 from app.routers.foods import router as foods_router
@@ -52,6 +53,7 @@ app.include_router(foods_router)
 app.include_router(recipes_router)
 app.include_router(meals_router)
 app.include_router(daily_router)
+app.include_router(dashboard_router)
 app.include_router(parse_router)
 app.include_router(debug_router)
 app.include_router(workouts_router)

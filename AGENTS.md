@@ -36,10 +36,49 @@ docker-compose.yml
 
 ## Development Commands
 
+### Development Cycle (Worktree-First)
+Run this sequence for every development cycle.
+
+```bash
+# 1) Start clean and up to date
+git fetch origin main
+git rebase origin/main
+# Resolve any rebase conflicts before writing code.
+
+# 2) Fresh worktree setup (required when not on main, and recommended always)
+# Backend: per-worktree virtualenv
+cd backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cd ..
+
+# Frontend: install tools/deps for this worktree
+cd frontend
+npm ci
+cd ..
+```
+
+At the end of each cycle, run validation, then commit locally. Do not push unless explicitly told to push.
+
+```bash
+# Validation before check-in (same checks used in CI)
+cd backend && source .venv/bin/activate && ruff check app/ tests/
+cd backend && source .venv/bin/activate && pytest -v
+cd frontend && npm ci && npm run build
+
+# Local check-in
+git add -A
+git commit -m "Describe the completed cycle"
+# Do not push unless explicitly instructed.
+```
+
 ### Backend
 ```bash
 cd backend
-python -m venv .venv && source .venv/bin/activate
+# Create/refresh venv in this worktree
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload              # Run dev server (port 8000)
 pytest                                      # Run tests
@@ -51,7 +90,8 @@ ruff format app/ tests/                    # Format
 ### Frontend
 ```bash
 cd frontend
-npm install
+# Prefer npm ci for reproducible installs in fresh worktrees
+npm ci
 npm run dev                                # Dev server (port 5173, proxies /api to 8000)
 npm run build                              # Production build
 npm run lint                               # Lint
@@ -66,7 +106,15 @@ docker compose logs -f backend             # Tail backend logs
 
 ## Pre-commit Requirements
 
-**Before staging, committing, or pushing**, always run these checks and confirm they pass:
+**Before staging, committing, or pushing**, always run these checks and confirm they pass.
+If working on a branch/worktree, first rebase on latest `origin/main` and resolve conflicts:
+
+```bash
+git fetch origin main
+git rebase origin/main
+```
+
+Then run:
 
 ```bash
 # Backend lint + tests (run from repo root)
@@ -76,7 +124,9 @@ source backend/.venv/bin/activate && cd backend && ruff check app/ tests/ && pyt
 cd frontend && npm run build && cd ..
 ```
 
-All tests must pass and there must be no lint or build errors before committing. Do not skip this step — CI will reject the push if these fail.
+All tests must pass and there must be no lint or build errors before committing. Do not skip this step.
+
+Commit locally at the end of each development cycle, and do not push unless explicitly instructed.
 
 ## Agent Validation Checklist
 

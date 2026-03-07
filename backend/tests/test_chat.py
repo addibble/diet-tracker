@@ -1,6 +1,10 @@
 from datetime import date, timedelta
 from unittest.mock import AsyncMock, patch
 
+from sqlmodel import select
+
+from app.models import WeightLog
+
 
 def test_chat_proposes_items(client):
     """Chat endpoint should parse ITEMS block and return proposed items."""
@@ -168,3 +172,36 @@ def test_chat_infers_date_and_meal_type_from_message(client):
     assert data["saved_meal"] is not None
     assert data["saved_meal"]["meal_type"] == "dinner"
     assert data["saved_meal"]["date"] == str(date.today() - timedelta(days=1))
+
+
+def test_chat_can_log_weight(client, session):
+    async def fake_chat(
+        messages,
+        known_foods,
+        known_recipes,
+        recent_meals,
+        tool_executor,
+    ):
+        assert messages[-1]["content"] == "Log my weight as 180.4 pounds"
+        result = await tool_executor("log_weight", {"weight_lb": 180.4})
+        assert result["success"] is True
+        return "Logged your weight at 180.4 lb."
+
+    with patch("app.routers.parse.chat_meal", new_callable=AsyncMock) as mock_llm:
+        mock_llm.side_effect = fake_chat
+        resp = client.post("/api/meals/chat", json={
+            "messages": [
+                {"role": "user", "content": "Log my weight as 180.4 pounds"},
+            ],
+        })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["message"] == "Logged your weight at 180.4 lb."
+    assert data["proposed_items"] is None
+    assert data["saved_meal"] is None
+    assert data["data_changed"] is True
+
+    weight_logs = session.exec(select(WeightLog)).all()
+    assert len(weight_logs) == 1
+    assert weight_logs[0].weight_lb == 180.4

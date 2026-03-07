@@ -325,7 +325,7 @@ export default function MealLogPage() {
             onClick={handleNewMeal}
             className="px-3 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 active:bg-blue-800"
           >
-            New Meal
+            New Entry
           </button>
         )}
       </div>
@@ -339,9 +339,9 @@ export default function MealLogPage() {
           {messages.length === 0 && (
             <div className="flex items-center justify-center h-full">
               <div className="text-center text-gray-400 max-w-sm px-4">
-                <p className="text-lg mb-2">Describe what you ate</p>
+                <p className="text-lg mb-2">Describe a meal or log your weight</p>
                 <p className="text-sm">
-                  Tap the camera icon to scan a nutrition label, or type your meal.
+                  Tap the camera icon to scan a nutrition label, or type a meal or weigh-in.
                 </p>
               </div>
             </div>

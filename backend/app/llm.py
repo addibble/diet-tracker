@@ -306,6 +306,17 @@ When modifying meals via tools, briefly confirm what you changed.
 Do NOT use <ITEMS>/<CONFIRM/> tags when using tools to edit existing data — \
 just use the tools directly.
 
+## Weight logging
+You also have a tool to log body weight. Use it when the user asks to record or \
+log their weight.
+- Call log_weight directly once you know the number.
+- If the user gives a bare number with no unit, assume pounds.
+- Convert kilograms to pounds before calling the tool when needed.
+- If the user does not specify a time, omit logged_at so the server uses the \
+current timestamp.
+- Do NOT use <ITEMS>/<CONFIRM/> tags for weight logging.
+- After logging, confirm the recorded weight in pounds.
+
 ## Nutrition label scanning
 When the user scans a nutrition label, the OCR results are sent to you for \
 verification. You MUST:
@@ -546,6 +557,32 @@ CHAT_TOOLS = [
                     "meal_id": {"type": "integer", "description": "The meal ID to delete"},
                 },
                 "required": ["meal_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "log_weight",
+            "description": (
+                "Record a body-weight entry in pounds."
+                " If time is omitted, the server uses the current timestamp."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "weight_lb": {
+                        "type": "number",
+                        "description": "Body weight in pounds",
+                    },
+                    "logged_at": {
+                        "type": "string",
+                        "description": (
+                            "Optional ISO 8601 timestamp when the weight was taken"
+                        ),
+                    },
+                },
+                "required": ["weight_lb"],
             },
         },
     },

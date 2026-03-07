@@ -3,8 +3,8 @@
 import json
 import logging
 import re
+from datetime import UTC, datetime, timedelta
 from datetime import date as date_type
-from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -14,7 +14,7 @@ from app.auth import get_current_user
 from app.database import get_session
 from app.llm import chat_meal, parse_meal_description
 from app.macros import MACRO_FIELDS
-from app.models import Food, MealItem, MealLog, Recipe
+from app.models import Food, MealItem, MealLog, Recipe, WeightLog
 from app.usda import search_usda
 
 logger = logging.getLogger("parse")
@@ -329,6 +329,29 @@ def _make_tool_executor(session: Session, state: _ToolState):
             session.commit()
             state.data_changed = True
             return {"success": True, "deleted_meal_id": args["meal_id"]}
+
+        elif name == "log_weight":
+            logged_at_raw = args.get("logged_at")
+            if logged_at_raw:
+                logged_at = datetime.fromisoformat(logged_at_raw)
+                if logged_at.tzinfo is None:
+                    logged_at = logged_at.replace(tzinfo=UTC)
+            else:
+                logged_at = datetime.now(UTC)
+            weight_log = WeightLog(
+                weight_lb=float(args["weight_lb"]),
+                logged_at=logged_at,
+            )
+            session.add(weight_log)
+            session.commit()
+            session.refresh(weight_log)
+            state.data_changed = True
+            return {
+                "success": True,
+                "weight_log_id": weight_log.id,
+                "weight_lb": round(weight_log.weight_lb, 2),
+                "logged_at": weight_log.logged_at.isoformat(),
+            }
 
         return {"error": f"Unknown tool: {name}"}
 

@@ -12,20 +12,23 @@ from app.routers.meals import _build_meal_response
 router = APIRouter(prefix="/api/daily", tags=["daily"])
 
 
-@router.get("/{day}")
-def daily_summary(
-    day: date,
-    session: Session = Depends(get_session),
-    _user: str = Depends(get_current_user),
-):
+def build_daily_summary(day: date, session: Session) -> dict:
     meals = session.exec(
         select(MealLog).where(MealLog.date == day).order_by(MealLog.created_at)
     ).all()
     meal_details = [_build_meal_response(m, session) for m in meals]
-    # Extract per-meal totals for aggregation
     meal_totals = [
         {m: detail.get(f"total_{m}", 0) for m in MACRO_FIELDS}
         for detail in meal_details
     ]
     totals = sum_macros(meal_totals)
     return {"date": str(day), "meals": meal_details, **totals}
+
+
+@router.get("/{day}")
+def daily_summary(
+    day: date,
+    session: Session = Depends(get_session),
+    _user: str = Depends(get_current_user),
+):
+    return build_daily_summary(day, session)
