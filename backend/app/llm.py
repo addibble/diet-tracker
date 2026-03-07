@@ -347,7 +347,10 @@ CHAT_TOOLS = [
         "type": "function",
         "function": {
             "name": "query_food_log",
-            "description": "Look up all meals and food items logged on a specific date. Returns meals with items, amounts, and macro totals.",
+            "description": (
+                "Look up all meals and food items logged on a"
+                " specific date. Returns meals with items and macro totals."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -366,7 +369,10 @@ CHAT_TOOLS = [
                 "type": "object",
                 "properties": {
                     "meal_id": {"type": "integer", "description": "The meal ID to move"},
-                    "new_date": {"type": "string", "description": "Target date in YYYY-MM-DD format"},
+                    "new_date": {
+                        "type": "string",
+                        "description": "Target date YYYY-MM-DD",
+                    },
                 },
                 "required": ["meal_id", "new_date"],
             },
@@ -394,8 +400,14 @@ CHAT_TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "meal_id": {"type": "integer", "description": "The meal ID to add the item to"},
-                    "food_id": {"type": "integer", "description": "The food ID from the known foods list"},
+                    "meal_id": {
+                        "type": "integer",
+                        "description": "The meal ID to add the item to",
+                    },
+                    "food_id": {
+                        "type": "integer",
+                        "description": "Food ID from the known foods list",
+                    },
                     "amount_grams": {"type": "number", "description": "Amount in grams"},
                 },
                 "required": ["meal_id", "food_id", "amount_grams"],

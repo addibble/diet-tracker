@@ -221,7 +221,10 @@ def _make_tool_executor(session: Session, state: _ToolState):
             session.add(meal)
             session.commit()
             state.data_changed = True
-            return {"success": True, "meal_id": meal.id, "old_date": old_date, "new_date": str(meal.date)}
+            return {
+                "success": True, "meal_id": meal.id,
+                "old_date": old_date, "new_date": str(meal.date),
+            }
 
         elif name == "delete_meal_item":
             item = session.get(MealItem, args["item_id"])

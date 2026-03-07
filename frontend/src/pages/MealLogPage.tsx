@@ -284,54 +284,56 @@ export default function MealLogPage() {
       {tab === 'log' && <TodayLogTab onRefresh={logRefresh} />}
 
       {/* Messages */}
-      {tab === 'chat' && <div className="flex-1 overflow-y-auto space-y-3 mb-3 pr-1">
-        {messages.length === 0 && (
-          <div className="flex items-center justify-center h-full">
-            <div className="text-center text-gray-400 max-w-sm px-4">
-              <p className="text-lg mb-2">Describe what you ate</p>
-              <p className="text-sm">
-                Tap the camera icon to scan a nutrition label, or type your meal.
-              </p>
+      {tab === 'chat' && (
+        <div className="flex-1 overflow-y-auto space-y-3 mb-3 pr-1">
+          {messages.length === 0 && (
+            <div className="flex items-center justify-center h-full">
+              <div className="text-center text-gray-400 max-w-sm px-4">
+                <p className="text-lg mb-2">Describe what you ate</p>
+                <p className="text-sm">
+                  Tap the camera icon to scan a nutrition label, or type your meal.
+                </p>
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {messages.map((msg, i) => (
-          <div
-            key={i}
-            className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-          >
+          {messages.map((msg, i) => (
             <div
-              className={`max-w-[90%] md:max-w-[80%] rounded-lg px-4 py-2 ${
-                msg.role === 'user'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-white border border-gray-200 text-gray-700'
-              }`}
+              key={i}
+              className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
             >
-              <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
-              {msg.proposedItems && msg.proposedItems.length > 0 && (
-                <ProposedItemsCard
-                  items={msg.proposedItems}
-                  onConfirm={() => handleSend('Yes, save it')}
-                  confirmed={saved || i < messages.length - 1}
-                  isEdit={!!msg.editMealId}
-                />
-              )}
-              {msg.savedMeal && <SavedMealCard meal={msg.savedMeal} isEdit={!!msg.editMealId} />}
+              <div
+                className={`max-w-[90%] md:max-w-[80%] rounded-lg px-4 py-2 ${
+                  msg.role === 'user'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white border border-gray-200 text-gray-700'
+                }`}
+              >
+                <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                {msg.proposedItems && msg.proposedItems.length > 0 && (
+                  <ProposedItemsCard
+                    items={msg.proposedItems}
+                    onConfirm={() => handleSend('Yes, save it')}
+                    confirmed={saved || i < messages.length - 1}
+                    isEdit={!!msg.editMealId}
+                  />
+                )}
+                {msg.savedMeal && <SavedMealCard meal={msg.savedMeal} isEdit={!!msg.editMealId} />}
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
 
-        {loading && (
-          <div className="flex justify-start">
-            <div className="bg-white border border-gray-200 rounded-lg px-4 py-2">
-              <p className="text-sm text-gray-400">Thinking...</p>
+          {loading && (
+            <div className="flex justify-start">
+              <div className="bg-white border border-gray-200 rounded-lg px-4 py-2">
+                <p className="text-sm text-gray-400">Thinking...</p>
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        <div ref={bottomRef} />
-      </div>
+          <div ref={bottomRef} />
+        </div>
+      )}
 
       {tab === 'chat' && (
         <div className="flex gap-2">

@@ -64,6 +64,20 @@ docker compose down                        # Stop
 docker compose logs -f backend             # Tail backend logs
 ```
 
+## Pre-commit Requirements
+
+**Before staging, committing, or pushing**, always run these checks and confirm they pass:
+
+```bash
+# Backend lint + tests (run from repo root)
+source backend/.venv/bin/activate && cd backend && ruff check app/ tests/ && pytest -v && cd ..
+
+# Frontend build (run from repo root)
+cd frontend && npm run build && cd ..
+```
+
+All tests must pass and there must be no lint or build errors before committing. Do not skip this step — CI will reject the push if these fail.
+
 ## Agent Validation Checklist
 
 For any new feature, bug fix, or refactor, agents must run the same checks as `.github/workflows/ci.yml` before handoff:
