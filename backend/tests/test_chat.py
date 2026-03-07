@@ -174,6 +174,38 @@ def test_chat_infers_date_and_meal_type_from_message(client):
     assert data["saved_meal"]["date"] == str(date.today() - timedelta(days=1))
 
 
+def test_chat_uses_client_local_datetime_for_inferred_defaults(client):
+    food = client.post("/api/foods", json={
+        "name": "Greek Yogurt",
+        "calories_per_serving": 120, "fat_per_serving": 5,
+        "carbs_per_serving": 7, "protein_per_serving": 12,
+    }).json()
+
+    llm_response = (
+        "Saving now!\n"
+        f'<ITEMS>[{{"food_id": {food["id"]}, "name": "Greek Yogurt", '
+        '"amount_grams": 150}]</ITEMS>\n'
+        "<CONFIRM/>"
+    )
+
+    with patch("app.routers.parse.chat_meal", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = llm_response
+        resp = client.post("/api/meals/chat", json={
+            "messages": [
+                {"role": "user", "content": "I had greek yogurt"},
+                {"role": "user", "content": "yes save it"},
+            ],
+            "client_now_iso": "2026-03-02T01:30:00+00:00",
+            "client_timezone": "America/Denver",
+        })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["saved_meal"] is not None
+    assert data["saved_meal"]["meal_type"] == "dinner"
+    assert data["saved_meal"]["date"] == "2026-03-01"
+
+
 def test_chat_can_log_weight(client, session):
     async def fake_chat(
         messages,

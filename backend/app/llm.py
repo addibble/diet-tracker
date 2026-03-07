@@ -4,6 +4,8 @@ import base64
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 import httpx
@@ -270,9 +272,30 @@ async def parse_nutrition_label_image(
 
 # --- Conversational chat for meal logging ---
 
+CHAT_RUNTIME_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar(
+    "chat_runtime_context",
+    default=None,
+)
+
+
+@contextmanager
+def chat_runtime_context(context: dict[str, str] | None):
+    token = CHAT_RUNTIME_CONTEXT.set(context)
+    try:
+        yield
+    finally:
+        CHAT_RUNTIME_CONTEXT.reset(token)
+
 CHAT_SYSTEM_PROMPT = """\
 You are a friendly meal-logging assistant. Help the user log what they ate and \
 manage their food log.
+
+## Local date/time context
+Use the user's local context for default assumptions unless they explicitly ask \
+for a different date/time/meal type.
+{time_context}
+- For new meal logging, avoid asking for date or meal type when this context \
+and the message already make it clear.
 
 ## Logging new meals
 When the user describes what they ate and wants to log a NEW meal:
@@ -335,7 +358,18 @@ def _build_chat_system_prompt(
     known_foods: list[dict] | None,
     known_recipes: list[dict] | None = None,
     recent_meals: list[dict] | None = None,
+    runtime_context: dict[str, str] | None = None,
 ) -> str:
+    if runtime_context:
+        time_context = (
+            f"- Current local datetime: {runtime_context['client_local_datetime']}\n"
+            f"- Current local date: {runtime_context['client_local_date']}\n"
+            f"- Time zone: {runtime_context['client_timezone']}\n"
+            f"- Default meal type by time: {runtime_context['default_meal_type']}"
+        )
+    else:
+        time_context = "- Local date/time context not provided."
+
     food_context = ""
     if known_foods:
         food_list = json.dumps(
@@ -377,7 +411,11 @@ def _build_chat_system_prompt(
     else:
         meals_context = ""
 
-    return CHAT_SYSTEM_PROMPT.format(food_context=food_context, meals_context=meals_context)
+    return CHAT_SYSTEM_PROMPT.format(
+        time_context=time_context,
+        food_context=food_context,
+        meals_context=meals_context,
+    )
 
 
 CHAT_TOOLS = [
@@ -606,7 +644,10 @@ async def chat_meal(
         raise ValueError("OPENROUTER_API_KEY not configured")
 
     system_prompt = _build_chat_system_prompt(
-        known_foods, known_recipes, recent_meals,
+        known_foods,
+        known_recipes,
+        recent_meals,
+        runtime_context=CHAT_RUNTIME_CONTEXT.get(),
     )
     logger.info(
         "Chat meal: %d messages, %d known foods, %d recipes",

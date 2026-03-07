@@ -408,7 +408,12 @@ export const chatMeal = (
   meal_type?: string,
   notes?: string,
 ) => {
-  const payload: Record<string, unknown> = { messages }
+  const payload: Record<string, unknown> = {
+    messages,
+    client_now_iso: new Date().toISOString(),
+  }
+  const clientTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  if (clientTimezone) payload.client_timezone = clientTimezone
   if (date) payload.date = date
   if (meal_type) payload.meal_type = meal_type
   if (notes) payload.notes = notes

@@ -5,6 +5,7 @@ import logging
 import re
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_type
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -12,7 +13,7 @@ from sqlmodel import Session, select
 
 from app.auth import get_current_user
 from app.database import get_session
-from app.llm import chat_meal, parse_meal_description
+from app.llm import chat_meal, chat_runtime_context, parse_meal_description
 from app.macros import MACRO_FIELDS
 from app.models import Food, MealItem, MealLog, Recipe, WeightLog
 from app.usda import search_usda
@@ -139,13 +140,42 @@ class ChatRequest(BaseModel):
     date: str | None = None
     meal_type: str | None = None
     notes: str | None = None
+    client_now_iso: str | None = None
+    client_timezone: str | None = None
 
 
 def _messages_user_text(messages: list[ChatMessage]) -> str:
     return " ".join(m.content.lower() for m in messages if m.role == "user")
 
 
-def _infer_request_date(messages: list[ChatMessage], requested_date: str | None) -> date_type:
+def _resolve_client_now(
+    client_now_iso: str | None,
+    client_timezone: str | None,
+) -> tuple[datetime, str]:
+    now = datetime.now(UTC)
+    if client_now_iso:
+        try:
+            parsed = datetime.fromisoformat(client_now_iso.replace("Z", "+00:00"))
+            now = parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        except ValueError:
+            logger.warning("Invalid client_now_iso=%r; using server UTC now", client_now_iso)
+
+    tz_name = (client_timezone or "").strip()
+    if tz_name:
+        try:
+            tz = ZoneInfo(tz_name)
+            return now.astimezone(tz), tz_name
+        except ZoneInfoNotFoundError:
+            logger.warning("Invalid client_timezone=%r; using UTC", client_timezone)
+
+    return now.astimezone(UTC), "UTC"
+
+
+def _infer_request_date(
+    messages: list[ChatMessage],
+    requested_date: str | None,
+    reference_now: datetime,
+) -> date_type:
     if requested_date:
         try:
             return date_type.fromisoformat(requested_date)
@@ -153,7 +183,7 @@ def _infer_request_date(messages: list[ChatMessage], requested_date: str | None)
             raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD") from exc
 
     text = _messages_user_text(messages)
-    today = date_type.today()
+    today = reference_now.date()
 
     explicit_date_match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
     if explicit_date_match:
@@ -169,7 +199,11 @@ def _infer_request_date(messages: list[ChatMessage], requested_date: str | None)
     return today
 
 
-def _infer_meal_type(messages: list[ChatMessage], requested_meal_type: str | None) -> str:
+def _infer_meal_type(
+    messages: list[ChatMessage],
+    requested_meal_type: str | None,
+    reference_now: datetime,
+) -> str:
     if requested_meal_type and requested_meal_type.strip():
         return requested_meal_type.strip().lower()
 
@@ -184,7 +218,7 @@ def _infer_meal_type(messages: list[ChatMessage], requested_meal_type: str | Non
         if any(re.search(rf"\b{re.escape(keyword)}\b", text) for keyword in keywords):
             return meal_type
 
-    hour = datetime.now().hour
+    hour = reference_now.hour
     if hour < 11:
         return "breakfast"
     if hour < 16:
@@ -425,9 +459,13 @@ async def chat_meal_endpoint(
     # Fetch recent meals (today + yesterday) so the LLM can reference/edit them
     from app.routers.meals import _build_meal_response
 
-    request_date = _infer_request_date(data.messages, data.date)
-    meal_type = _infer_meal_type(data.messages, data.meal_type)
-    today = date_type.today()
+    client_now, client_timezone = _resolve_client_now(
+        data.client_now_iso,
+        data.client_timezone,
+    )
+    request_date = _infer_request_date(data.messages, data.date, client_now)
+    meal_type = _infer_meal_type(data.messages, data.meal_type, client_now)
+    today = client_now.date()
     yesterday = today - timedelta(days=1)
     recent_logs = session.exec(
         select(MealLog)
@@ -436,15 +474,23 @@ async def chat_meal_endpoint(
     ).all()
     recent_meals = [_build_meal_response(m, session) for m in recent_logs]
 
+    llm_time_context = {
+        "client_local_datetime": client_now.isoformat(timespec="minutes"),
+        "client_local_date": request_date.isoformat(),
+        "client_timezone": client_timezone,
+        "default_meal_type": meal_type,
+    }
+
     tool_state = _ToolState()
     tool_executor = _make_tool_executor(session, tool_state)
 
     messages = [{"role": m.role, "content": m.content} for m in data.messages]
     try:
-        raw_response = await chat_meal(
-            messages, known_foods, known_recipes,
-            recent_meals, tool_executor,
-        )
+        with chat_runtime_context(llm_time_context):
+            raw_response = await chat_meal(
+                messages, known_foods, known_recipes,
+                recent_meals, tool_executor,
+            )
     except Exception as e:
         logger.exception("LLM chat failed")
         raise HTTPException(status_code=502, detail=f"LLM chat failed: {e}")
