@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  createFood,
   chatMeal,
   importFoodLabel,
   getDailySummary,
@@ -10,7 +9,24 @@ import {
 
 function importedFoodToChatPrompt(food: FoodImportResult): string {
   const descriptor = food.brand ? `${food.brand} ${food.name}` : food.name
-  return `I scanned a nutrition label and ate one serving (${food.serving_size_grams}g) of ${descriptor}.`
+  const lines = [
+    `I scanned a nutrition label. Here's what was detected:`,
+    `- Name: ${food.name}`,
+    `- Brand: ${food.brand || '(none detected)'}`,
+    `- Serving size: ${food.serving_size_grams}g`,
+    `- Calories: ${food.calories_per_serving}`,
+    `- Fat: ${food.fat_per_serving}g`,
+    `- Sat Fat: ${food.saturated_fat_per_serving}g`,
+    `- Cholesterol: ${food.cholesterol_per_serving}mg`,
+    `- Sodium: ${food.sodium_per_serving}mg`,
+    `- Carbs: ${food.carbs_per_serving}g`,
+    `- Fiber: ${food.fiber_per_serving}g`,
+    `- Protein: ${food.protein_per_serving}g`,
+    ``,
+    `Please verify these details are correct before saving.`,
+    `I ate one serving (${food.serving_size_grams}g) of ${descriptor}.`,
+  ]
+  return lines.join('\n')
 }
 
 interface MessageBubble {
@@ -264,7 +280,6 @@ export default function MealLogPage() {
     setImportingImage(true)
     try {
       const imported = await importFoodLabel(file)
-      await createFood(imported)
       await handleSend(importedFoodToChatPrompt(imported))
     } catch (err) {
       const errorText = err instanceof Error ? err.message : 'Failed to import image'

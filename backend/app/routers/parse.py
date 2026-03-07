@@ -284,6 +284,38 @@ def _make_tool_executor(session: Session, state: _ToolState):
             state.data_changed = True
             return _build_meal_response(meal, session)
 
+        elif name == "create_food":
+            food = Food(
+                name=args["name"],
+                brand=args.get("brand"),
+                serving_size_grams=args["serving_size_grams"],
+                calories_per_serving=args["calories_per_serving"],
+                fat_per_serving=args["fat_per_serving"],
+                saturated_fat_per_serving=args.get(
+                    "saturated_fat_per_serving", 0,
+                ),
+                cholesterol_per_serving=args.get(
+                    "cholesterol_per_serving", 0,
+                ),
+                sodium_per_serving=args.get(
+                    "sodium_per_serving", 0,
+                ),
+                carbs_per_serving=args["carbs_per_serving"],
+                fiber_per_serving=args.get("fiber_per_serving", 0),
+                protein_per_serving=args["protein_per_serving"],
+                source="label",
+            )
+            session.add(food)
+            session.commit()
+            session.refresh(food)
+            state.data_changed = True
+            return {
+                "success": True,
+                "food_id": food.id,
+                "name": food.name,
+                "brand": food.brand,
+            }
+
         elif name == "delete_meal":
             meal = session.get(MealLog, args["meal_id"])
             if not meal:

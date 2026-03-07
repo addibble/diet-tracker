@@ -306,6 +306,15 @@ When modifying meals via tools, briefly confirm what you changed.
 Do NOT use <ITEMS>/<CONFIRM/> tags when using tools to edit existing data — \
 just use the tools directly.
 
+## Nutrition label scanning
+When the user scans a nutrition label, the OCR results are sent to you for \
+verification. You MUST:
+1. Present the detected name, brand, and all macros clearly to the user
+2. Ask if everything looks correct or if they want to change anything
+3. Only call create_food AFTER the user confirms (or provides corrections)
+4. Then log the meal using the newly created food's id
+Do NOT save the food without user verification first.
+
 {food_context}
 {meals_context}\
 """
@@ -474,6 +483,55 @@ CHAT_TOOLS = [
                     },
                 },
                 "required": ["date", "meal_type", "items"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_food",
+            "description": (
+                "Create a new food in the database with nutrition info."
+                " Use after verifying OCR results with the user."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Food name (concise, lowercase)",
+                    },
+                    "brand": {
+                        "type": "string",
+                        "description": "Brand name, or null",
+                    },
+                    "serving_size_grams": {
+                        "type": "number",
+                        "description": "Serving size in grams",
+                    },
+                    "calories_per_serving": {"type": "number"},
+                    "fat_per_serving": {"type": "number"},
+                    "saturated_fat_per_serving": {"type": "number"},
+                    "cholesterol_per_serving": {
+                        "type": "number",
+                        "description": "In milligrams",
+                    },
+                    "sodium_per_serving": {
+                        "type": "number",
+                        "description": "In milligrams",
+                    },
+                    "carbs_per_serving": {"type": "number"},
+                    "fiber_per_serving": {"type": "number"},
+                    "protein_per_serving": {"type": "number"},
+                },
+                "required": [
+                    "name", "serving_size_grams",
+                    "calories_per_serving", "fat_per_serving",
+                    "saturated_fat_per_serving",
+                    "cholesterol_per_serving",
+                    "sodium_per_serving", "carbs_per_serving",
+                    "fiber_per_serving", "protein_per_serving",
+                ],
             },
         },
     },
