@@ -50,13 +50,13 @@ function ProposedItemsCard({
       <div className="space-y-1">
         {items.map((item, i) => (
           <div key={i} className="flex justify-between text-sm gap-3">
-            <span className={item.food_id === null ? 'text-gray-400 italic' : 'text-gray-700'}>
+            <span className={item.food_id === null && !item.recipe_id ? 'text-gray-400 italic' : 'text-gray-700'}>
               {item.name}
-              {item.food_id === null && ' (not in database)'}
+              {item.food_id === null && !item.recipe_id && ' (not in database)'}
             </span>
             <span className="text-gray-500 whitespace-nowrap">
               {item.amount_grams}g
-              {item.food_id !== null && ` · ${Math.round(computeItemMacro(item, 'calories'))} cal`}
+              {(item.food_id !== null || item.recipe_id) && ` · ${Math.round(computeItemMacro(item, 'calories'))} cal`}
             </span>
           </div>
         ))}
@@ -96,6 +96,34 @@ function SavedMealCard({ meal, isEdit }: { meal: Meal; isEdit?: boolean }) {
 
 function today() {
   return new Date().toISOString().split('T')[0]
+}
+
+const CHAT_STORAGE_KEY = 'diet-chat-messages'
+const CHAT_SAVED_KEY = 'diet-chat-saved'
+
+function loadChatState(): { messages: MessageBubble[]; saved: boolean } {
+  try {
+    const raw = sessionStorage.getItem(CHAT_STORAGE_KEY)
+    const savedFlag = sessionStorage.getItem(CHAT_SAVED_KEY)
+    if (!raw) return { messages: [], saved: false }
+    const data = JSON.parse(raw)
+    if (data.date !== today()) {
+      sessionStorage.removeItem(CHAT_STORAGE_KEY)
+      sessionStorage.removeItem(CHAT_SAVED_KEY)
+      return { messages: [], saved: false }
+    }
+    return { messages: data.messages ?? [], saved: savedFlag === 'true' }
+  } catch {
+    return { messages: [], saved: false }
+  }
+}
+
+function saveChatState(messages: MessageBubble[], saved: boolean) {
+  sessionStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify({
+    date: today(),
+    messages,
+  }))
+  sessionStorage.setItem(CHAT_SAVED_KEY, String(saved))
 }
 
 function TodayLogTab({ onRefresh }: { onRefresh?: number }) {
@@ -153,17 +181,22 @@ function TodayLogTab({ onRefresh }: { onRefresh?: number }) {
 export default function MealLogPage() {
   const [tab, setTab] = useState<'chat' | 'log'>('chat')
   const [logRefresh, setLogRefresh] = useState(0)
-  const [messages, setMessages] = useState<MessageBubble[]>([])
+  const initial = loadChatState()
+  const [messages, setMessages] = useState<MessageBubble[]>(initial.messages)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [importingImage, setImportingImage] = useState(false)
-  const [saved, setSaved] = useState(false)
+  const [saved, setSaved] = useState(initial.saved)
   const bottomRef = useRef<HTMLDivElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
+
+  useEffect(() => {
+    saveChatState(messages, saved)
+  }, [messages, saved])
 
   const handleSend = async (overrideContent?: string) => {
     const userContent = overrideContent ?? input.trim()
@@ -218,6 +251,8 @@ export default function MealLogPage() {
     setMessages([])
     setInput('')
     setSaved(false)
+    sessionStorage.removeItem(CHAT_STORAGE_KEY)
+    sessionStorage.removeItem(CHAT_SAVED_KEY)
   }
 
   const handleImportImage = async (e: React.ChangeEvent<HTMLInputElement>) => {

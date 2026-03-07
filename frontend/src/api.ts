@@ -329,6 +329,7 @@ export interface ChatMessage {
 
 export interface ChatProposedItem {
   food_id: number | null;
+  recipe_id?: number | null;
   name: string;
   amount_grams: number;
   source: string;

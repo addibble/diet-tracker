@@ -14,7 +14,7 @@ from app.auth import get_current_user
 from app.database import get_session
 from app.llm import chat_meal, parse_meal_description
 from app.macros import MACRO_FIELDS
-from app.models import Food, MealItem, MealLog
+from app.models import Food, MealItem, MealLog, Recipe
 from app.usda import search_usda
 
 logger = logging.getLogger("parse")
@@ -243,12 +243,18 @@ def _make_tool_executor(session: Session, state: _ToolState):
             meal = session.get(MealLog, args["meal_id"])
             if not meal:
                 return {"error": f"Meal {args['meal_id']} not found"}
-            food = session.get(Food, args["food_id"])
-            if not food:
-                return {"error": f"Food {args['food_id']} not found"}
+            food_id = args.get("food_id")
+            recipe_id = args.get("recipe_id")
+            if not food_id and not recipe_id:
+                return {"error": "Provide food_id or recipe_id"}
+            if food_id and not session.get(Food, food_id):
+                return {"error": f"Food {food_id} not found"}
+            if recipe_id and not session.get(Recipe, recipe_id):
+                return {"error": f"Recipe {recipe_id} not found"}
             session.add(MealItem(
                 meal_log_id=meal.id,
-                food_id=args["food_id"],
+                food_id=food_id,
+                recipe_id=recipe_id,
                 amount_grams=args["amount_grams"],
             ))
             session.commit()
@@ -264,9 +270,14 @@ def _make_tool_executor(session: Session, state: _ToolState):
             session.commit()
             session.refresh(meal)
             for item_data in args["items"]:
+                food_id = item_data.get("food_id")
+                recipe_id = item_data.get("recipe_id")
+                if not food_id and not recipe_id:
+                    continue
                 session.add(MealItem(
                     meal_log_id=meal.id,
-                    food_id=item_data["food_id"],
+                    food_id=food_id,
+                    recipe_id=recipe_id,
                     amount_grams=item_data["amount_grams"],
                 ))
             session.commit()
@@ -293,10 +304,13 @@ def _make_tool_executor(session: Session, state: _ToolState):
 
 
 def _resolve_chat_items(raw_items: list[dict], session: Session) -> list[dict]:
-    """Resolve LLM-proposed items to full food details with macros."""
+    """Resolve LLM-proposed items to full food/recipe details with macros."""
+    from app.routers.recipes import _build_recipe_response
+
     result = []
     for item in raw_items:
         food_id = item.get("food_id")
+        recipe_id = item.get("recipe_id")
         name = item.get("name", "unknown")
         grams = float(item.get("amount_grams", 0))
 
@@ -304,6 +318,25 @@ def _resolve_chat_items(raw_items: list[dict], session: Session) -> list[dict]:
             food = session.get(Food, food_id)
             if food:
                 result.append(_food_to_parsed_item(food, grams, "db"))
+                continue
+
+        if recipe_id is not None:
+            recipe = session.get(Recipe, recipe_id)
+            if recipe:
+                rdata = _build_recipe_response(recipe, session)
+                total_g = rdata.get("total_grams", 0) or 1
+                result.append({
+                    "name": rdata["name"],
+                    "amount_grams": grams,
+                    "food_id": None,
+                    "recipe_id": recipe_id,
+                    "source": "db",
+                    "serving_size_grams": total_g,
+                    "macros_per_serving": {
+                        m: rdata.get(f"total_{m}", 0)
+                        for m in MACRO_FIELDS
+                    },
+                })
                 continue
 
         result.append({
@@ -327,9 +360,12 @@ async def chat_meal_endpoint(
     if not data.messages:
         raise HTTPException(status_code=400, detail="messages cannot be empty")
 
-    # Fetch known foods for LLM context
+    # Fetch known foods and recipes for LLM context
     all_foods = session.exec(select(Food).order_by(Food.name)).all()
     known_foods = [{"id": f.id, "name": f.name, "brand": f.brand} for f in all_foods]
+
+    all_recipes = session.exec(select(Recipe).order_by(Recipe.name)).all()
+    known_recipes = [{"id": r.id, "name": r.name} for r in all_recipes]
 
     # Fetch recent meals (today + yesterday) so the LLM can reference/edit them
     from app.routers.meals import _build_meal_response
@@ -350,7 +386,10 @@ async def chat_meal_endpoint(
 
     messages = [{"role": m.role, "content": m.content} for m in data.messages]
     try:
-        raw_response = await chat_meal(messages, known_foods, recent_meals, tool_executor)
+        raw_response = await chat_meal(
+            messages, known_foods, known_recipes,
+            recent_meals, tool_executor,
+        )
     except Exception as e:
         logger.exception("LLM chat failed")
         raise HTTPException(status_code=502, detail=f"LLM chat failed: {e}")
@@ -375,7 +414,10 @@ async def chat_meal_endpoint(
     # Auto-save if confirmed and we have valid items
     saved_meal = None
     if confirmed and proposed_items:
-        saveable = [i for i in proposed_items if i.get("food_id") is not None]
+        saveable = [
+            i for i in proposed_items
+            if i.get("food_id") is not None or i.get("recipe_id") is not None
+        ]
         if saveable:
             if edit_meal_id:
                 # Update existing meal
@@ -391,13 +433,15 @@ async def chat_meal_endpoint(
                     for item in saveable:
                         session.add(MealItem(
                             meal_log_id=meal.id,
-                            food_id=item["food_id"],
+                            food_id=item.get("food_id"),
+                            recipe_id=item.get("recipe_id"),
                             amount_grams=item["amount_grams"],
                         ))
                     session.commit()
                     saved_meal = _build_meal_response(meal, session)
                     logger.info(
-                        "Updated meal id=%s with %d items", meal.id, len(saveable)
+                        "Updated meal id=%s with %d items",
+                        meal.id, len(saveable),
                     )
             else:
                 # Create new meal
@@ -412,12 +456,16 @@ async def chat_meal_endpoint(
                 for item in saveable:
                     session.add(MealItem(
                         meal_log_id=meal.id,
-                        food_id=item["food_id"],
+                        food_id=item.get("food_id"),
+                        recipe_id=item.get("recipe_id"),
                         amount_grams=item["amount_grams"],
                     ))
                 session.commit()
                 saved_meal = _build_meal_response(meal, session)
-                logger.info("Auto-saved meal id=%s with %d items", meal.id, len(saveable))
+                logger.info(
+                    "Auto-saved meal id=%s with %d items",
+                    meal.id, len(saveable),
+                )
 
     # Strip tags from message text
     clean_message = re.sub(r"<ITEMS>.*?</ITEMS>", "", raw_response, flags=re.DOTALL)

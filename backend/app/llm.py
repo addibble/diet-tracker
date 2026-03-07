@@ -280,13 +280,19 @@ When the user describes what they ate and wants to log a NEW meal:
 foods, brands, and gram amounts.
 - Include a structured breakdown in this XML block:
   <ITEMS>[{{"food_id": 42, "name": "food name", "amount_grams": 60}}, ...]</ITEMS>
-- food_id must be an integer from the known foods list, or null if no match.
+- Items can reference a food (food_id) OR a recipe (recipe_id), not both:
+  {{"food_id": 42, "name": "chicken breast", "amount_grams": 200}}
+  {{"recipe_id": 5, "name": "yogurt and granola breakfast", "amount_grams": 350}}
+- food_id/recipe_id must be an integer from the known lists, or null if no match.
 - Always include the <ITEMS> block in your first response and whenever you update it.
 - If the user says "yes", "looks good", "save it", "confirm", or similar \
 affirmation, include <CONFIRM/> in your response.
 - Do NOT include <CONFIRM/> unless the user has explicitly confirmed.
 - Estimate reasonable gram weights when the user doesn't specify.
-- Use the food names from the database (not generic names) when matched.
+- Use the food/recipe names from the database (not generic names) when matched.
+- IMPORTANT: Recipes are composite meals (e.g. "yogurt and granola breakfast"). \
+When a user refers to a recipe name, use recipe_id — do NOT substitute individual \
+ingredient foods.
 
 ## Querying and editing the food log
 You have tools to query and modify the food log database. Use them when:
@@ -307,16 +313,28 @@ just use the tools directly.
 
 def _build_chat_system_prompt(
     known_foods: list[dict] | None,
+    known_recipes: list[dict] | None = None,
     recent_meals: list[dict] | None = None,
 ) -> str:
+    food_context = ""
     if known_foods:
         food_list = json.dumps(
             [{"id": f["id"], "name": f["name"], "brand": f.get("brand")} for f in known_foods],
             separators=(",", ":"),
         )
-        food_context = f"Known foods in the database (use their id as food_id):\n{food_list}"
-    else:
-        food_context = ""
+        food_context = (
+            "Known foods in the database (use their id as food_id):\n"
+            f"{food_list}"
+        )
+    if known_recipes:
+        recipe_list = json.dumps(
+            [{"id": r["id"], "name": r["name"]} for r in known_recipes],
+            separators=(",", ":"),
+        )
+        food_context += (
+            "\n\nKnown recipes (use their id as recipe_id):\n"
+            f"{recipe_list}"
+        )
 
     if recent_meals:
         from collections import defaultdict
@@ -396,7 +414,10 @@ CHAT_TOOLS = [
         "type": "function",
         "function": {
             "name": "add_item_to_meal",
-            "description": "Add a food item to an existing meal.",
+            "description": (
+                "Add a food or recipe to an existing meal."
+                " Provide food_id OR recipe_id, not both."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -406,11 +427,18 @@ CHAT_TOOLS = [
                     },
                     "food_id": {
                         "type": "integer",
-                        "description": "Food ID from the known foods list",
+                        "description": "Food ID (use for individual foods)",
                     },
-                    "amount_grams": {"type": "number", "description": "Amount in grams"},
+                    "recipe_id": {
+                        "type": "integer",
+                        "description": "Recipe ID (use for recipes)",
+                    },
+                    "amount_grams": {
+                        "type": "number",
+                        "description": "Amount in grams",
+                    },
                 },
-                "required": ["meal_id", "food_id", "amount_grams"],
+                "required": ["meal_id", "amount_grams"],
             },
         },
     },
@@ -418,14 +446,19 @@ CHAT_TOOLS = [
         "type": "function",
         "function": {
             "name": "create_meal",
-            "description": "Create a new meal entry with food items.",
+            "description": "Create a new meal entry with food/recipe items.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "date": {"type": "string", "description": "Date in YYYY-MM-DD format"},
+                    "date": {
+                        "type": "string",
+                        "description": "Date in YYYY-MM-DD format",
+                    },
                     "meal_type": {
                         "type": "string",
-                        "enum": ["breakfast", "lunch", "dinner", "snack"],
+                        "enum": [
+                            "breakfast", "lunch", "dinner", "snack",
+                        ],
                     },
                     "items": {
                         "type": "array",
@@ -433,9 +466,10 @@ CHAT_TOOLS = [
                             "type": "object",
                             "properties": {
                                 "food_id": {"type": "integer"},
+                                "recipe_id": {"type": "integer"},
                                 "amount_grams": {"type": "number"},
                             },
-                            "required": ["food_id", "amount_grams"],
+                            "required": ["amount_grams"],
                         },
                     },
                 },
@@ -463,6 +497,7 @@ CHAT_TOOLS = [
 async def chat_meal(
     messages: list[dict],
     known_foods: list[dict] | None = None,
+    known_recipes: list[dict] | None = None,
     recent_meals: list[dict] | None = None,
     tool_executor: Callable[[str, dict], Awaitable[Any]] | None = None,
 ) -> str:
@@ -475,8 +510,13 @@ async def chat_meal(
     if not settings.openrouter_api_key:
         raise ValueError("OPENROUTER_API_KEY not configured")
 
-    system_prompt = _build_chat_system_prompt(known_foods, recent_meals)
-    logger.info("Chat meal: %d messages, %d known foods", len(messages), len(known_foods or []))
+    system_prompt = _build_chat_system_prompt(
+        known_foods, known_recipes, recent_meals,
+    )
+    logger.info(
+        "Chat meal: %d messages, %d known foods, %d recipes",
+        len(messages), len(known_foods or []), len(known_recipes or []),
+    )
 
     all_messages: list[dict] = [
         {"role": "system", "content": system_prompt},
