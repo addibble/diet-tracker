@@ -194,6 +194,101 @@ def _infer_meal_type(messages: list[ChatMessage], requested_meal_type: str | Non
     return "snack"
 
 
+class _ToolState:
+    """Tracks whether any tool call mutated the database."""
+    def __init__(self) -> None:
+        self.data_changed = False
+
+
+def _make_tool_executor(session: Session, state: _ToolState):
+    """Create a tool executor closure with DB access."""
+    from app.routers.meals import _build_meal_response
+
+    async def executor(name: str, args: dict):
+        if name == "query_food_log":
+            day = date_type.fromisoformat(args["date"])
+            logs = session.exec(
+                select(MealLog).where(MealLog.date == day).order_by(MealLog.created_at)
+            ).all()
+            return [_build_meal_response(m, session) for m in logs]
+
+        elif name == "move_meal_to_date":
+            meal = session.get(MealLog, args["meal_id"])
+            if not meal:
+                return {"error": f"Meal {args['meal_id']} not found"}
+            old_date = str(meal.date)
+            meal.date = date_type.fromisoformat(args["new_date"])
+            session.add(meal)
+            session.commit()
+            state.data_changed = True
+            return {"success": True, "meal_id": meal.id, "old_date": old_date, "new_date": str(meal.date)}
+
+        elif name == "delete_meal_item":
+            item = session.get(MealItem, args["item_id"])
+            if not item:
+                return {"error": f"Item {args['item_id']} not found"}
+            meal_id = item.meal_log_id
+            session.delete(item)
+            session.commit()
+            state.data_changed = True
+            meal = session.get(MealLog, meal_id)
+            if meal:
+                return _build_meal_response(meal, session)
+            return {"success": True, "deleted_item_id": args["item_id"]}
+
+        elif name == "add_item_to_meal":
+            meal = session.get(MealLog, args["meal_id"])
+            if not meal:
+                return {"error": f"Meal {args['meal_id']} not found"}
+            food = session.get(Food, args["food_id"])
+            if not food:
+                return {"error": f"Food {args['food_id']} not found"}
+            session.add(MealItem(
+                meal_log_id=meal.id,
+                food_id=args["food_id"],
+                amount_grams=args["amount_grams"],
+            ))
+            session.commit()
+            state.data_changed = True
+            return _build_meal_response(meal, session)
+
+        elif name == "create_meal":
+            meal = MealLog(
+                date=date_type.fromisoformat(args["date"]),
+                meal_type=args["meal_type"],
+            )
+            session.add(meal)
+            session.commit()
+            session.refresh(meal)
+            for item_data in args["items"]:
+                session.add(MealItem(
+                    meal_log_id=meal.id,
+                    food_id=item_data["food_id"],
+                    amount_grams=item_data["amount_grams"],
+                ))
+            session.commit()
+            state.data_changed = True
+            return _build_meal_response(meal, session)
+
+        elif name == "delete_meal":
+            meal = session.get(MealLog, args["meal_id"])
+            if not meal:
+                return {"error": f"Meal {args['meal_id']} not found"}
+            items = session.exec(
+                select(MealItem).where(MealItem.meal_log_id == meal.id)
+            ).all()
+            for i in items:
+                session.delete(i)
+            session.delete(meal)
+            session.commit()
+            state.data_changed = True
+            return {"success": True, "deleted_meal_id": args["meal_id"]}
+
+        return {"error": f"Unknown tool: {name}"}
+
+    return executor
+
+
 def _resolve_chat_items(raw_items: list[dict], session: Session) -> list[dict]:
     """Resolve LLM-proposed items to full food details with macros."""
     result = []
@@ -233,19 +328,26 @@ async def chat_meal_endpoint(
     all_foods = session.exec(select(Food).order_by(Food.name)).all()
     known_foods = [{"id": f.id, "name": f.name, "brand": f.brand} for f in all_foods]
 
-    # Fetch today's meals so the LLM can reference/edit them
+    # Fetch recent meals (today + yesterday) so the LLM can reference/edit them
     from app.routers.meals import _build_meal_response
 
     request_date = _infer_request_date(data.messages, data.date)
     meal_type = _infer_meal_type(data.messages, data.meal_type)
-    todays_logs = session.exec(
-        select(MealLog).where(MealLog.date == request_date)
+    today = date_type.today()
+    yesterday = today - timedelta(days=1)
+    recent_logs = session.exec(
+        select(MealLog)
+        .where(MealLog.date >= yesterday)
+        .order_by(MealLog.date, MealLog.created_at)
     ).all()
-    todays_meals = [_build_meal_response(m, session) for m in todays_logs]
+    recent_meals = [_build_meal_response(m, session) for m in recent_logs]
+
+    tool_state = _ToolState()
+    tool_executor = _make_tool_executor(session, tool_state)
 
     messages = [{"role": m.role, "content": m.content} for m in data.messages]
     try:
-        raw_response = await chat_meal(messages, known_foods, todays_meals)
+        raw_response = await chat_meal(messages, known_foods, recent_meals, tool_executor)
     except Exception as e:
         logger.exception("LLM chat failed")
         raise HTTPException(status_code=502, detail=f"LLM chat failed: {e}")
@@ -324,4 +426,5 @@ async def chat_meal_endpoint(
         "proposed_items": proposed_items,
         "saved_meal": saved_meal,
         "edit_meal_id": edit_meal_id,
+        "data_changed": tool_state.data_changed,
     }

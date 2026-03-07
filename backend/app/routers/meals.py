@@ -1,3 +1,4 @@
+import datetime
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -26,6 +27,7 @@ class MealCreate(BaseModel):
 
 
 class MealUpdate(BaseModel):
+    date: datetime.date | None = None
     meal_type: str | None = None
     notes: str | None = None
     items: list[MealItemInput] | None = None
@@ -139,6 +141,8 @@ def update_meal(
     meal = session.get(MealLog, meal_id)
     if not meal:
         raise HTTPException(status_code=404, detail="Meal not found")
+    if data.date is not None:
+        meal.date = data.date
     if data.meal_type is not None:
         meal.meal_type = data.meal_type
     if data.notes is not None:

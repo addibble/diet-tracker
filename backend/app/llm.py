@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -270,33 +271,34 @@ async def parse_nutrition_label_image(
 # --- Conversational chat for meal logging ---
 
 CHAT_SYSTEM_PROMPT = """\
-You are a friendly meal-logging assistant. Help the user log what they ate by \
-understanding their description and matching it to foods in their database.
+You are a friendly meal-logging assistant. Help the user log what they ate and \
+manage their food log.
 
-Rules:
-- Respond naturally and conversationally. Confirm your understanding of the meal \
-with specific foods, brands, and gram amounts.
-- When you have identified the specific foods and amounts, include a structured \
-breakdown in this exact XML block:
+## Logging new meals
+When the user describes what they ate and wants to log a NEW meal:
+- Respond naturally and conversationally. Confirm your understanding with specific \
+foods, brands, and gram amounts.
+- Include a structured breakdown in this XML block:
   <ITEMS>[{{"food_id": 42, "name": "food name", "amount_grams": 60}}, ...]</ITEMS>
 - food_id must be an integer from the known foods list, or null if no match.
-- Always include the <ITEMS> block in your first response and whenever you update the breakdown.
+- Always include the <ITEMS> block in your first response and whenever you update it.
 - If the user says "yes", "looks good", "save it", "confirm", or similar \
 affirmation, include <CONFIRM/> in your response.
 - Do NOT include <CONFIRM/> unless the user has explicitly confirmed.
-- When the user requests adjustments, update the <ITEMS> block accordingly.
 - Estimate reasonable gram weights when the user doesn't specify.
 - Use the food names from the database (not generic names) when matched.
 
-Editing existing meals:
-- You can see today's logged meals below (if any). The user may ask to edit a \
-previously logged meal (e.g. "add cheese to my sandwich from lunch", \
-"change lunch to dinner", "remove the bread").
-- To edit an existing meal, include <EDIT meal_id=ID/> before your <ITEMS> block, \
-where ID is the meal's id number.
-- When editing, the <ITEMS> block must contain ALL items for that meal (both \
-changed and unchanged items), because it replaces the full item list.
-- If the user is logging a NEW meal (not editing), do NOT include the <EDIT> tag.
+## Querying and editing the food log
+You have tools to query and modify the food log database. Use them when:
+- The user asks what they ate on any date (use query_food_log)
+- The user wants to move meals between dates (use move_meal_to_date)
+- The user wants to add/remove items from existing meals (use add_item_to_meal, \
+delete_meal_item)
+- The user wants to create or delete entire meals (use create_meal, delete_meal)
+
+When modifying meals via tools, briefly confirm what you changed.
+Do NOT use <ITEMS>/<CONFIRM/> tags when using tools to edit existing data — \
+just use the tools directly.
 
 {food_context}
 {meals_context}\
@@ -305,7 +307,7 @@ changed and unchanged items), because it replaces the full item list.
 
 def _build_chat_system_prompt(
     known_foods: list[dict] | None,
-    todays_meals: list[dict] | None = None,
+    recent_meals: list[dict] | None = None,
 ) -> str:
     if known_foods:
         food_list = json.dumps(
@@ -316,16 +318,23 @@ def _build_chat_system_prompt(
     else:
         food_context = ""
 
-    if todays_meals:
-        lines = ["Today's logged meals:"]
-        for meal in todays_meals:
-            items_str = ", ".join(
-                f"{it['name']} {it['grams']}g" for it in meal["items"]
-            )
-            lines.append(
-                f"- Meal #{meal['id']} ({meal['meal_type']}): "
-                f"{items_str} [{meal['total_calories']} kcal]"
-            )
+    if recent_meals:
+        from collections import defaultdict
+        by_date: dict[str, list] = defaultdict(list)
+        for meal in recent_meals:
+            by_date[meal.get("date", "unknown")].append(meal)
+
+        lines = ["Logged meals (recent days):"]
+        for date_str in sorted(by_date.keys()):
+            lines.append(f"\n{date_str}:")
+            for meal in by_date[date_str]:
+                items_str = ", ".join(
+                    f"{it['name']} {it['grams']}g" for it in meal["items"]
+                )
+                lines.append(
+                    f"  - Meal #{meal['id']} ({meal['meal_type']}): "
+                    f"{items_str} [{meal['total_calories']} kcal]"
+                )
         meals_context = "\n".join(lines)
     else:
         meals_context = ""
@@ -333,40 +342,186 @@ def _build_chat_system_prompt(
     return CHAT_SYSTEM_PROMPT.format(food_context=food_context, meals_context=meals_context)
 
 
+CHAT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "query_food_log",
+            "description": "Look up all meals and food items logged on a specific date. Returns meals with items, amounts, and macro totals.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string", "description": "Date in YYYY-MM-DD format"},
+                },
+                "required": ["date"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "move_meal_to_date",
+            "description": "Move an entire meal (with all its items) to a different date.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "meal_id": {"type": "integer", "description": "The meal ID to move"},
+                    "new_date": {"type": "string", "description": "Target date in YYYY-MM-DD format"},
+                },
+                "required": ["meal_id", "new_date"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_meal_item",
+            "description": "Remove a specific food item from a meal by its item ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "item_id": {"type": "integer", "description": "The meal item ID to remove"},
+                },
+                "required": ["item_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_item_to_meal",
+            "description": "Add a food item to an existing meal.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "meal_id": {"type": "integer", "description": "The meal ID to add the item to"},
+                    "food_id": {"type": "integer", "description": "The food ID from the known foods list"},
+                    "amount_grams": {"type": "number", "description": "Amount in grams"},
+                },
+                "required": ["meal_id", "food_id", "amount_grams"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_meal",
+            "description": "Create a new meal entry with food items.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string", "description": "Date in YYYY-MM-DD format"},
+                    "meal_type": {
+                        "type": "string",
+                        "enum": ["breakfast", "lunch", "dinner", "snack"],
+                    },
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "food_id": {"type": "integer"},
+                                "amount_grams": {"type": "number"},
+                            },
+                            "required": ["food_id", "amount_grams"],
+                        },
+                    },
+                },
+                "required": ["date", "meal_type", "items"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_meal",
+            "description": "Delete an entire meal and all its items.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "meal_id": {"type": "integer", "description": "The meal ID to delete"},
+                },
+                "required": ["meal_id"],
+            },
+        },
+    },
+]
+
+
 async def chat_meal(
     messages: list[dict],
     known_foods: list[dict] | None = None,
-    todays_meals: list[dict] | None = None,
+    recent_meals: list[dict] | None = None,
+    tool_executor: Callable[[str, dict], Awaitable[Any]] | None = None,
 ) -> str:
-    """Multi-turn conversational meal chat. Returns raw LLM text response."""
+    """Multi-turn conversational meal chat with optional tool use.
+
+    Returns raw LLM text response. When tool_executor is provided, the LLM
+    can call tools to query/modify the food log and will loop until it
+    produces a final text response.
+    """
     if not settings.openrouter_api_key:
         raise ValueError("OPENROUTER_API_KEY not configured")
 
-    system_prompt = _build_chat_system_prompt(known_foods, todays_meals)
+    system_prompt = _build_chat_system_prompt(known_foods, recent_meals)
     logger.info("Chat meal: %d messages, %d known foods", len(messages), len(known_foods or []))
 
+    all_messages: list[dict] = [
+        {"role": "system", "content": system_prompt},
+        *messages,
+    ]
+
+    max_rounds = 10
     async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            OPENROUTER_URL,
-            headers={
-                "Authorization": f"Bearer {settings.openrouter_api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
+        for _round in range(max_rounds):
+            payload: dict[str, Any] = {
                 "model": MODEL,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    *messages,
-                ],
+                "messages": all_messages,
                 "temperature": 0.3,
-            },
-            timeout=30.0,
-        )
-        logger.info("Chat LLM response status: %s", resp.status_code)
-        if resp.status_code != 200:
-            logger.error("Chat LLM response body: %s", resp.text[:2000])
-        resp.raise_for_status()
-        data = resp.json()
-        content = data["choices"][0]["message"]["content"]
-        logger.info("Chat LLM raw content: %s", content)
-        return content.strip()
+            }
+            if tool_executor:
+                payload["tools"] = CHAT_TOOLS
+
+            resp = await client.post(
+                OPENROUTER_URL,
+                headers={
+                    "Authorization": f"Bearer {settings.openrouter_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=30.0,
+            )
+            logger.info("Chat LLM response status: %s", resp.status_code)
+            if resp.status_code != 200:
+                logger.error("Chat LLM response body: %s", resp.text[:2000])
+            resp.raise_for_status()
+            data = resp.json()
+            choice = data["choices"][0]
+            message = choice["message"]
+
+            tool_calls = message.get("tool_calls")
+            if tool_calls and tool_executor:
+                logger.info("LLM requested %d tool call(s)", len(tool_calls))
+                all_messages.append(message)
+                for tc in tool_calls:
+                    func_name = tc["function"]["name"]
+                    func_args = json.loads(tc["function"]["arguments"])
+                    logger.info("Executing tool: %s(%s)", func_name, func_args)
+                    try:
+                        result = await tool_executor(func_name, func_args)
+                    except Exception as exc:
+                        logger.exception("Tool execution failed: %s", func_name)
+                        result = {"error": str(exc)}
+                    all_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": json.dumps(result, default=str),
+                    })
+                continue  # next round — let LLM see tool results
+
+            content = message.get("content") or ""
+            logger.info("Chat LLM raw content: %s", content)
+            return content.strip()
+
+    logger.warning("Chat meal exceeded max tool rounds")
+    return "I had trouble processing that request. Please try again."

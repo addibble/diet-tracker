@@ -26,6 +26,7 @@ export default function DashboardPage() {
 
   // Edit state
   const [editingId, setEditingId] = useState<number | null>(null)
+  const [editDate, setEditDate] = useState('')
   const [editMealType, setEditMealType] = useState('')
   const [editNotes, setEditNotes] = useState('')
   const [editItems, setEditItems] = useState<EditItem[]>([])
@@ -66,6 +67,7 @@ export default function DashboardPage() {
 
   const startEdit = (meal: Meal) => {
     setEditingId(meal.id)
+    setEditDate(meal.date)
     setEditMealType(meal.meal_type)
     setEditNotes(meal.notes || '')
     setEditItems(meal.items.map((item) => ({
@@ -88,6 +90,7 @@ export default function DashboardPage() {
     setSaving(true)
     try {
       await updateMeal(editingId, {
+        date: editDate || undefined,
         meal_type: editMealType,
         notes: editNotes || undefined,
         items: editItems.map((item) => ({
@@ -190,7 +193,13 @@ export default function DashboardPage() {
                   {editingId === meal.id ? (
                     /* ---- Edit mode ---- */
                     <div>
-                      <div className="flex items-center gap-3 mb-3">
+                      <div className="flex items-center gap-3 mb-3 flex-wrap">
+                        <input
+                          type="date"
+                          value={editDate}
+                          onChange={(e) => setEditDate(e.target.value)}
+                          className="px-2 py-1 border border-gray-300 rounded text-sm"
+                        />
                         <select
                           value={editMealType}
                           onChange={(e) => setEditMealType(e.target.value)}

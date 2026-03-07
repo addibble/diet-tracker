@@ -303,7 +303,7 @@ export const createMeal = (data: {
 }) => request<Meal>('/meals', { method: 'POST', body: JSON.stringify(data) });
 
 export const updateMeal = (id: number, data: {
-  meal_type?: string; notes?: string;
+  date?: string; meal_type?: string; notes?: string;
   items?: { food_id?: number; recipe_id?: number; amount_grams: number }[];
 }) => request<Meal>(`/meals/${id}`, { method: 'PUT', body: JSON.stringify(data) });
 
@@ -341,6 +341,7 @@ export interface ChatResponse {
   proposed_items: ChatProposedItem[] | null;
   saved_meal: Meal | null;
   edit_meal_id: number | null;
+  data_changed: boolean;
 }
 
 export const chatMeal = (
