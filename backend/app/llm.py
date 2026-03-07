@@ -484,7 +484,7 @@ async def chat_meal(
     ]
 
     max_rounds = 10
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         for _round in range(max_rounds):
             payload: dict[str, Any] = {
                 "model": MODEL,
@@ -501,7 +501,6 @@ async def chat_meal(
                     "Content-Type": "application/json",
                 },
                 json=payload,
-                timeout=30.0,
             )
             logger.info("Chat LLM response status: %s", resp.status_code)
             if resp.status_code != 200:
