@@ -5,6 +5,7 @@ import DashboardPage from './pages/DashboardPage'
 import FoodsPage from './pages/FoodsPage'
 import RecipesPage from './pages/RecipesPage'
 import MealLogPage from './pages/MealLogPage'
+import WorkoutPage from './pages/WorkoutPage'
 
 export default function App() {
   return (
@@ -15,6 +16,7 @@ export default function App() {
         <Route path="/foods" element={<FoodsPage />} />
         <Route path="/recipes" element={<RecipesPage />} />
         <Route path="/log" element={<MealLogPage />} />
+        <Route path="/workout" element={<WorkoutPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

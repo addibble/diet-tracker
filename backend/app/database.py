@@ -16,6 +16,7 @@ def create_db_and_tables():
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     SQLModel.metadata.create_all(engine)
     _migrate_add_columns()
+    _seed_data()
 
 
 def _migrate_add_columns():
@@ -27,6 +28,14 @@ def _migrate_add_columns():
             with engine.connect() as conn:
                 conn.execute(text("ALTER TABLE foods ADD COLUMN brand TEXT"))
                 conn.commit()
+
+
+def _seed_data():
+    """Seed reference data after table creation."""
+    from app.seed_tissues import seed_tissues
+
+    with Session(engine) as session:
+        seed_tissues(session)
 
 
 def get_session() -> Generator[Session, None, None]:

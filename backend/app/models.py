@@ -89,6 +89,95 @@ class WeightLog(SQLModel, table=True):
     logged_at: datetime = Field(default_factory=_utcnow, index=True)
 
 
+# ── Workout Tracking Models ──
+
+
+class Exercise(SQLModel, table=True):
+    __tablename__ = "exercises"
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(unique=True, index=True)
+    equipment: str | None = None  # dumbbell, cable, barbell, machine, bodyweight, etc.
+    notes: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class Tissue(SQLModel, table=True):
+    """LOG TABLE: rows are never updated, only appended. Query latest per name."""
+    __tablename__ = "tissues"
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(index=True)
+    display_name: str
+    type: str = "muscle"  # "muscle", "tendon", "joint", "tissue_group"
+    parent_id: int | None = Field(default=None, foreign_key="tissues.id")
+    recovery_hours: float = 48.0
+    notes: str | None = None
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class ExerciseTissue(SQLModel, table=True):
+    """LOG TABLE: append-only. Query latest per (exercise_id, tissue_id)."""
+    __tablename__ = "exercise_tissues"
+    id: int | None = Field(default=None, primary_key=True)
+    exercise_id: int = Field(foreign_key="exercises.id")
+    tissue_id: int = Field(foreign_key="tissues.id")
+    role: str = "primary"  # "primary", "secondary", "stabilizer"
+    loading_factor: float = 1.0  # 0.0-1.0
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class WorkoutSession(SQLModel, table=True):
+    __tablename__ = "workout_sessions"
+    id: int | None = Field(default=None, primary_key=True)
+    date: date
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    notes: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class WorkoutSet(SQLModel, table=True):
+    __tablename__ = "workout_sets"
+    id: int | None = Field(default=None, primary_key=True)
+    session_id: int = Field(foreign_key="workout_sessions.id")
+    exercise_id: int = Field(foreign_key="exercises.id")
+    set_order: int
+    reps: int | None = None  # null for timed sets
+    weight: float | None = None  # lbs, null for bodyweight
+    duration_secs: int | None = None
+    distance_steps: int | None = None
+    rpe: float | None = None  # 1-10
+    rep_completion: str | None = None  # "full", "partial", "failed"
+    notes: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class RoutineExercise(SQLModel, table=True):
+    __tablename__ = "routine_exercises"
+    id: int | None = Field(default=None, primary_key=True)
+    exercise_id: int = Field(foreign_key="exercises.id")
+    target_sets: int
+    target_rep_min: int | None = None
+    target_rep_max: int | None = None
+    sort_order: int = 0
+    active: int = 1  # 0 = temporarily disabled
+    notes: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class TissueCondition(SQLModel, table=True):
+    """LOG TABLE: append-only. Query latest per tissue_id for current state."""
+    __tablename__ = "tissue_conditions"
+    id: int | None = Field(default=None, primary_key=True)
+    tissue_id: int = Field(foreign_key="tissues.id")
+    status: str  # "healthy", "tender", "injured", "rehabbing"
+    severity: int = 0  # 0-4
+    max_loading_factor: float | None = None
+    recovery_hours_override: float | None = None
+    rehab_protocol: str | None = None
+    notes: str | None = None
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
 class MacroTarget(SQLModel, table=True):
     __tablename__ = "macro_targets"
     id: int | None = Field(default=None, primary_key=True)

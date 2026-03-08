@@ -24,6 +24,7 @@ from app.macro_targets import get_active_macro_target, macro_target_to_dict
 from app.macros import MACRO_FIELDS
 from app.models import Food, MacroTarget, MealItem, MealLog, Recipe, WeightLog
 from app.usda import search_usda
+from app.workout_tools import WORKOUT_TOOL_HANDLERS, get_workout_context
 
 logger = logging.getLogger("parse")
 
@@ -530,6 +531,12 @@ def _make_tool_executor(
                 "logged_at": weight_log.logged_at.isoformat(),
             }
 
+        # Workout tools
+        if name in WORKOUT_TOOL_HANDLERS:
+            result = WORKOUT_TOOL_HANDLERS[name](args, session)
+            state.data_changed = True
+            return result
+
         return {"error": f"Unknown tool: {name}"}
 
     return executor
@@ -617,6 +624,9 @@ async def chat_meal_endpoint(
     tool_state = _ToolState()
     tool_executor = _make_tool_executor(session, tool_state, client_now.date())
 
+    # Build workout context for the system prompt
+    wctx = get_workout_context(session)
+
     messages = [{"role": m.role, "content": m.content} for m in data.messages]
     try:
         with chat_runtime_context(llm_time_context):
@@ -624,11 +634,13 @@ async def chat_meal_endpoint(
                 raw_response = await chat_meal(
                     messages, known_foods, known_recipes,
                     None, tool_executor, model=data.model,
+                    workout_context=wctx,
                 )
             else:
                 raw_response = await chat_meal(
                     messages, known_foods, known_recipes,
                     None, tool_executor,
+                    workout_context=wctx,
                 )
     except Exception as e:
         logger.exception("LLM chat failed")
@@ -707,10 +719,21 @@ async def chat_meal_endpoint(
                     meal.id, len(saveable),
                 )
 
+    # Parse <REP_CHECK> tag for workout rep completion widget
+    rep_check = None
+    rep_check_match = re.search(r"<REP_CHECK\s+exercises='(.*?)'\s*/>", raw_response, re.DOTALL)
+    if rep_check_match:
+        try:
+            rep_check = json.loads(rep_check_match.group(1))
+        except Exception:
+            logger.exception("Failed to parse REP_CHECK tag")
+
     # Strip tags from message text
     clean_message = re.sub(r"<ITEMS>.*?</ITEMS>", "", raw_response, flags=re.DOTALL)
     clean_message = re.sub(r"<CONFIRM\s*/>", "", clean_message)
-    clean_message = re.sub(r"<EDIT\s+meal_id=\d+\s*/>", "", clean_message).strip()
+    clean_message = re.sub(r"<EDIT\s+meal_id=\d+\s*/>", "", clean_message)
+    clean_message = re.sub(r"<REP_CHECK\s+exercises='.*?'\s*/>", "", clean_message, flags=re.DOTALL)
+    clean_message = clean_message.strip()
 
     return {
         "message": clean_message,
@@ -718,4 +741,5 @@ async def chat_meal_endpoint(
         "saved_meal": saved_meal,
         "edit_meal_id": edit_meal_id,
         "data_changed": tool_state.data_changed,
+        "rep_check": rep_check,
     }

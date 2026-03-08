@@ -513,7 +513,47 @@ verification. You MUST:
 Do NOT save the food without user verification first.
 
 {food_context}
-{meals_context}\
+{meals_context}
+
+## Workout tracking
+You can also help with workout tracking. The user has a strength training routine.
+
+KNOWN EXERCISES: {exercise_list}
+CURRENT ROUTINE:
+{routine_summary}
+CURRENT TISSUE CONDITIONS:
+{conditions_text}
+
+WORKOUT LOGGING:
+- When the user describes a workout, use log_workout to record it.
+- Parse natural language: "incline DB press 3x10 at 45", "leg press 430x5x3", etc.
+- After logging, if the result includes rep_check data, emit a \
+<REP_CHECK exercises='[...]'/> tag so the frontend shows the rep completion widget.
+- When the user responds with rep completion data, use update_rep_completion.
+- Always record actual reps per set for accurate volume calculations.
+
+READINESS & SUGGESTIONS:
+- When asked what to train, use check_tissue_readiness and suggest_workout.
+- Show which exercises are available and which are excluded (and why).
+- Include rehab work for any tissues in tender/rehabbing status.
+- Never suggest exercises that exceed a tissue's max_loading_factor condition cap.
+
+INJURY AWARENESS:
+- If the user mentions pain, tenderness, tightness, or discomfort, use log_tissue_condition.
+- Ask about severity and when it started.
+- Follow the injury state machine: healthy -> tender -> injured -> rehabbing -> healthy.
+- Suggest appropriate rehab protocols based on tissue type and severity.
+- Maintain full training intensity on exercises that don't load affected tissues.
+
+PROGRESSIVE OVERLOAD:
+- Use suggest_progression to recommend weight increases based on rep_completion streaks.
+- 2+ consecutive "full" sessions -> suggest weight increase.
+- "failed" -> check tissue conditions, suggest deload or form adjustment.
+
+DATA IMPORT:
+- The user may paste spreadsheet data for historical workout import.
+- Parse the data, create exercises and sessions, and assign tissue mappings.
+- Always do a dry run summary first before committing.\
 """
 
 
@@ -522,6 +562,7 @@ def _build_chat_system_prompt(
     known_recipes: list[dict] | None = None,
     recent_meals: list[dict] | None = None,
     runtime_context: dict[str, str] | None = None,
+    workout_context: dict[str, str] | None = None,
 ) -> str:
     if runtime_context:
         time_context = (
@@ -574,10 +615,14 @@ def _build_chat_system_prompt(
     else:
         meals_context = ""
 
+    wctx = workout_context or {}
     return CHAT_SYSTEM_PROMPT.format(
         time_context=time_context,
         food_context=food_context,
         meals_context=meals_context,
+        exercise_list=wctx.get("exercise_list", "[]"),
+        routine_summary=wctx.get("routine_summary", "  (no routine set)"),
+        conditions_text=wctx.get("conditions_text", "  All tissues healthy."),
     )
 
 
@@ -860,6 +905,12 @@ CHAT_TOOLS = [
 ]
 
 
+def _all_chat_tools() -> list[dict]:
+    from app.workout_tools import WORKOUT_TOOLS
+
+    return CHAT_TOOLS + WORKOUT_TOOLS
+
+
 async def chat_meal(
     messages: list[dict],
     known_foods: list[dict] | None = None,
@@ -867,6 +918,7 @@ async def chat_meal(
     recent_meals: list[dict] | None = None,
     tool_executor: Callable[[str, dict], Awaitable[Any]] | None = None,
     model: str | None = None,
+    workout_context: dict[str, str] | None = None,
 ) -> str:
     """Multi-turn conversational meal chat with optional tool use.
 
@@ -882,6 +934,7 @@ async def chat_meal(
         known_recipes,
         recent_meals,
         runtime_context=CHAT_RUNTIME_CONTEXT.get(),
+        workout_context=workout_context,
     )
     active_model = model or MODEL
     logger.info(
@@ -903,7 +956,7 @@ async def chat_meal(
                 "temperature": 0.3,
             }
             if tool_executor:
-                payload["tools"] = CHAT_TOOLS
+                payload["tools"] = _all_chat_tools()
 
             resp = await client.post(
                 OPENROUTER_URL,

@@ -11,11 +11,16 @@ from app.routers.daily import router as daily_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.debug import ring_handler
 from app.routers.debug import router as debug_router
+from app.routers.exercises import router as exercises_router
 from app.routers.foods import router as foods_router
 from app.routers.macro_targets import router as macro_targets_router
 from app.routers.meals import router as meals_router
 from app.routers.parse import router as parse_router
 from app.routers.recipes import router as recipes_router
+from app.routers.routine import router as routine_router
+from app.routers.tissue_readiness import router as tissue_readiness_router
+from app.routers.tissues import router as tissues_router
+from app.routers.workout_sessions import router as workout_sessions_router
 from app.routers.workouts import router as workouts_router
 
 # Configure parse logger to write to file
@@ -59,6 +64,11 @@ app.include_router(dashboard_router)
 app.include_router(parse_router)
 app.include_router(debug_router)
 app.include_router(workouts_router)
+app.include_router(exercises_router)
+app.include_router(workout_sessions_router)
+app.include_router(tissues_router)
+app.include_router(tissue_readiness_router)
+app.include_router(routine_router)
 
 
 @app.get("/api/health")

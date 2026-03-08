@@ -263,6 +263,7 @@ def test_chat_can_log_weight(client, session):
         known_recipes,
         recent_meals,
         tool_executor,
+        **kwargs,
     ):
         assert messages[-1]["content"] == "Log my weight as 180.4 pounds"
         result = await tool_executor("log_weight", {"weight_lb": 180.4})
@@ -296,6 +297,7 @@ def test_chat_can_set_macro_target(client, session):
         known_recipes,
         recent_meals,
         tool_executor,
+        **kwargs,
     ):
         expected = (
             "Set my macro targets for today to 2200 calories and 180 protein"
@@ -372,6 +374,7 @@ def test_chat_can_query_macro_targets(client):
         known_recipes,
         recent_meals,
         tool_executor,
+        **kwargs,
     ):
         active_result = await tool_executor("query_macro_targets", {})
         assert active_result["mode"] == "active"

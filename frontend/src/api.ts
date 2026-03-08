@@ -408,6 +408,137 @@ export const getMacroTargets = (startDate?: string, endDate?: string) => {
   return request<MacroTarget[]>(`/macro-targets${suffix}`)
 }
 
+// ── Workout Tracking ──
+
+export interface WkExercise {
+  id: number;
+  name: string;
+  equipment: string | null;
+  notes: string | null;
+  tissues: WkExerciseTissueMapping[];
+}
+
+export interface WkExerciseTissueMapping {
+  tissue_id: number;
+  tissue_name: string;
+  tissue_display_name: string;
+  role: string;
+  loading_factor: number;
+}
+
+export interface WkSetDetail {
+  id: number;
+  exercise_id: number;
+  exercise_name: string;
+  set_order: number;
+  reps: number | null;
+  weight: number | null;
+  duration_secs: number | null;
+  distance_steps: number | null;
+  rpe: number | null;
+  rep_completion: string | null;
+  notes: string | null;
+}
+
+export interface WkSession {
+  id: number;
+  date: string;
+  started_at: string | null;
+  finished_at: string | null;
+  notes: string | null;
+  created_at: string;
+  sets: WkSetDetail[];
+}
+
+export interface WkRoutineExercise {
+  id: number;
+  exercise_id: number;
+  exercise_name: string;
+  equipment: string | null;
+  target_sets: number;
+  target_rep_min: number | null;
+  target_rep_max: number | null;
+  sort_order: number;
+  active: number;
+  notes: string | null;
+  last_performance: {
+    date: string;
+    sets: { reps: number | null; weight: number | null; rep_completion: string | null }[];
+  } | null;
+}
+
+export interface WkTissue {
+  id: number;
+  name: string;
+  display_name: string;
+  type: string;
+  parent_id: number | null;
+  recovery_hours: number;
+}
+
+export interface WkTissueCondition {
+  status: string;
+  severity: number;
+  max_loading_factor: number | null;
+  recovery_hours_override: number | null;
+}
+
+export interface WkTissueReadiness {
+  tissue: WkTissue;
+  condition: WkTissueCondition | null;
+  last_trained: string | null;
+  hours_since: number | null;
+  effective_recovery_hours: number;
+  recovery_pct: number;
+  ready: boolean;
+  exercises_available: {
+    exercise_id: number;
+    exercise_name: string;
+    role: string;
+    target_sets: number;
+    target_rep_min: number | null;
+    target_rep_max: number | null;
+  }[];
+}
+
+export interface WkExerciseHistory {
+  exercise: WkExercise;
+  sessions: {
+    date: string;
+    sets: { set_order: number; reps: number | null; weight: number | null; rep_completion: string | null }[];
+    max_weight: number;
+    total_volume: number;
+    rep_completions: string[];
+  }[];
+}
+
+// Workout API functions
+export const getExercises = (search?: string) =>
+  request<WkExercise[]>(`/exercises${search ? `?search=${encodeURIComponent(search)}` : ''}`);
+
+export const getWorkoutSessions = (startDate?: string, endDate?: string, limit?: number) => {
+  const params: string[] = [];
+  if (startDate) params.push(`start_date=${startDate}`);
+  if (endDate) params.push(`end_date=${endDate}`);
+  if (limit) params.push(`limit=${limit}`);
+  return request<WkSession[]>(`/workout-sessions${params.length ? `?${params.join('&')}` : ''}`);
+};
+
+export const getWorkoutSession = (id: number) =>
+  request<WkSession>(`/workout-sessions/${id}`);
+
+export const getTissueReadiness = () =>
+  request<WkTissueReadiness[]>('/tissue-readiness');
+
+export const getRoutine = () =>
+  request<WkRoutineExercise[]>('/routine');
+
+export const getExerciseHistory = (id: number, limit?: number) =>
+  request<WkExerciseHistory>(`/exercises/${id}/history${limit ? `?limit=${limit}` : ''}`);
+
+export const getTissues = (tree?: boolean) =>
+  request<WkTissue[]>(`/tissues${tree ? '?tree=true' : ''}`);
+
 // Parse meal with LLM
 export const parseMeal = (description: string) =>
   request<ParseResult>('/meals/parse', {
@@ -431,12 +562,21 @@ export interface ChatProposedItem {
   macros_per_serving: Macros;
 }
 
+export interface RepCheckExercise {
+  exercise_name: string;
+  weight: number | null;
+  target_sets: number;
+  target_rep_min: number;
+  target_rep_max: number;
+}
+
 export interface ChatResponse {
   message: string;
   proposed_items: ChatProposedItem[] | null;
   saved_meal: Meal | null;
   edit_meal_id: number | null;
   data_changed: boolean;
+  rep_check: RepCheckExercise[] | null;
 }
 
 export interface ChatModelOption {
