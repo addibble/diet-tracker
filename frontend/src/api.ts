@@ -2,6 +2,25 @@ const BASE = '/api';
 const MAX_IMPORT_IMAGE_BYTES = 1_500_000;
 const MAX_IMPORT_IMAGE_DIMENSION = 1600;
 
+function normalizeServerErrorText(status: number, rawText: string): string {
+  const normalized = rawText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const lower = normalized.toLowerCase();
+  const isCloudflareErrorPage = lower.includes('cloudflare') && (
+    lower.includes('bad gateway')
+    || lower.includes('host error')
+    || lower.includes('gateway timeout')
+  );
+
+  if (status >= 500 && isCloudflareErrorPage) {
+    return (
+      'Server timeout while waiting on the model provider. '
+      + 'Try a shorter message, a faster model tier, or retry in a minute.'
+    );
+  }
+
+  return normalized;
+}
+
 function blobToFile(blob: Blob, originalName: string): File {
   const baseName = originalName.replace(/\.[^.]+$/, '') || 'upload';
   return new File([blob], `${baseName}.jpg`, { type: 'image/jpeg' });
@@ -97,7 +116,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       detail = String(err.detail || '');
     } else {
       const text = await res.text().catch(() => '');
-      detail = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      detail = normalizeServerErrorText(res.status, text);
     }
 
     throw new Error(detail || res.statusText || 'Request failed');

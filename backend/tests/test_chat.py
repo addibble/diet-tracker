@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 from sqlmodel import select
 
+from app.llm import LLMUpstreamRetryableError, LLMUpstreamTimeoutError
 from app.models import MacroTarget, WeightLog
 
 
@@ -176,6 +177,28 @@ def test_chat_models_endpoint(client):
     assert data["default_model"]
     assert data["models"] == models
     mock_models.assert_awaited_once()
+
+
+def test_chat_returns_504_on_llm_timeout(client):
+    with patch("app.routers.parse.chat_meal", new_callable=AsyncMock) as mock_llm:
+        mock_llm.side_effect = LLMUpstreamTimeoutError("timed out")
+        resp = client.post("/api/meals/chat", json={
+            "messages": [{"role": "user", "content": "big prompt"}],
+        })
+
+    assert resp.status_code == 504
+    assert "timed out" in resp.json()["detail"]
+
+
+def test_chat_returns_502_on_llm_retryable_upstream_error(client):
+    with patch("app.routers.parse.chat_meal", new_callable=AsyncMock) as mock_llm:
+        mock_llm.side_effect = LLMUpstreamRetryableError("bad gateway")
+        resp = client.post("/api/meals/chat", json={
+            "messages": [{"role": "user", "content": "big prompt"}],
+        })
+
+    assert resp.status_code == 502
+    assert "upstream error" in resp.json()["detail"]
 
 
 def test_chat_does_not_preload_recent_meals(client):

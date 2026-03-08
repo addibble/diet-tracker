@@ -15,6 +15,8 @@ from app.auth import get_current_user
 from app.database import get_session
 from app.llm import (
     MODEL,
+    LLMUpstreamRetryableError,
+    LLMUpstreamTimeoutError,
     chat_meal,
     chat_runtime_context,
     get_chat_models,
@@ -642,6 +644,12 @@ async def chat_meal_endpoint(
                     None, tool_executor,
                     workout_context=wctx,
                 )
+    except LLMUpstreamTimeoutError as e:
+        logger.exception("LLM chat timed out")
+        raise HTTPException(status_code=504, detail=f"LLM chat timed out: {e}")
+    except LLMUpstreamRetryableError as e:
+        logger.exception("LLM chat upstream error")
+        raise HTTPException(status_code=502, detail=f"LLM chat upstream error: {e}")
     except Exception as e:
         logger.exception("LLM chat failed")
         raise HTTPException(status_code=502, detail=f"LLM chat failed: {e}")

@@ -1,5 +1,6 @@
 """OpenRouter LLM client for parsing meal descriptions."""
 
+import asyncio
 import base64
 import json
 import logging
@@ -24,6 +25,11 @@ CHAT_MODEL_MAX_INPUT_COST_PER_MILLION = 1000.0
 CHAT_MODEL_MAX_OUTPUT_COST_PER_MILLION = 1000.0
 CHAT_MODEL_CACHE_TTL_SECONDS = 600.0
 CHAT_MODEL_RECENCY_WINDOW_SECONDS = 400 * 24 * 60 * 60
+OPENROUTER_CHAT_TIMEOUT_SECONDS = 95.0
+OPENROUTER_CHAT_CONNECT_TIMEOUT_SECONDS = 10.0
+OPENROUTER_CHAT_MAX_RETRIES = 2
+OPENROUTER_RETRY_BASE_DELAY_SECONDS = 0.8
+OPENROUTER_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 CHAT_PROVIDER_LABELS = {
     "anthropic": "Anthropic",
@@ -67,6 +73,14 @@ _CHAT_MODEL_CACHE: dict[str, Any] = {
     "expires_at": 0.0,
     "models": None,
 }
+
+
+class LLMUpstreamTimeoutError(RuntimeError):
+    """Raised when OpenRouter requests time out after retrying."""
+
+
+class LLMUpstreamRetryableError(RuntimeError):
+    """Raised when retryable upstream errors are exhausted."""
 
 BASE_SYSTEM_PROMPT = (
     "You are a meal parsing assistant. Given a description of a meal, "
@@ -1147,6 +1161,73 @@ def _all_chat_tools() -> list[dict]:
     return CHAT_TOOLS + WORKOUT_TOOLS
 
 
+async def _post_openrouter_chat_completion(
+    client: httpx.AsyncClient,
+    payload: dict[str, Any],
+) -> httpx.Response:
+    last_error: Exception | None = None
+    max_attempts = OPENROUTER_CHAT_MAX_RETRIES + 1
+    for attempt in range(max_attempts):
+        try:
+            resp = await client.post(
+                OPENROUTER_URL,
+                headers={
+                    "Authorization": f"Bearer {settings.openrouter_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            logger.info("Chat LLM response status: %s", resp.status_code)
+            if resp.status_code in OPENROUTER_RETRYABLE_STATUS_CODES:
+                preview = resp.text[:500]
+                logger.warning(
+                    "Retryable OpenRouter error status=%s attempt=%d/%d body=%s",
+                    resp.status_code,
+                    attempt + 1,
+                    max_attempts,
+                    preview,
+                )
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(
+                        OPENROUTER_RETRY_BASE_DELAY_SECONDS * (2**attempt),
+                    )
+                    continue
+                last_error = LLMUpstreamRetryableError(
+                    f"OpenRouter returned {resp.status_code} after retries",
+                )
+                break
+
+            if resp.status_code != 200:
+                logger.error("Chat LLM response body: %s", resp.text[:2000])
+            resp.raise_for_status()
+            return resp
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            logger.warning(
+                "OpenRouter request transport error on attempt=%d/%d: %s",
+                attempt + 1,
+                max_attempts,
+                exc,
+            )
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(
+                    OPENROUTER_RETRY_BASE_DELAY_SECONDS * (2**attempt),
+                )
+                continue
+            if isinstance(exc, httpx.TimeoutException):
+                last_error = LLMUpstreamTimeoutError(
+                    f"OpenRouter request timed out after {max_attempts} attempts",
+                )
+            else:
+                last_error = LLMUpstreamRetryableError(
+                    "OpenRouter network error after retries",
+                )
+            break
+
+    if last_error is not None:
+        raise last_error
+    raise LLMUpstreamRetryableError("OpenRouter request failed with unknown retry state")
+
+
 async def chat_meal(
     messages: list[dict],
     known_foods: list[dict] | None = None,
@@ -1184,7 +1265,11 @@ async def chat_meal(
     ]
 
     max_rounds = 10
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    timeout = httpx.Timeout(
+        timeout=OPENROUTER_CHAT_TIMEOUT_SECONDS,
+        connect=OPENROUTER_CHAT_CONNECT_TIMEOUT_SECONDS,
+    )
+    async with httpx.AsyncClient(timeout=timeout) as client:
         for _round in range(max_rounds):
             payload: dict[str, Any] = {
                 "model": active_model,
@@ -1194,18 +1279,7 @@ async def chat_meal(
             if tool_executor:
                 payload["tools"] = _all_chat_tools()
 
-            resp = await client.post(
-                OPENROUTER_URL,
-                headers={
-                    "Authorization": f"Bearer {settings.openrouter_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
-            logger.info("Chat LLM response status: %s", resp.status_code)
-            if resp.status_code != 200:
-                logger.error("Chat LLM response body: %s", resp.text[:2000])
-            resp.raise_for_status()
+            resp = await _post_openrouter_chat_completion(client, payload)
             data = resp.json()
             choice = data["choices"][0]
             message = choice["message"]
