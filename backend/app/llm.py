@@ -29,6 +29,7 @@ OPENROUTER_CHAT_MAX_RETRIES = 2
 OPENROUTER_RETRY_BASE_DELAY_SECONDS = 0.8
 OPENROUTER_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 OPENROUTER_CHAT_MAX_TOKENS = 4096
+OPENROUTER_CHAT_MAX_TOKENS_REASONING = 16384
 
 CHAT_PROVIDER_LABELS = {
     "anthropic": "Anthropic",
@@ -1293,6 +1294,18 @@ def _select_chat_tools(messages: list[dict[str, Any]]) -> list[dict]:
     return CHAT_TOOLS
 
 
+def _is_reasoning_model(model_id: str) -> bool:
+    lower = model_id.lower()
+    reasoning_indicators = ("thinking", "reasoning", "preview")
+    return any(ind in lower for ind in reasoning_indicators)
+
+
+def _chat_max_tokens_for_model(model_id: str) -> int:
+    if _is_reasoning_model(model_id):
+        return OPENROUTER_CHAT_MAX_TOKENS_REASONING
+    return OPENROUTER_CHAT_MAX_TOKENS
+
+
 def _chat_temperature_for_model(model_id: str) -> float:
     # Gemini 3 docs recommend leaving temperature at the model default (1.0).
     if _chat_provider_key_for_model(model_id) == "gemini":
@@ -1320,7 +1333,7 @@ def _build_chat_completion_payload(
         "model": model_id,
         "messages": messages,
         "temperature": _chat_temperature_for_model(model_id),
-        "max_tokens": OPENROUTER_CHAT_MAX_TOKENS,
+        "max_tokens": _chat_max_tokens_for_model(model_id),
     }
     if tools:
         payload["tools"] = tools
@@ -1622,6 +1635,21 @@ async def _stream_openrouter_chat_completion(
                         "attempt": attempt + 1,
                         "native_finish_reason": native_finish_reason,
                         "error_code": error_code_value,
+                    })
+                    raise LLMUpstreamCompletionError(detail)
+
+                if finish_reason == "length":
+                    detail_parts = [
+                        "Model hit max_tokens limit",
+                        f"native_finish_reason={native_finish_reason or 'MAX_TOKENS'}",
+                    ]
+                    detail = "; ".join(detail_parts)
+                    logger.error("Chat LLM hit token limit: %s", detail)
+                    _emit_chat_status({
+                        "event": "upstream_generation_error",
+                        "attempt": attempt + 1,
+                        "native_finish_reason": native_finish_reason,
+                        "error_code": "length",
                     })
                     raise LLMUpstreamCompletionError(detail)
 

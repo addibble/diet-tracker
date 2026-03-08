@@ -99,12 +99,6 @@ function formatElapsedTime(elapsedMs: number): string {
   return `${minutes}:${String(seconds).padStart(2, '0')}`
 }
 
-function formatAgeMs(ageMs: number | null): string {
-  if (ageMs === null || ageMs < 0) return 'n/a'
-  if (ageMs < 1000) return `${ageMs}ms`
-  return `${(ageMs / 1000).toFixed(ageMs < 10_000 ? 1 : 0)}s`
-}
-
 function progressMessageForEvent(eventName: string | null): string {
   switch (eventName) {
     case 'upstream_request_started':
@@ -313,18 +307,9 @@ export default function MealLogPage() {
   const [modelLoadError, setModelLoadError] = useState<string | null>(null)
   const [modelsLoading, setModelsLoading] = useState(true)
   const [saved, setSaved] = useState(initial.saved)
-  const [progressMessage, setProgressMessage] = useState('Submitting request to model provider...')
   const [progressElapsedMs, setProgressElapsedMs] = useState(0)
-  const [progressRunId, setProgressRunId] = useState<string | null>(null)
-  const [progressActivitySource, setProgressActivitySource] = useState<string | null>(null)
-  const [progressLastActivityEvent, setProgressLastActivityEvent] = useState<string | null>(null)
-  const [progressLastActivityAgeMs, setProgressLastActivityAgeMs] = useState<number | null>(null)
-  const [progressActiveToolName, setProgressActiveToolName] = useState<string | null>(null)
-  const [progressLastUpstreamEvent, setProgressLastUpstreamEvent] = useState<string | null>(null)
-  const [progressLastUpstreamAgeMs, setProgressLastUpstreamAgeMs] = useState<number | null>(null)
-  const [progressLastUpstreamStatusCode, setProgressLastUpstreamStatusCode] = useState<number | null>(null)
-  const [progressOpenrouterRequestId, setProgressOpenrouterRequestId] = useState<string | null>(null)
-  const [progressOpenrouterCompletionId, setProgressOpenrouterCompletionId] = useState<string | null>(null)
+  const [progressLog, setProgressLog] = useState<{ time: number; text: string }[]>([])
+  const progressLogRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
@@ -333,6 +318,10 @@ export default function MealLogPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
+
+  useEffect(() => {
+    progressLogRef.current?.scrollTo({ top: progressLogRef.current.scrollHeight, behavior: 'smooth' })
+  }, [progressLog])
 
   useEffect(() => {
     saveChatState(messages, saved)
@@ -414,38 +403,28 @@ export default function MealLogPage() {
     if (isManualSend) setInput('')
     setEditingMessageIndex(null)
     setLoading(true)
-    setProgressMessage('Submitting request to model provider...')
     setProgressElapsedMs(0)
-    setProgressRunId(null)
-    setProgressActivitySource(null)
-    setProgressLastActivityEvent(null)
-    setProgressLastActivityAgeMs(null)
-    setProgressActiveToolName(null)
-    setProgressLastUpstreamEvent(null)
-    setProgressLastUpstreamAgeMs(null)
-    setProgressLastUpstreamStatusCode(null)
-    setProgressOpenrouterRequestId(null)
-    setProgressOpenrouterCompletionId(null)
+    setProgressLog([{ time: 0, text: 'Submitting request to model provider...' }])
 
     try {
       const apiHistory: ChatMessage[] = newMessages.map((m) => ({
         role: m.role,
         content: m.content,
       }))
+      let prevActivityEvent: string | null = null
       const onProgressEvent = (event: ChatProgressEvent) => {
         if (event.type === 'status') {
-          setProgressRunId(event.run_id)
-          setProgressMessage(progressMessageForEvent(event.last_activity_event) || event.message)
           setProgressElapsedMs(event.elapsed_ms)
-          setProgressActivitySource(event.activity_source)
-          setProgressLastActivityEvent(event.last_activity_event)
-          setProgressLastActivityAgeMs(event.last_activity_event_age_ms)
-          setProgressActiveToolName(event.active_tool_name)
-          setProgressLastUpstreamEvent(event.last_upstream_event)
-          setProgressLastUpstreamAgeMs(event.last_upstream_event_age_ms)
-          setProgressLastUpstreamStatusCode(event.last_upstream_status_code)
-          setProgressOpenrouterRequestId(event.openrouter_request_id)
-          setProgressOpenrouterCompletionId(event.openrouter_completion_id)
+          const activityEvent = event.last_activity_event
+          // Only append a log entry when the activity event changes
+          if (activityEvent !== prevActivityEvent) {
+            prevActivityEvent = activityEvent
+            const source = progressSourceLabel(event.activity_source)
+            const toolSuffix = event.active_tool_name ? ` (${event.active_tool_name})` : ''
+            const roundPrefix = event.upstream_round ? `[R${event.upstream_round}] ` : ''
+            const line = `${roundPrefix}${source}: ${progressMessageForEvent(activityEvent)}${toolSuffix}`
+            setProgressLog((prev) => [...prev, { time: event.elapsed_ms, text: line }])
+          }
         }
       }
 
@@ -493,18 +472,8 @@ export default function MealLogPage() {
     setEditingMessageIndex(null)
     setSaved(false)
     setSpeechError(null)
-    setProgressMessage('Submitting request to model provider...')
     setProgressElapsedMs(0)
-    setProgressRunId(null)
-    setProgressActivitySource(null)
-    setProgressLastActivityEvent(null)
-    setProgressLastActivityAgeMs(null)
-    setProgressActiveToolName(null)
-    setProgressLastUpstreamEvent(null)
-    setProgressLastUpstreamAgeMs(null)
-    setProgressLastUpstreamStatusCode(null)
-    setProgressOpenrouterRequestId(null)
-    setProgressOpenrouterCompletionId(null)
+    setProgressLog([])
     sessionStorage.removeItem(CHAT_STORAGE_KEY)
     sessionStorage.removeItem(CHAT_SAVED_KEY)
   }
@@ -692,9 +661,11 @@ export default function MealLogPage() {
             <div className="flex justify-start">
               <div className="bg-white border border-gray-200 rounded-lg px-4 py-2 w-full max-w-md">
                 <div className="flex items-center gap-2">
-                  <div className="h-3.5 w-3.5 rounded-full border-2 border-gray-300 border-t-blue-600 animate-spin" />
-                  <p className="text-sm text-gray-600">{progressMessage}</p>
-                  <span className="ml-auto text-xs text-gray-400">{formatElapsedTime(progressElapsedMs)}</span>
+                  <div className="h-3.5 w-3.5 rounded-full border-2 border-gray-300 border-t-blue-600 animate-spin shrink-0" />
+                  <p className="text-sm text-gray-600 truncate">
+                    {progressLog.length > 0 ? progressLog[progressLog.length - 1].text : 'Starting...'}
+                  </p>
+                  <span className="ml-auto text-xs text-gray-400 shrink-0">{formatElapsedTime(progressElapsedMs)}</span>
                 </div>
                 <div className="mt-2 h-1.5 w-full rounded-full bg-gray-100 overflow-hidden">
                   <div
@@ -702,26 +673,17 @@ export default function MealLogPage() {
                     style={{ width: `${Math.min(95, Math.round((progressElapsedMs / 180000) * 100))}%` }}
                   />
                 </div>
-                <div className="mt-2 text-[11px] text-gray-500 space-y-0.5">
-                  <p>Run: <span className="font-mono">{progressRunId ?? 'pending'}</span></p>
-                  <p>
-                    {progressSourceLabel(progressActivitySource)}:
-                    {' '}
-                    <span className="font-mono">{progressLastActivityEvent ?? 'awaiting work'}</span>
-                    {' '}({formatAgeMs(progressLastActivityAgeMs)} ago)
-                    {progressActiveToolName ? ` · ${progressActiveToolName}` : ''}
-                  </p>
-                  <p>
-                    Upstream: <span className="font-mono">{progressLastUpstreamEvent ?? 'awaiting response'}</span>
-                    {' '}({formatAgeMs(progressLastUpstreamAgeMs)} ago)
-                    {progressLastUpstreamStatusCode !== null ? ` · HTTP ${progressLastUpstreamStatusCode}` : ''}
-                  </p>
-                  {progressOpenrouterRequestId && (
-                    <p>Request ID: <span className="font-mono">{progressOpenrouterRequestId}</span></p>
-                  )}
-                  {progressOpenrouterCompletionId && (
-                    <p>Completion ID: <span className="font-mono">{progressOpenrouterCompletionId}</span></p>
-                  )}
+                <div
+                  ref={progressLogRef}
+                  className="mt-2 max-h-32 overflow-y-auto text-[11px] text-gray-500 font-mono space-y-0.5"
+                >
+                  {progressLog.map((entry, i) => (
+                    <p key={i}>
+                      <span className="text-gray-400">{formatElapsedTime(entry.time)}</span>
+                      {' '}
+                      {entry.text}
+                    </p>
+                  ))}
                 </div>
               </div>
             </div>
