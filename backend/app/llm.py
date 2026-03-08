@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -15,8 +16,33 @@ from app.config import settings
 logger = logging.getLogger("parse")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 MODEL = "anthropic/claude-haiku-4.5"
 VISION_MODEL = "anthropic/claude-haiku-4.5"
+CHAT_MODEL_MAX_INPUT_COST_PER_MILLION = 1.0
+CHAT_MODEL_MAX_OUTPUT_COST_PER_MILLION = 2.0
+CHAT_MODEL_CACHE_TTL_SECONDS = 600.0
+
+CHAT_PROVIDER_LABELS = {
+    "anthropic": "Anthropic",
+    "gemini": "Gemini",
+    "nvidia": "NVIDIA",
+    "bytedance": "Bytedance",
+    "qwen": "Qwen",
+}
+
+CHAT_PROVIDER_ORDER = {
+    "anthropic": 0,
+    "gemini": 1,
+    "nvidia": 2,
+    "bytedance": 3,
+    "qwen": 4,
+}
+
+_CHAT_MODEL_CACHE: dict[str, Any] = {
+    "expires_at": 0.0,
+    "models": None,
+}
 
 BASE_SYSTEM_PROMPT = (
     "You are a meal parsing assistant. Given a description of a meal, "
@@ -148,6 +174,128 @@ def _normalize_nutrition_label_payload(payload: dict[str, Any]) -> dict[str, Any
         "fiber_per_serving": non_negative(payload.get("fiber_per_serving")),
         "protein_per_serving": non_negative(payload.get("protein_per_serving")),
     }
+
+
+def _chat_provider_key_for_model(model_id: str) -> str | None:
+    lower = model_id.lower()
+    if lower.startswith("anthropic/"):
+        return "anthropic"
+    if lower.startswith("google/") or "gemini" in lower:
+        return "gemini"
+    if lower.startswith("nvidia/"):
+        return "nvidia"
+    if lower.startswith("bytedance/") or "doubao" in lower:
+        return "bytedance"
+    if lower.startswith("qwen/") or "/qwen" in lower or "qwen" in lower:
+        return "qwen"
+    return None
+
+
+def _cost_per_million(value: Any) -> float | None:
+    try:
+        return float(value) * 1_000_000
+    except (TypeError, ValueError):
+        return None
+
+
+def _model_created_timestamp(value: Any) -> int:
+    try:
+        created = int(value)
+    except (TypeError, ValueError):
+        return 0
+    if created < 0:
+        return 0
+    return created
+
+
+def _model_headers() -> dict[str, str]:
+    headers: dict[str, str] = {
+        "Content-Type": "application/json",
+    }
+    if settings.openrouter_api_key:
+        headers["Authorization"] = f"Bearer {settings.openrouter_api_key}"
+    return headers
+
+
+async def get_chat_models(force_refresh: bool = False) -> list[dict[str, Any]]:
+    """Return affordable OpenRouter chat models for approved provider families."""
+    if not force_refresh:
+        cached_models = _CHAT_MODEL_CACHE.get("models")
+        expires_at = float(_CHAT_MODEL_CACHE.get("expires_at") or 0.0)
+        if cached_models and time.monotonic() < expires_at:
+            return list(cached_models)
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(
+                OPENROUTER_MODELS_URL,
+                headers=_model_headers(),
+            )
+            logger.info("Chat model list response status: %s", resp.status_code)
+            if resp.status_code != 200:
+                logger.error("Chat model list response body: %s", resp.text[:2000])
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception:
+        cached_models = _CHAT_MODEL_CACHE.get("models")
+        if cached_models:
+            logger.warning("Model list refresh failed; serving cached model list")
+            return list(cached_models)
+        raise
+
+    raw_models = data.get("data")
+    if not isinstance(raw_models, list):
+        raise ValueError("OpenRouter model list payload is invalid")
+
+    filtered_models: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for raw in raw_models:
+        if not isinstance(raw, dict):
+            continue
+        model_id = str(raw.get("id") or "").strip()
+        if not model_id or model_id in seen_ids:
+            continue
+        provider_key = _chat_provider_key_for_model(model_id)
+        if provider_key is None:
+            continue
+
+        pricing = raw.get("pricing")
+        if not isinstance(pricing, dict):
+            continue
+
+        input_cost = _cost_per_million(pricing.get("prompt"))
+        output_cost = _cost_per_million(pricing.get("completion"))
+        if input_cost is None or output_cost is None:
+            continue
+        if input_cost > CHAT_MODEL_MAX_INPUT_COST_PER_MILLION:
+            continue
+        if output_cost > CHAT_MODEL_MAX_OUTPUT_COST_PER_MILLION:
+            continue
+
+        seen_ids.add(model_id)
+        filtered_models.append({
+            "id": model_id,
+            "name": str(raw.get("name") or model_id),
+            "provider": CHAT_PROVIDER_LABELS[provider_key],
+            "input_cost_per_million": round(input_cost, 4),
+            "output_cost_per_million": round(output_cost, 4),
+            "created": _model_created_timestamp(raw.get("created")),
+            "_provider_key": provider_key,
+        })
+
+    filtered_models.sort(
+        key=lambda m: (
+            -int(m["created"]),
+            CHAT_PROVIDER_ORDER[m["_provider_key"]],
+            str(m["name"]).lower(),
+        ),
+    )
+    for model in filtered_models:
+        model.pop("_provider_key", None)
+
+    _CHAT_MODEL_CACHE["models"] = filtered_models
+    _CHAT_MODEL_CACHE["expires_at"] = time.monotonic() + CHAT_MODEL_CACHE_TTL_SECONDS
+    return list(filtered_models)
 
 
 async def parse_meal_description(
@@ -670,6 +818,7 @@ async def chat_meal(
     known_recipes: list[dict] | None = None,
     recent_meals: list[dict] | None = None,
     tool_executor: Callable[[str, dict], Awaitable[Any]] | None = None,
+    model: str | None = None,
 ) -> str:
     """Multi-turn conversational meal chat with optional tool use.
 
@@ -686,9 +835,10 @@ async def chat_meal(
         recent_meals,
         runtime_context=CHAT_RUNTIME_CONTEXT.get(),
     )
+    active_model = model or MODEL
     logger.info(
-        "Chat meal: %d messages, %d known foods, %d recipes",
-        len(messages), len(known_foods or []), len(known_recipes or []),
+        "Chat meal: %d messages, %d known foods, %d recipes, model=%s",
+        len(messages), len(known_foods or []), len(known_recipes or []), active_model,
     )
 
     all_messages: list[dict] = [
@@ -700,7 +850,7 @@ async def chat_meal(
     async with httpx.AsyncClient(timeout=60.0) as client:
         for _round in range(max_rounds):
             payload: dict[str, Any] = {
-                "model": MODEL,
+                "model": active_model,
                 "messages": all_messages,
                 "temperature": 0.3,
             }

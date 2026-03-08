@@ -425,11 +425,29 @@ export interface ChatResponse {
   data_changed: boolean;
 }
 
+export interface ChatModelOption {
+  id: string;
+  name: string;
+  provider: string;
+  input_cost_per_million: number;
+  output_cost_per_million: number;
+  created: number;
+}
+
+export interface ChatModelsResponse {
+  default_model: string;
+  models: ChatModelOption[];
+}
+
+export const getChatModels = () =>
+  request<ChatModelsResponse>('/meals/chat/models');
+
 export const chatMeal = (
   messages: ChatMessage[],
   date?: string,
   meal_type?: string,
   notes?: string,
+  model?: string,
 ) => {
   const payload: Record<string, unknown> = {
     messages,
@@ -440,6 +458,7 @@ export const chatMeal = (
   if (date) payload.date = date
   if (meal_type) payload.meal_type = meal_type
   if (notes) payload.notes = notes
+  if (model) payload.model = model
 
   return request<ChatResponse>('/meals/chat', {
     method: 'POST',

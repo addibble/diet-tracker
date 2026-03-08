@@ -13,7 +13,13 @@ from sqlmodel import Session, select
 
 from app.auth import get_current_user
 from app.database import get_session
-from app.llm import chat_meal, chat_runtime_context, parse_meal_description
+from app.llm import (
+    MODEL,
+    chat_meal,
+    chat_runtime_context,
+    get_chat_models,
+    parse_meal_description,
+)
 from app.macros import MACRO_FIELDS
 from app.models import Food, MacroTarget, MealItem, MealLog, Recipe, WeightLog
 from app.usda import search_usda
@@ -142,6 +148,24 @@ class ChatRequest(BaseModel):
     notes: str | None = None
     client_now_iso: str | None = None
     client_timezone: str | None = None
+    model: str | None = None
+
+
+@router.get("/chat/models")
+async def chat_models_endpoint(
+    _user: str = Depends(get_current_user),
+):
+    """List affordable chat models for the Log Meal interface."""
+    try:
+        models = await get_chat_models()
+    except Exception as e:
+        logger.exception("Chat model list fetch failed")
+        raise HTTPException(status_code=502, detail=f"Model list fetch failed: {e}")
+
+    return {
+        "default_model": MODEL,
+        "models": models,
+    }
 
 
 def _messages_user_text(messages: list[ChatMessage]) -> str:
@@ -534,10 +558,16 @@ async def chat_meal_endpoint(
     messages = [{"role": m.role, "content": m.content} for m in data.messages]
     try:
         with chat_runtime_context(llm_time_context):
-            raw_response = await chat_meal(
-                messages, known_foods, known_recipes,
-                recent_meals, tool_executor,
-            )
+            if data.model:
+                raw_response = await chat_meal(
+                    messages, known_foods, known_recipes,
+                    recent_meals, tool_executor, model=data.model,
+                )
+            else:
+                raw_response = await chat_meal(
+                    messages, known_foods, known_recipes,
+                    recent_meals, tool_executor,
+                )
     except Exception as e:
         logger.exception("LLM chat failed")
         raise HTTPException(status_code=502, detail=f"LLM chat failed: {e}")

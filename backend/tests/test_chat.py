@@ -144,6 +144,40 @@ def test_chat_passes_full_history(client):
     assert messages[2]["content"] == "make it 70g ham"
 
 
+def test_chat_passes_selected_model(client):
+    with patch("app.routers.parse.chat_meal", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = "Got it."
+        resp = client.post("/api/meals/chat", json={
+            "messages": [{"role": "user", "content": "ham sandwich"}],
+            "model": "google/gemini-2.5-flash",
+        })
+
+    assert resp.status_code == 200
+    assert mock_llm.call_args.kwargs["model"] == "google/gemini-2.5-flash"
+
+
+def test_chat_models_endpoint(client):
+    models = [
+        {
+            "id": "anthropic/claude-3.5-haiku",
+            "name": "Claude 3.5 Haiku",
+            "provider": "Anthropic",
+            "input_cost_per_million": 0.8,
+            "output_cost_per_million": 1.6,
+            "created": 1_730_000_000,
+        },
+    ]
+    with patch("app.routers.parse.get_chat_models", new_callable=AsyncMock) as mock_models:
+        mock_models.return_value = models
+        resp = client.get("/api/meals/chat/models")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["default_model"]
+    assert data["models"] == models
+    mock_models.assert_awaited_once()
+
+
 def test_chat_infers_date_and_meal_type_from_message(client):
     food = client.post("/api/foods", json={
         "name": "Greek Yogurt",

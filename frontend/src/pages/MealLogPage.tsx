@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   chatMeal,
+  getChatModels,
   importFoodLabel,
   getDailySummary,
   MACRO_KEYS, MACRO_LABELS, MACRO_UNITS,
-  type ChatMessage, type ChatProposedItem, type ChatResponse, type DailySummary, type Meal, type Macros, type FoodImportResult,
+  type ChatMessage, type ChatModelOption, type ChatProposedItem, type ChatResponse, type DailySummary, type Meal, type Macros, type FoodImportResult,
 } from '../api'
 
 interface SpeechRecognitionAlternativeLike {
@@ -70,6 +71,18 @@ function speechErrorMessage(error: string): string {
     default:
       return 'Voice input failed. You can still use keyboard dictation on iPhone/Mac.'
   }
+}
+
+function formatModelDate(created: number): string {
+  if (created <= 0) return 'unknown date'
+  const asMillis = created > 1_000_000_000_000 ? created : created * 1000
+  return new Date(asMillis).toLocaleDateString()
+}
+
+function modelOptionLabel(model: ChatModelOption): string {
+  const inCost = model.input_cost_per_million.toFixed(2)
+  const outCost = model.output_cost_per_million.toFixed(2)
+  return `${model.provider} · ${model.name} · ${formatModelDate(model.created)} · $${inCost}/$${outCost}`
 }
 
 function importedFoodToChatPrompt(food: FoodImportResult): string {
@@ -281,10 +294,15 @@ export default function MealLogPage() {
   const initial = loadChatState()
   const [messages, setMessages] = useState<MessageBubble[]>(initial.messages)
   const [input, setInput] = useState('')
+  const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
   const [importingImage, setImportingImage] = useState(false)
   const [listening, setListening] = useState(false)
   const [speechError, setSpeechError] = useState<string | null>(null)
+  const [chatModels, setChatModels] = useState<ChatModelOption[]>([])
+  const [selectedModel, setSelectedModel] = useState('')
+  const [modelLoadError, setModelLoadError] = useState<string | null>(null)
+  const [modelsLoading, setModelsLoading] = useState(true)
   const [saved, setSaved] = useState(initial.saved)
   const bottomRef = useRef<HTMLDivElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
@@ -300,6 +318,35 @@ export default function MealLogPage() {
   }, [messages, saved])
 
   useEffect(() => {
+    let cancelled = false
+    setModelsLoading(true)
+    getChatModels()
+      .then((resp) => {
+        if (cancelled) return
+        setChatModels(resp.models)
+        const availableIds = new Set(resp.models.map((model) => model.id))
+        const fallbackModel = availableIds.has(resp.default_model)
+          ? resp.default_model
+          : (resp.models[0]?.id ?? '')
+        setSelectedModel((previous) => (availableIds.has(previous) ? previous : fallbackModel))
+        setModelLoadError(null)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setChatModels([])
+        setSelectedModel('')
+        setModelLoadError(err instanceof Error ? err.message : 'Failed to load model list')
+      })
+      .finally(() => {
+        if (!cancelled) setModelsLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
     return () => {
       recognitionRef.current?.abort()
       recognitionRef.current = null
@@ -313,15 +360,22 @@ export default function MealLogPage() {
   }, [importingImage, loading, saved, tab])
 
   const handleSend = async (overrideContent?: string) => {
-    const userContent = overrideContent ?? input.trim()
+    const isManualSend = overrideContent === undefined
+    const userContent = (overrideContent ?? input).trim()
     if (!userContent || loading || saved) return
-    if (!overrideContent) setInput('')
+    recognitionRef.current?.stop()
 
+    const activeEditIndex = isManualSend ? editingMessageIndex : null
+    const baseMessages = activeEditIndex !== null
+      ? messages.slice(0, activeEditIndex)
+      : messages
     const newMessages: MessageBubble[] = [
-      ...messages,
+      ...baseMessages,
       { role: 'user', content: userContent },
     ]
     setMessages(newMessages)
+    if (isManualSend) setInput('')
+    setEditingMessageIndex(null)
     setLoading(true)
 
     try {
@@ -329,7 +383,13 @@ export default function MealLogPage() {
         role: m.role,
         content: m.content,
       }))
-      const resp: ChatResponse = await chatMeal(apiHistory)
+      const resp: ChatResponse = await chatMeal(
+        apiHistory,
+        undefined,
+        undefined,
+        undefined,
+        selectedModel || undefined,
+      )
 
       const assistantBubble: MessageBubble = {
         role: 'assistant',
@@ -365,6 +425,7 @@ export default function MealLogPage() {
     recognitionRef.current?.stop()
     setMessages([])
     setInput('')
+    setEditingMessageIndex(null)
     setSaved(false)
     setSpeechError(null)
     sessionStorage.removeItem(CHAT_STORAGE_KEY)
@@ -390,6 +451,20 @@ export default function MealLogPage() {
     } finally {
       setImportingImage(false)
     }
+  }
+
+  const handleStartMessageEdit = (index: number) => {
+    const message = messages[index]
+    if (!message || message.role !== 'user') return
+    recognitionRef.current?.stop()
+    setSpeechError(null)
+    setEditingMessageIndex(index)
+    setInput(message.content)
+  }
+
+  const handleCancelMessageEdit = () => {
+    setEditingMessageIndex(null)
+    setInput('')
   }
 
   const handleToggleSpeechInput = () => {
@@ -503,14 +578,16 @@ export default function MealLogPage() {
           {messages.map((msg, i) => (
             <div
               key={i}
-              className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+              className={`flex items-start gap-2 ${
+                msg.role === 'user' ? 'justify-end' : 'justify-start'
+              }`}
             >
               <div
                 className={`max-w-[90%] md:max-w-[80%] rounded-lg px-4 py-2 ${
                   msg.role === 'user'
                     ? 'bg-blue-600 text-white'
                     : 'bg-white border border-gray-200 text-gray-700'
-                }`}
+                } ${editingMessageIndex === i ? 'ring-2 ring-amber-300 ring-offset-1' : ''}`}
               >
                 <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
                 {msg.proposedItems && msg.proposedItems.length > 0 && (
@@ -523,6 +600,16 @@ export default function MealLogPage() {
                 )}
                 {msg.savedMeal && <SavedMealCard meal={msg.savedMeal} isEdit={!!msg.editMealId} />}
               </div>
+              {msg.role === 'user' && (
+                <button
+                  type="button"
+                  onClick={() => handleStartMessageEdit(i)}
+                  disabled={loading || importingImage || saved}
+                  className="text-xs text-gray-400 hover:text-gray-600 disabled:opacity-40"
+                >
+                  Edit
+                </button>
+              )}
             </div>
           ))}
 
@@ -540,6 +627,45 @@ export default function MealLogPage() {
 
       {tab === 'chat' && (
         <>
+          <div className="mb-2 flex items-center gap-2">
+            <label htmlFor="chat-model-select" className="text-xs text-gray-500">
+              Model
+            </label>
+            <select
+              id="chat-model-select"
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              disabled={modelsLoading || loading || importingImage || saved}
+              className="min-w-0 flex-1 px-2 py-1.5 border border-gray-300 rounded-md text-xs bg-white disabled:bg-gray-50"
+            >
+              {chatModels.length === 0 && <option value="">Default model</option>}
+              {chatModels.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {modelOptionLabel(model)}
+                </option>
+              ))}
+            </select>
+            {modelsLoading && <span className="text-xs text-gray-400">Loading...</span>}
+          </div>
+          {modelLoadError && (
+            <p className="mb-2 text-xs text-red-500">
+              Model list unavailable: {modelLoadError}
+            </p>
+          )}
+          {editingMessageIndex !== null && (
+            <div className="mb-2 flex items-center justify-between rounded-md bg-amber-50 px-2.5 py-1.5">
+              <p className="text-xs text-amber-700">
+                Editing a previous message. Sending will replace later replies.
+              </p>
+              <button
+                type="button"
+                onClick={handleCancelMessageEdit}
+                className="text-xs text-amber-700 hover:text-amber-900"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
           <div className="flex gap-2">
             <input
               ref={cameraInputRef}
@@ -611,7 +737,7 @@ export default function MealLogPage() {
               disabled={loading || importingImage || !input.trim() || saved}
               className="px-4 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50"
             >
-              {importingImage ? 'Importing...' : 'Send'}
+              {importingImage ? 'Importing...' : editingMessageIndex !== null ? 'Resend' : 'Send'}
             </button>
           </div>
           {speechError ? (
