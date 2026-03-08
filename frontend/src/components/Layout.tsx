@@ -10,9 +10,7 @@ export default function Layout() {
   const shortCommit = gitCommit ? gitCommit.slice(0, 6) : undefined
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Keep top safe-area clear on iOS/mobile. Use inline style so env() is resolved at runtime. */}
-      <div className="md:hidden bg-white border-b border-gray-200" style={{ paddingTop: 'env(safe-area-inset-top)' }} />
+    <div className="min-h-screen bg-gray-50 pt-[var(--safe-top)] md:pt-0">
 
       {/* Desktop nav links */}
       <nav className="hidden md:block bg-white border-b border-gray-200">
@@ -55,7 +53,7 @@ export default function Layout() {
             </NavLink>
           ))}
         </div>
-        <div className="pb-[calc(var(--safe-bottom)_+_0.25rem)] text-center">
+        <div className="pb-[var(--safe-bottom)] text-center">
           {shortCommit ? (
             <span className="text-[10px] font-mono text-gray-400" title={gitCommit}>
               {shortCommit}
