@@ -83,7 +83,12 @@ function formatModelDate(created: number): string {
 function modelOptionLabel(model: ChatModelOption): string {
   const inCost = model.input_cost_per_million.toFixed(2)
   const outCost = model.output_cost_per_million.toFixed(2)
-  return `${model.provider} · ${model.name} · ${formatModelDate(model.created)} · $${inCost}/$${outCost}`
+  const tier = model.tier_label ?? (model.tier ? model.tier.replace('_', ' ') : '')
+  const tierPrefix = tier ? `${tier} · ` : ''
+  return (
+    `${model.provider} · ${tierPrefix}${model.name} · `
+    + `${formatModelDate(model.created)} · $${inCost}/$${outCost}`
+  )
 }
 
 function importedFoodToChatPrompt(food: FoodImportResult): string {

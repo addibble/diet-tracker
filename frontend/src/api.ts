@@ -586,6 +586,8 @@ export interface ChatModelOption {
   input_cost_per_million: number;
   output_cost_per_million: number;
   created: number;
+  tier?: 'low' | 'medium' | 'high_reasoning';
+  tier_label?: string;
 }
 
 export interface ChatModelsResponse {

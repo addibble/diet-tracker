@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
@@ -22,13 +23,12 @@ VISION_MODEL = "anthropic/claude-haiku-4.5"
 CHAT_MODEL_MAX_INPUT_COST_PER_MILLION = 1000.0
 CHAT_MODEL_MAX_OUTPUT_COST_PER_MILLION = 1000.0
 CHAT_MODEL_CACHE_TTL_SECONDS = 600.0
+CHAT_MODEL_RECENCY_WINDOW_SECONDS = 400 * 24 * 60 * 60
 
 CHAT_PROVIDER_LABELS = {
     "anthropic": "Anthropic",
     "openai": "OpenAI",
     "gemini": "Gemini",
-    "nvidia": "NVIDIA",
-    "bytedance": "Bytedance",
     "qwen": "Qwen",
 }
 
@@ -36,9 +36,31 @@ CHAT_PROVIDER_ORDER = {
     "anthropic": 0,
     "openai": 1,
     "gemini": 2,
-    "nvidia": 3,
-    "bytedance": 4,
-    "qwen": 5,
+    "qwen": 3,
+}
+
+CHAT_TIER_ORDER = {
+    "low": 0,
+    "medium": 1,
+    "high_reasoning": 2,
+}
+
+CHAT_TIER_LABELS = {
+    "low": "Low",
+    "medium": "Medium",
+    "high_reasoning": "High reasoning",
+}
+
+CHAT_EXCLUDED_MODEL_TOKENS = {
+    "codex",
+    "coder",
+    "coding",
+    "image",
+    "story",
+    "storytelling",
+    "gemma",
+    "nvidia",
+    "free",
 }
 
 _CHAT_MODEL_CACHE: dict[str, Any] = {
@@ -186,13 +208,18 @@ def _chat_provider_key_for_model(model_id: str) -> str | None:
         return "openai"
     if lower.startswith("google/") or "gemini" in lower:
         return "gemini"
-    if lower.startswith("nvidia/"):
-        return "nvidia"
-    if lower.startswith("bytedance/") or "doubao" in lower:
-        return "bytedance"
     if lower.startswith("qwen/") or "/qwen" in lower or "qwen" in lower:
         return "qwen"
     return None
+
+
+def _model_contains_excluded_token(model_id: str, model_name: str) -> bool:
+    text = f"{model_id} {model_name}".lower()
+    tokens = set(re.split(r"[^a-z0-9]+", text))
+    for token in CHAT_EXCLUDED_MODEL_TOKENS:
+        if token in tokens:
+            return True
+    return False
 
 
 def _cost_per_million(value: Any) -> float | None:
@@ -200,6 +227,10 @@ def _cost_per_million(value: Any) -> float | None:
         return float(value) * 1_000_000
     except (TypeError, ValueError):
         return None
+
+
+def _model_total_cost_per_million(model: dict[str, Any]) -> float:
+    return float(model["input_cost_per_million"]) + float(model["output_cost_per_million"])
 
 
 def _model_created_timestamp(value: Any) -> int:
@@ -221,8 +252,253 @@ def _model_headers() -> dict[str, str]:
     return headers
 
 
+def _string_list(values: Any) -> set[str]:
+    if not isinstance(values, list):
+        return set()
+    parsed: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        parsed.add(value.lower().strip())
+    return parsed
+
+
+def _model_modalities(raw_model: dict[str, Any]) -> tuple[set[str], set[str]]:
+    architecture = raw_model.get("architecture")
+    if not isinstance(architecture, dict):
+        return set(), set()
+    input_modalities = _string_list(architecture.get("input_modalities"))
+    output_modalities = _string_list(architecture.get("output_modalities"))
+    return input_modalities, output_modalities
+
+
+def _model_supported_parameters(raw_model: dict[str, Any]) -> set[str]:
+    return _string_list(raw_model.get("supported_parameters"))
+
+
+def _normalize_chat_model(raw_model: dict[str, Any]) -> dict[str, Any] | None:
+    model_id = str(raw_model.get("id") or "").strip()
+    if not model_id:
+        return None
+
+    provider_key = _chat_provider_key_for_model(model_id)
+    if provider_key is None:
+        return None
+
+    model_name = str(raw_model.get("name") or model_id)
+    if _model_contains_excluded_token(model_id, model_name):
+        return None
+
+    input_modalities, output_modalities = _model_modalities(raw_model)
+    if "text" not in input_modalities:
+        return None
+    if output_modalities != {"text"}:
+        return None
+
+    supported_parameters = _model_supported_parameters(raw_model)
+    if "tools" not in supported_parameters or "tool_choice" not in supported_parameters:
+        return None
+
+    pricing = raw_model.get("pricing")
+    if not isinstance(pricing, dict):
+        return None
+
+    input_cost = _cost_per_million(pricing.get("prompt"))
+    output_cost = _cost_per_million(pricing.get("completion"))
+    if input_cost is None or output_cost is None:
+        return None
+    if input_cost > CHAT_MODEL_MAX_INPUT_COST_PER_MILLION:
+        return None
+    if output_cost > CHAT_MODEL_MAX_OUTPUT_COST_PER_MILLION:
+        return None
+
+    return {
+        "id": model_id,
+        "name": model_name,
+        "provider": CHAT_PROVIDER_LABELS[provider_key],
+        "input_cost_per_million": round(input_cost, 4),
+        "output_cost_per_million": round(output_cost, 4),
+        "created": _model_created_timestamp(raw_model.get("created")),
+        "supports_reasoning": (
+            "reasoning" in supported_parameters or "reasoning_effort" in supported_parameters
+        ),
+        "_provider_key": provider_key,
+    }
+
+
+def _choose_tier_models(provider_models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not provider_models:
+        return []
+
+    sorted_by_cost = sorted(
+        provider_models,
+        key=lambda model: (
+            _model_total_cost_per_million(model),
+            -int(model["created"]),
+            str(model["id"]).lower(),
+        ),
+    )
+
+    low = sorted_by_cost[0]
+    selected_ids = {str(low["id"])}
+
+    reasoning_pool = [model for model in provider_models if bool(model["supports_reasoning"])]
+    high_pool = reasoning_pool or provider_models
+    high = next(
+        (
+            model
+            for model in sorted(
+                high_pool,
+                key=lambda candidate: (
+                    _model_total_cost_per_million(candidate),
+                    int(candidate["created"]),
+                    str(candidate["id"]).lower(),
+                ),
+                reverse=True,
+            )
+            if str(model["id"]) not in selected_ids
+        ),
+        None,
+    )
+    if high is not None:
+        selected_ids.add(str(high["id"]))
+
+    median_cost = _model_total_cost_per_million(
+        sorted_by_cost[len(sorted_by_cost) // 2],
+    )
+    medium = next(
+        (
+            model
+            for model in sorted(
+                provider_models,
+                key=lambda candidate: (
+                    abs(_model_total_cost_per_million(candidate) - median_cost),
+                    -int(candidate["created"]),
+                    str(candidate["id"]).lower(),
+                ),
+            )
+            if str(model["id"]) not in selected_ids
+        ),
+        None,
+    )
+    if medium is not None:
+        selected_ids.add(str(medium["id"]))
+
+    if high is None:
+        high = next(
+            (
+                model
+                for model in sorted(
+                    provider_models,
+                    key=lambda candidate: (
+                        int(candidate["created"]),
+                        _model_total_cost_per_million(candidate),
+                        str(candidate["id"]).lower(),
+                    ),
+                    reverse=True,
+                )
+                if str(model["id"]) not in selected_ids
+            ),
+            None,
+        )
+        if high is not None:
+            selected_ids.add(str(high["id"]))
+
+    if medium is None:
+        medium = next(
+            (
+                model
+                for model in sorted(
+                    provider_models,
+                    key=lambda candidate: (
+                        int(candidate["created"]),
+                        _model_total_cost_per_million(candidate),
+                        str(candidate["id"]).lower(),
+                    ),
+                    reverse=True,
+                )
+                if str(model["id"]) not in selected_ids
+            ),
+            None,
+        )
+
+    tier_pairs = [
+        ("low", low),
+        ("medium", medium),
+        ("high_reasoning", high),
+    ]
+    selected_models: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for tier_key, model in tier_pairs:
+        if model is None:
+            continue
+        model_id = str(model["id"])
+        if model_id in seen_ids:
+            continue
+        seen_ids.add(model_id)
+        selected_models.append({
+            **model,
+            "tier": tier_key,
+            "tier_label": CHAT_TIER_LABELS[tier_key],
+        })
+    return selected_models
+
+
+def _filter_chat_models(raw_models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidate_models: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for raw_model in raw_models:
+        if not isinstance(raw_model, dict):
+            continue
+        model = _normalize_chat_model(raw_model)
+        if model is None:
+            continue
+        model_id = str(model["id"])
+        if model_id in seen_ids:
+            continue
+        seen_ids.add(model_id)
+        candidate_models.append(model)
+
+    latest_created_by_provider: dict[str, int] = {}
+    for model in candidate_models:
+        provider_key = str(model["_provider_key"])
+        created = int(model["created"])
+        latest_created_by_provider[provider_key] = max(
+            latest_created_by_provider.get(provider_key, 0),
+            created,
+        )
+
+    recent_by_provider: dict[str, list[dict[str, Any]]] = {key: [] for key in CHAT_PROVIDER_ORDER}
+    for model in candidate_models:
+        provider_key = str(model["_provider_key"])
+        latest_created = int(latest_created_by_provider.get(provider_key, 0))
+        cutoff = latest_created - CHAT_MODEL_RECENCY_WINDOW_SECONDS
+        if int(model["created"]) >= cutoff:
+            recent_by_provider[provider_key].append(model)
+
+    tiered_models: list[dict[str, Any]] = []
+    for provider_key in CHAT_PROVIDER_ORDER:
+        provider_models = recent_by_provider.get(provider_key) or []
+        if not provider_models:
+            continue
+        tiered_models.extend(_choose_tier_models(provider_models))
+
+    tiered_models.sort(
+        key=lambda model: (
+            CHAT_PROVIDER_ORDER[str(model["_provider_key"])],
+            CHAT_TIER_ORDER[str(model["tier"])],
+            -int(model["created"]),
+            str(model["name"]).lower(),
+        ),
+    )
+    for model in tiered_models:
+        model.pop("_provider_key", None)
+        model.pop("supports_reasoning", None)
+    return tiered_models
+
+
 async def get_chat_models(force_refresh: bool = False) -> list[dict[str, Any]]:
-    """Return affordable OpenRouter chat models for approved provider families."""
+    """Return tiered latest-generation tool-use chat models for target providers."""
     if not force_refresh:
         cached_models = _CHAT_MODEL_CACHE.get("models")
         expires_at = float(_CHAT_MODEL_CACHE.get("expires_at") or 0.0)
@@ -251,51 +527,7 @@ async def get_chat_models(force_refresh: bool = False) -> list[dict[str, Any]]:
     if not isinstance(raw_models, list):
         raise ValueError("OpenRouter model list payload is invalid")
 
-    filtered_models: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    for raw in raw_models:
-        if not isinstance(raw, dict):
-            continue
-        model_id = str(raw.get("id") or "").strip()
-        if not model_id or model_id in seen_ids:
-            continue
-        provider_key = _chat_provider_key_for_model(model_id)
-        if provider_key is None:
-            continue
-
-        pricing = raw.get("pricing")
-        if not isinstance(pricing, dict):
-            continue
-
-        input_cost = _cost_per_million(pricing.get("prompt"))
-        output_cost = _cost_per_million(pricing.get("completion"))
-        if input_cost is None or output_cost is None:
-            continue
-        if input_cost > CHAT_MODEL_MAX_INPUT_COST_PER_MILLION:
-            continue
-        if output_cost > CHAT_MODEL_MAX_OUTPUT_COST_PER_MILLION:
-            continue
-
-        seen_ids.add(model_id)
-        filtered_models.append({
-            "id": model_id,
-            "name": str(raw.get("name") or model_id),
-            "provider": CHAT_PROVIDER_LABELS[provider_key],
-            "input_cost_per_million": round(input_cost, 4),
-            "output_cost_per_million": round(output_cost, 4),
-            "created": _model_created_timestamp(raw.get("created")),
-            "_provider_key": provider_key,
-        })
-
-    filtered_models.sort(
-        key=lambda m: (
-            -int(m["created"]),
-            CHAT_PROVIDER_ORDER[m["_provider_key"]],
-            str(m["name"]).lower(),
-        ),
-    )
-    for model in filtered_models:
-        model.pop("_provider_key", None)
+    filtered_models = _filter_chat_models(raw_models)
 
     _CHAT_MODEL_CACHE["models"] = filtered_models
     _CHAT_MODEL_CACHE["expires_at"] = time.monotonic() + CHAT_MODEL_CACHE_TTL_SECONDS
