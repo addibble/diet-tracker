@@ -1,6 +1,6 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
-from app.models import WeightLog
+from app.models import MacroTarget, WeightLog
 
 
 def test_dashboard_trends(client, session):
@@ -69,4 +69,49 @@ def test_dashboard_trends(client, session):
     assert regression["slope_lb_per_day"] == -0.333
     assert regression["slope_lb_per_week"] == -2.33
     assert regression["start_weight_lb"] == 180.0
+    assert regression["end_weight_lb"] == 178.0
+
+
+def test_dashboard_trends_uses_macro_target_window(client, session):
+    """Weight trend window starts from the most recent macro target change date."""
+    # Macro target set on 2026-03-04 — window should start there, not 7 days back
+    session.add(MacroTarget(
+        day=date(2026, 3, 4),
+        calories=2000, fat=80, saturated_fat=20, cholesterol=300,
+        sodium=2300, carbs=200, fiber=25, protein=150,
+    ))
+    # Weight before the target change — should not be included in the window
+    session.add(WeightLog(
+        weight_lb=180.0,
+        logged_at=datetime(2026, 3, 1, 14, 0, tzinfo=UTC),
+    ))
+    # Weight logs within the target window
+    session.add(WeightLog(
+        weight_lb=179.0,
+        logged_at=datetime(2026, 3, 4, 18, 0, tzinfo=UTC),
+    ))
+    session.add(WeightLog(
+        weight_lb=178.0,
+        logged_at=datetime(2026, 3, 7, 9, 0, tzinfo=UTC),
+    ))
+    session.commit()
+
+    resp = client.get("/api/dashboard/trends?end_date=2026-03-07")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["start_date"] == "2026-03-04"
+    assert data["end_date"] == "2026-03-07"
+    assert len(data["days"]) == 4
+
+    day_map = {day["date"]: day for day in data["days"]}
+    assert "2026-03-01" not in day_map
+    assert day_map["2026-03-04"]["weight_lb"] == 179.0
+    assert day_map["2026-03-07"]["weight_lb"] == 178.0
+
+    regression = data["weight_regression"]
+    assert regression["points_used"] == 2
+    assert regression["slope_lb_per_day"] == -0.333
+    assert regression["slope_lb_per_week"] == -2.33
+    assert regression["start_weight_lb"] == 179.0
     assert regression["end_weight_lb"] == 178.0

@@ -122,7 +122,7 @@ function WeightTrendCard({ trends }: { trends: DashboardTrends }) {
         </div>
         <div className="text-left sm:text-right">
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">
-            7-Day Slope
+            Trend Slope
           </p>
           <p className="text-xl font-semibold text-gray-900 mt-1">
             {trends.weight_regression
@@ -219,7 +219,7 @@ function WeightTrendCard({ trends }: { trends: DashboardTrends }) {
         </div>
       ) : (
         <div className="rounded-2xl border border-dashed border-gray-300 bg-gray-50 px-4 py-8 text-center text-sm text-gray-500">
-          No weights logged in this 7-day window.
+          No weights logged since the current macro target started.
         </div>
       )}
     </section>
@@ -244,7 +244,7 @@ function DailyTargetsBreakdownCard({ trends }: { trends: DashboardTrends }) {
         <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">
           Daily Targets
         </p>
-        <h2 className="text-xl font-semibold text-gray-900 mt-1">Estimated 7-day breakdown</h2>
+        <h2 className="text-xl font-semibold text-gray-900 mt-1">Breakdown since current target</h2>
       </div>
 
       <div className="flex flex-wrap gap-3 text-xs text-gray-500 mb-4">
@@ -384,7 +384,7 @@ function TargetNormalizedMacroTrendsCard({ trends }: { trends: DashboardTrends }
           Target-Normalized Trends
         </p>
         <h2 className="text-xl font-semibold text-gray-900 mt-1">
-          Saturated Fat, Cholesterol, Sodium, Fiber (7 days)
+          Saturated Fat, Cholesterol, Sodium, Fiber
         </h2>
       </div>
 
@@ -479,7 +479,7 @@ export default function DashboardPage() {
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Daily Summary</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Daily totals for the selected date plus 7-day weight and macro trends.
+            Daily totals for the selected date plus weight and macro trends since the current target.
           </p>
         </div>
         <input

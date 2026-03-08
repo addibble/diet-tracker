@@ -5,7 +5,7 @@ from sqlmodel import Session, select
 
 from app.auth import get_current_user
 from app.database import get_session
-from app.models import WeightLog
+from app.models import MacroTarget, WeightLog
 from app.routers.daily import build_daily_summary
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
@@ -90,6 +90,17 @@ def _weight_regression(days: list[dict]) -> dict | None:
     }
 
 
+def _macro_target_window_start(end_day: date, session: Session) -> date:
+    target = session.exec(
+        select(MacroTarget)
+        .where(MacroTarget.day <= end_day)
+        .order_by(MacroTarget.day.desc())
+    ).first()
+    if target:
+        return target.day
+    return end_day - timedelta(days=6)
+
+
 @router.get("/trends")
 def dashboard_trends(
     end_date: date | None = Query(default=None),
@@ -97,11 +108,12 @@ def dashboard_trends(
     _user: str = Depends(get_current_user),
 ):
     resolved_end_date = end_date or date.today()
-    start_date = resolved_end_date - timedelta(days=6)
+    start_date = _macro_target_window_start(resolved_end_date, session)
+    total_days = (resolved_end_date - start_date).days + 1
     weights_by_day = _latest_weights_by_day(session, start_date, resolved_end_date)
 
     days: list[dict] = []
-    for offset in range(7):
+    for offset in range(total_days):
         day = start_date + timedelta(days=offset)
         summary = build_daily_summary(day, session)
         macro_calories, macro_percentages = _macro_calorie_breakdown(summary)
