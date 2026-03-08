@@ -175,6 +175,8 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 
 
 def _message_content_to_text(content: Any) -> str:
+    if content is None:
+        return ""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -1594,6 +1596,9 @@ async def _stream_openrouter_chat_completion(
                     if isinstance(native_fr, str) and native_fr:
                         native_finish_reason = native_fr
 
+                    if finish_reason is not None:
+                        break
+
                 message: dict[str, Any] = {"content": "".join(content_parts).strip()}
                 tool_calls = _finalize_tool_calls(tool_calls_by_index)
                 if tool_calls:
@@ -1764,6 +1769,13 @@ async def chat_meal(
                     "openrouter_completion_id": completion_id,
                 })
             choice = data["choices"][0]
+            finish_reason = choice.get("finish_reason")
+            if isinstance(finish_reason, str) and finish_reason:
+                _emit_chat_status({
+                    "event": "upstream_round_complete",
+                    "round": round_index,
+                    "finish_reason": finish_reason,
+                })
             message = choice["message"]
 
             tool_calls = message.get("tool_calls")
@@ -1796,6 +1808,11 @@ async def chat_meal(
                         })
                         raise LLMUpstreamCompletionError(detail) from exc
                     logger.info("Executing tool: %s(%s)", func_name, func_args)
+                    _emit_chat_status({
+                        "event": "tool_call_started",
+                        "round": round_index,
+                        "tool_name": func_name,
+                    })
                     try:
                         result = await tool_executor(func_name, func_args)
                     except Exception as exc:
@@ -1806,6 +1823,12 @@ async def chat_meal(
                             "round": round_index,
                             "tool_name": func_name,
                             "error": str(exc),
+                        })
+                    else:
+                        _emit_chat_status({
+                            "event": "tool_call_completed",
+                            "round": round_index,
+                            "tool_name": func_name,
                         })
                     all_messages.append({
                         "role": "tool",

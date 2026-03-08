@@ -8,6 +8,7 @@ from app.llm import (
     LLMUpstreamCompletionError,
     _select_chat_tools,
     chat_meal,
+    chat_status_callback,
 )
 
 
@@ -107,6 +108,67 @@ async def test_chat_meal_uses_protocol_correct_tool_messages_for_gemini():
     tool_message = next(msg for msg in second_messages if msg.get("role") == "tool")
     assert assistant_message["tool_calls"][0]["function"]["name"] == "log_weight"
     assert json.loads(tool_message["content"])["success"] is True
+
+
+@pytest.mark.anyio
+async def test_chat_meal_emits_local_tool_status_events():
+    status_events: list[dict] = []
+    call_count = 0
+
+    async def fake_stream(_client, _payload):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return {
+                "id": "cmp_1",
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "tool_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "log_weight",
+                                        "arguments": json.dumps({"weight_lb": 180.4}),
+                                    },
+                                },
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    },
+                ],
+            }
+        return {
+            "id": "cmp_2",
+            "choices": [
+                {
+                    "message": {"content": "Logged your weight at 180.4 lb."},
+                    "finish_reason": "stop",
+                },
+            ],
+        }
+
+    async def fake_tool_executor(name: str, args: dict):
+        assert name == "log_weight"
+        assert args == {"weight_lb": 180.4}
+        return {"success": True}
+
+    with patch("app.llm._stream_openrouter_chat_completion", side_effect=fake_stream):
+        with chat_status_callback(status_events.append):
+            result = await chat_meal(
+                [{"role": "user", "content": "Log my weight as 180.4 pounds"}],
+                known_foods=[],
+                known_recipes=[],
+                tool_executor=fake_tool_executor,
+                model="google/gemini-2.5-flash",
+            )
+
+    assert result == "Logged your weight at 180.4 lb."
+    event_names = [event["event"] for event in status_events]
+    assert "tool_call_started" in event_names
+    assert "tool_call_completed" in event_names
 
 
 @pytest.mark.anyio

@@ -115,6 +115,12 @@ function progressMessageForEvent(eventName: string | null): string {
       return 'Receiving response chunks...'
     case 'tool_calls_received':
       return 'Model requested tool calls...'
+    case 'tool_call_started':
+      return 'Running a local tool...'
+    case 'tool_call_completed':
+      return 'Local tool finished; continuing...'
+    case 'tool_call_failed':
+      return 'A local tool failed...'
     case 'upstream_response_received':
       return 'OpenRouter responded, processing payload...'
     case 'upstream_transport_error':
@@ -131,8 +137,25 @@ function progressMessageForEvent(eventName: string | null): string {
       return 'Retrying with stricter tool-calling mode...'
     case 'tool_call_arguments_invalid':
       return 'Model returned invalid tool arguments...'
+    case 'upstream_round_complete':
+      return 'Model provider finished; finalizing response...'
     default:
       return 'OpenRouter is still processing your request...'
+  }
+}
+
+function progressSourceLabel(source: string | null): string {
+  switch (source) {
+    case 'openrouter':
+      return 'OpenRouter'
+    case 'local_tool':
+      return 'Local tool'
+    case 'finalizing':
+      return 'Finalizing'
+    case 'backend':
+      return 'Backend'
+    default:
+      return 'Activity'
   }
 }
 
@@ -293,6 +316,10 @@ export default function MealLogPage() {
   const [progressMessage, setProgressMessage] = useState('Submitting request to model provider...')
   const [progressElapsedMs, setProgressElapsedMs] = useState(0)
   const [progressRunId, setProgressRunId] = useState<string | null>(null)
+  const [progressActivitySource, setProgressActivitySource] = useState<string | null>(null)
+  const [progressLastActivityEvent, setProgressLastActivityEvent] = useState<string | null>(null)
+  const [progressLastActivityAgeMs, setProgressLastActivityAgeMs] = useState<number | null>(null)
+  const [progressActiveToolName, setProgressActiveToolName] = useState<string | null>(null)
   const [progressLastUpstreamEvent, setProgressLastUpstreamEvent] = useState<string | null>(null)
   const [progressLastUpstreamAgeMs, setProgressLastUpstreamAgeMs] = useState<number | null>(null)
   const [progressLastUpstreamStatusCode, setProgressLastUpstreamStatusCode] = useState<number | null>(null)
@@ -390,6 +417,10 @@ export default function MealLogPage() {
     setProgressMessage('Submitting request to model provider...')
     setProgressElapsedMs(0)
     setProgressRunId(null)
+    setProgressActivitySource(null)
+    setProgressLastActivityEvent(null)
+    setProgressLastActivityAgeMs(null)
+    setProgressActiveToolName(null)
     setProgressLastUpstreamEvent(null)
     setProgressLastUpstreamAgeMs(null)
     setProgressLastUpstreamStatusCode(null)
@@ -404,8 +435,12 @@ export default function MealLogPage() {
       const onProgressEvent = (event: ChatProgressEvent) => {
         if (event.type === 'status') {
           setProgressRunId(event.run_id)
-          setProgressMessage(progressMessageForEvent(event.last_upstream_event) || event.message)
+          setProgressMessage(progressMessageForEvent(event.last_activity_event) || event.message)
           setProgressElapsedMs(event.elapsed_ms)
+          setProgressActivitySource(event.activity_source)
+          setProgressLastActivityEvent(event.last_activity_event)
+          setProgressLastActivityAgeMs(event.last_activity_event_age_ms)
+          setProgressActiveToolName(event.active_tool_name)
           setProgressLastUpstreamEvent(event.last_upstream_event)
           setProgressLastUpstreamAgeMs(event.last_upstream_event_age_ms)
           setProgressLastUpstreamStatusCode(event.last_upstream_status_code)
@@ -461,6 +496,10 @@ export default function MealLogPage() {
     setProgressMessage('Submitting request to model provider...')
     setProgressElapsedMs(0)
     setProgressRunId(null)
+    setProgressActivitySource(null)
+    setProgressLastActivityEvent(null)
+    setProgressLastActivityAgeMs(null)
+    setProgressActiveToolName(null)
     setProgressLastUpstreamEvent(null)
     setProgressLastUpstreamAgeMs(null)
     setProgressLastUpstreamStatusCode(null)
@@ -665,6 +704,13 @@ export default function MealLogPage() {
                 </div>
                 <div className="mt-2 text-[11px] text-gray-500 space-y-0.5">
                   <p>Run: <span className="font-mono">{progressRunId ?? 'pending'}</span></p>
+                  <p>
+                    {progressSourceLabel(progressActivitySource)}:
+                    {' '}
+                    <span className="font-mono">{progressLastActivityEvent ?? 'awaiting work'}</span>
+                    {' '}({formatAgeMs(progressLastActivityAgeMs)} ago)
+                    {progressActiveToolName ? ` · ${progressActiveToolName}` : ''}
+                  </p>
                   <p>
                     Upstream: <span className="font-mono">{progressLastUpstreamEvent ?? 'awaiting response'}</span>
                     {' '}({formatAgeMs(progressLastUpstreamAgeMs)} ago)

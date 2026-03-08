@@ -44,6 +44,20 @@ SERVING_FIELDS = [f"{m}_per_serving" for m in MACRO_FIELDS]
 CHAT_STREAM_HEARTBEAT_SECONDS = 2.5
 
 
+def _chat_activity_source(event_name: str | None) -> str | None:
+    if not event_name:
+        return None
+    if event_name.startswith("tool_call_") or event_name == "tool_calls_received":
+        return "local_tool"
+    if event_name in {"final_response_received", "upstream_round_complete"}:
+        return "finalizing"
+    if event_name.startswith("upstream_") or event_name == "gemini_forced_tool_retry":
+        return "openrouter"
+    if event_name == "round_started":
+        return "backend"
+    return "backend"
+
+
 class ParseRequest(BaseModel):
     description: str
 
@@ -618,6 +632,7 @@ async def chat_meal_stream_endpoint(
         run_id = uuid.uuid4().hex[:12]
         start = time.monotonic()
         last_upstream_event_monotonic: float | None = None
+        last_activity_event_monotonic: float | None = None
         latest_upstream: dict[str, str | int | None] = {
             "event": None,
             "status_code": None,
@@ -627,12 +642,27 @@ async def chat_meal_stream_endpoint(
             "attempt": None,
             "round": None,
         }
+        latest_activity: dict[str, str | int | None] = {
+            "event": None,
+            "source": "backend",
+            "tool_name": None,
+            "round": None,
+        }
 
         def _on_chat_status(event: dict):
             nonlocal last_upstream_event_monotonic
-            last_upstream_event_monotonic = time.monotonic()
-            if isinstance(event.get("event"), str):
-                latest_upstream["event"] = event["event"]
+            nonlocal last_activity_event_monotonic
+            now = time.monotonic()
+            last_activity_event_monotonic = now
+            event_name = event.get("event")
+            if isinstance(event_name, str):
+                latest_activity["event"] = event_name
+                latest_activity["source"] = _chat_activity_source(event_name)
+                if latest_activity["source"] != "local_tool":
+                    latest_activity["tool_name"] = None
+                if latest_activity["source"] == "openrouter":
+                    last_upstream_event_monotonic = now
+                    latest_upstream["event"] = event_name
             for key in (
                 "status_code",
                 "openrouter_request_id",
@@ -644,6 +674,10 @@ async def chat_meal_stream_endpoint(
                 value = event.get(key)
                 if value is not None:
                     latest_upstream[key] = value
+            for key in ("tool_name", "round"):
+                value = event.get(key)
+                if value is not None:
+                    latest_activity[key] = value
 
         yield _ndjson_line({
             "type": "status",
@@ -651,6 +685,10 @@ async def chat_meal_stream_endpoint(
             "stage": "queued",
             "message": "Submitting request to model provider...",
             "elapsed_ms": 0,
+            "activity_source": "backend",
+            "last_activity_event": None,
+            "last_activity_event_age_ms": None,
+            "active_tool_name": None,
             "last_upstream_event": None,
             "last_upstream_event_age_ms": None,
             "last_upstream_status_code": None,
@@ -669,6 +707,10 @@ async def chat_meal_stream_endpoint(
         try:
             while not task.done():
                 elapsed_ms = int((time.monotonic() - start) * 1000)
+                if last_activity_event_monotonic is None:
+                    activity_age_ms = None
+                else:
+                    activity_age_ms = int((time.monotonic() - last_activity_event_monotonic) * 1000)
                 if last_upstream_event_monotonic is None:
                     upstream_age_ms = None
                 else:
@@ -677,8 +719,12 @@ async def chat_meal_stream_endpoint(
                     "type": "status",
                     "run_id": run_id,
                     "stage": "processing",
-                    "message": "OpenRouter is still processing your request...",
+                    "message": "Processing your request...",
                     "elapsed_ms": elapsed_ms,
+                    "activity_source": latest_activity["source"],
+                    "last_activity_event": latest_activity["event"],
+                    "last_activity_event_age_ms": activity_age_ms,
+                    "active_tool_name": latest_activity["tool_name"],
                     "last_upstream_event": latest_upstream["event"],
                     "last_upstream_event_age_ms": upstream_age_ms,
                     "last_upstream_status_code": latest_upstream["status_code"],

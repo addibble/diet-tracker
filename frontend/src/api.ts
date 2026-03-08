@@ -651,6 +651,10 @@ export interface ChatProgressStatusEvent {
   stage: 'queued' | 'processing';
   message: string;
   elapsed_ms: number;
+  activity_source: 'backend' | 'openrouter' | 'local_tool' | 'finalizing' | null;
+  last_activity_event: string | null;
+  last_activity_event_age_ms: number | null;
+  active_tool_name: string | null;
   last_upstream_event: string | null;
   last_upstream_event_age_ms: number | null;
   last_upstream_status_code: number | null;
