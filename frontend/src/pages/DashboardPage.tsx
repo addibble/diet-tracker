@@ -526,6 +526,44 @@ export default function DashboardPage() {
                 </div>
               ))}
             </div>
+            <div className="mt-5">
+              <p className="text-sm font-medium text-gray-700 mb-2">Meals</p>
+              {summary.meals.length === 0 ? (
+                <p className="text-sm text-gray-400">No meals logged for this day.</p>
+              ) : (
+                <div className="space-y-2">
+                  {summary.meals.map((meal) => (
+                    <div
+                      key={meal.id}
+                      className="rounded-lg border border-gray-200 bg-white p-3"
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm font-medium text-gray-900 capitalize">
+                          {meal.meal_type}
+                        </span>
+                        <span className="text-xs text-gray-500">
+                          {Math.round(meal.total_calories)} kcal
+                        </span>
+                      </div>
+                      {meal.notes && <p className="text-xs text-gray-500 mb-1">{meal.notes}</p>}
+                      <div className="space-y-0.5">
+                        {meal.items.map((item, idx) => (
+                          <div
+                            key={`${meal.id}-${idx}`}
+                            className="flex items-center justify-between text-xs text-gray-600"
+                          >
+                            <span>{item.name}</span>
+                            <span className="text-gray-400">
+                              {Math.round(item.grams)}g · {Math.round(item.calories)} cal
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </section>
 
           <div className="grid grid-cols-1 xl:grid-cols-[1.15fr_0.85fr] gap-6">
