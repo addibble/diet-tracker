@@ -3,7 +3,11 @@ from unittest.mock import AsyncMock, patch
 
 from sqlmodel import select
 
-from app.llm import LLMUpstreamRetryableError, LLMUpstreamTimeoutError
+from app.llm import (
+    LLMUpstreamBillingError,
+    LLMUpstreamRetryableError,
+    LLMUpstreamTimeoutError,
+)
 from app.models import MacroTarget, WeightLog
 
 
@@ -199,6 +203,17 @@ def test_chat_returns_502_on_llm_retryable_upstream_error(client):
 
     assert resp.status_code == 502
     assert "upstream error" in resp.json()["detail"]
+
+
+def test_chat_returns_402_on_llm_credit_limit(client):
+    with patch("app.routers.parse.chat_meal", new_callable=AsyncMock) as mock_llm:
+        mock_llm.side_effect = LLMUpstreamBillingError("fewer max_tokens")
+        resp = client.post("/api/meals/chat", json={
+            "messages": [{"role": "user", "content": "large prompt"}],
+        })
+
+    assert resp.status_code == 402
+    assert "credit limit" in resp.json()["detail"]
 
 
 def test_chat_does_not_preload_recent_meals(client):

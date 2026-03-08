@@ -15,6 +15,7 @@ from app.auth import get_current_user
 from app.database import get_session
 from app.llm import (
     MODEL,
+    LLMUpstreamBillingError,
     LLMUpstreamRetryableError,
     LLMUpstreamTimeoutError,
     chat_meal,
@@ -650,6 +651,9 @@ async def chat_meal_endpoint(
     except LLMUpstreamRetryableError as e:
         logger.exception("LLM chat upstream error")
         raise HTTPException(status_code=502, detail=f"LLM chat upstream error: {e}")
+    except LLMUpstreamBillingError as e:
+        logger.exception("LLM chat credit/billing limit reached")
+        raise HTTPException(status_code=402, detail=f"LLM provider credit limit: {e}")
     except Exception as e:
         logger.exception("LLM chat failed")
         raise HTTPException(status_code=502, detail=f"LLM chat failed: {e}")

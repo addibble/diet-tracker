@@ -30,6 +30,7 @@ OPENROUTER_CHAT_CONNECT_TIMEOUT_SECONDS = 10.0
 OPENROUTER_CHAT_MAX_RETRIES = 2
 OPENROUTER_RETRY_BASE_DELAY_SECONDS = 0.8
 OPENROUTER_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+OPENROUTER_CHAT_MAX_TOKENS = 4096
 
 CHAT_PROVIDER_LABELS = {
     "anthropic": "Anthropic",
@@ -81,6 +82,10 @@ class LLMUpstreamTimeoutError(RuntimeError):
 
 class LLMUpstreamRetryableError(RuntimeError):
     """Raised when retryable upstream errors are exhausted."""
+
+
+class LLMUpstreamBillingError(RuntimeError):
+    """Raised when upstream refuses request for billing/credit reasons."""
 
 BASE_SYSTEM_PROMPT = (
     "You are a meal parsing assistant. Given a description of a meal, "
@@ -1178,6 +1183,19 @@ async def _post_openrouter_chat_completion(
                 json=payload,
             )
             logger.info("Chat LLM response status: %s", resp.status_code)
+            if resp.status_code == 402:
+                detail = "Model request exceeds current provider credit limit"
+                try:
+                    body = resp.json()
+                    if isinstance(body, dict):
+                        err = body.get("error")
+                        if isinstance(err, dict) and isinstance(err.get("message"), str):
+                            detail = err["message"]
+                except Exception:
+                    detail = resp.text[:500] or detail
+                logger.error("Billing-limited OpenRouter response body: %s", resp.text[:2000])
+                raise LLMUpstreamBillingError(detail)
+
             if resp.status_code in OPENROUTER_RETRYABLE_STATUS_CODES:
                 preview = resp.text[:500]
                 logger.warning(
@@ -1275,6 +1293,7 @@ async def chat_meal(
                 "model": active_model,
                 "messages": all_messages,
                 "temperature": 0.3,
+                "max_tokens": OPENROUTER_CHAT_MAX_TOKENS,
             }
             if tool_executor:
                 payload["tools"] = _all_chat_tools()

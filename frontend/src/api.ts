@@ -13,8 +13,8 @@ function normalizeServerErrorText(status: number, rawText: string): string {
 
   if (status >= 500 && isCloudflareErrorPage) {
     return (
-      'Server timeout while waiting on the model provider. '
-      + 'Try a shorter message, a faster model tier, or retry in a minute.'
+      'Gateway error between Cloudflare and the app/model provider. '
+      + 'Retry in a minute or switch models.'
     );
   }
 
