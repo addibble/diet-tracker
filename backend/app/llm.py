@@ -677,6 +677,10 @@ CHAT_RUNTIME_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar(
     "chat_runtime_context",
     default=None,
 )
+CHAT_STATUS_CALLBACK: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar(
+    "chat_status_callback",
+    default=None,
+)
 
 
 @contextmanager
@@ -686,6 +690,25 @@ def chat_runtime_context(context: dict[str, str] | None):
         yield
     finally:
         CHAT_RUNTIME_CONTEXT.reset(token)
+
+
+@contextmanager
+def chat_status_callback(callback: Callable[[dict[str, Any]], None] | None):
+    token = CHAT_STATUS_CALLBACK.set(callback)
+    try:
+        yield
+    finally:
+        CHAT_STATUS_CALLBACK.reset(token)
+
+
+def _emit_chat_status(event: dict[str, Any]) -> None:
+    callback = CHAT_STATUS_CALLBACK.get()
+    if callback is None:
+        return
+    try:
+        callback(event)
+    except Exception:
+        logger.exception("chat status callback failed")
 
 CHAT_SYSTEM_PROMPT = """\
 You are a friendly meal-logging assistant. Help the user log what they ate and \
@@ -1171,6 +1194,11 @@ async def _post_openrouter_chat_completion(
     last_error: Exception | None = None
     max_attempts = OPENROUTER_CHAT_MAX_RETRIES + 1
     for attempt in range(max_attempts):
+        _emit_chat_status({
+            "event": "upstream_request_started",
+            "attempt": attempt + 1,
+            "max_attempts": max_attempts,
+        })
         try:
             resp = await client.post(
                 OPENROUTER_URL,
@@ -1181,6 +1209,17 @@ async def _post_openrouter_chat_completion(
                 json=payload,
             )
             logger.info("Chat LLM response status: %s", resp.status_code)
+            _emit_chat_status({
+                "event": "upstream_response_received",
+                "status_code": resp.status_code,
+                "attempt": attempt + 1,
+                "openrouter_request_id": (
+                    resp.headers.get("x-request-id")
+                    or resp.headers.get("request-id")
+                    or resp.headers.get("x-openrouter-request-id")
+                ),
+                "cf_ray": resp.headers.get("cf-ray"),
+            })
             if resp.status_code == 402:
                 detail = "Model request exceeds current provider credit limit"
                 try:
@@ -1192,6 +1231,11 @@ async def _post_openrouter_chat_completion(
                 except Exception:
                     detail = resp.text[:500] or detail
                 logger.error("Billing-limited OpenRouter response body: %s", resp.text[:2000])
+                _emit_chat_status({
+                    "event": "upstream_billing_limited",
+                    "status_code": resp.status_code,
+                    "attempt": attempt + 1,
+                })
                 raise LLMUpstreamBillingError(detail)
 
             if resp.status_code in OPENROUTER_RETRYABLE_STATUS_CODES:
@@ -1203,6 +1247,11 @@ async def _post_openrouter_chat_completion(
                     max_attempts,
                     preview,
                 )
+                _emit_chat_status({
+                    "event": "upstream_retryable_status",
+                    "status_code": resp.status_code,
+                    "attempt": attempt + 1,
+                })
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(
                         OPENROUTER_RETRY_BASE_DELAY_SECONDS * (2**attempt),
@@ -1224,6 +1273,11 @@ async def _post_openrouter_chat_completion(
                 max_attempts,
                 exc,
             )
+            _emit_chat_status({
+                "event": "upstream_transport_error",
+                "attempt": attempt + 1,
+                "error": str(exc),
+            })
             if attempt < max_attempts - 1:
                 await asyncio.sleep(
                     OPENROUTER_RETRY_BASE_DELAY_SECONDS * (2**attempt),
@@ -1283,6 +1337,12 @@ async def chat_meal(
     max_rounds = 10
     async with httpx.AsyncClient(timeout=None) as client:
         for _round in range(max_rounds):
+            round_index = _round + 1
+            _emit_chat_status({
+                "event": "round_started",
+                "round": round_index,
+                "max_rounds": max_rounds,
+            })
             payload: dict[str, Any] = {
                 "model": active_model,
                 "messages": all_messages,
@@ -1294,12 +1354,24 @@ async def chat_meal(
 
             resp = await _post_openrouter_chat_completion(client, payload)
             data = resp.json()
+            completion_id = data.get("id")
+            if isinstance(completion_id, str) and completion_id:
+                _emit_chat_status({
+                    "event": "upstream_completion_id",
+                    "round": round_index,
+                    "openrouter_completion_id": completion_id,
+                })
             choice = data["choices"][0]
             message = choice["message"]
 
             tool_calls = message.get("tool_calls")
             if tool_calls and tool_executor:
                 logger.info("LLM requested %d tool call(s)", len(tool_calls))
+                _emit_chat_status({
+                    "event": "tool_calls_received",
+                    "round": round_index,
+                    "tool_call_count": len(tool_calls),
+                })
                 all_messages.append(message)
                 for tc in tool_calls:
                     func_name = tc["function"]["name"]
@@ -1310,6 +1382,12 @@ async def chat_meal(
                     except Exception as exc:
                         logger.exception("Tool execution failed: %s", func_name)
                         result = {"error": str(exc)}
+                        _emit_chat_status({
+                            "event": "tool_call_failed",
+                            "round": round_index,
+                            "tool_name": func_name,
+                            "error": str(exc),
+                        })
                     all_messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
@@ -1319,6 +1397,11 @@ async def chat_meal(
 
             content = message.get("content") or ""
             logger.info("Chat LLM raw content: %s", content)
+            _emit_chat_status({
+                "event": "final_response_received",
+                "round": round_index,
+                "content_chars": len(str(content)),
+            })
             return content.strip()
 
     logger.warning("Chat meal exceeded max tool rounds")

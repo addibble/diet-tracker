@@ -99,6 +99,12 @@ function formatElapsedTime(elapsedMs: number): string {
   return `${minutes}:${String(seconds).padStart(2, '0')}`
 }
 
+function formatAgeMs(ageMs: number | null): string {
+  if (ageMs === null || ageMs < 0) return 'n/a'
+  if (ageMs < 1000) return `${ageMs}ms`
+  return `${(ageMs / 1000).toFixed(ageMs < 10_000 ? 1 : 0)}s`
+}
+
 function importedFoodToChatPrompt(food: FoodImportResult): string {
   const descriptor = food.brand ? `${food.brand} ${food.name}` : food.name
   const lines = [
@@ -255,6 +261,12 @@ export default function MealLogPage() {
   const [saved, setSaved] = useState(initial.saved)
   const [progressMessage, setProgressMessage] = useState('Submitting request to model provider...')
   const [progressElapsedMs, setProgressElapsedMs] = useState(0)
+  const [progressRunId, setProgressRunId] = useState<string | null>(null)
+  const [progressLastUpstreamEvent, setProgressLastUpstreamEvent] = useState<string | null>(null)
+  const [progressLastUpstreamAgeMs, setProgressLastUpstreamAgeMs] = useState<number | null>(null)
+  const [progressLastUpstreamStatusCode, setProgressLastUpstreamStatusCode] = useState<number | null>(null)
+  const [progressOpenrouterRequestId, setProgressOpenrouterRequestId] = useState<string | null>(null)
+  const [progressOpenrouterCompletionId, setProgressOpenrouterCompletionId] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
@@ -346,6 +358,12 @@ export default function MealLogPage() {
     setLoading(true)
     setProgressMessage('Submitting request to model provider...')
     setProgressElapsedMs(0)
+    setProgressRunId(null)
+    setProgressLastUpstreamEvent(null)
+    setProgressLastUpstreamAgeMs(null)
+    setProgressLastUpstreamStatusCode(null)
+    setProgressOpenrouterRequestId(null)
+    setProgressOpenrouterCompletionId(null)
 
     try {
       const apiHistory: ChatMessage[] = newMessages.map((m) => ({
@@ -353,9 +371,16 @@ export default function MealLogPage() {
         content: m.content,
       }))
       const onProgressEvent = (event: ChatProgressEvent) => {
-        if (event.type !== 'status') return
-        setProgressMessage(event.message)
-        setProgressElapsedMs(event.elapsed_ms)
+        if (event.type === 'status') {
+          setProgressRunId(event.run_id)
+          setProgressMessage(event.message)
+          setProgressElapsedMs(event.elapsed_ms)
+          setProgressLastUpstreamEvent(event.last_upstream_event)
+          setProgressLastUpstreamAgeMs(event.last_upstream_event_age_ms)
+          setProgressLastUpstreamStatusCode(event.last_upstream_status_code)
+          setProgressOpenrouterRequestId(event.openrouter_request_id)
+          setProgressOpenrouterCompletionId(event.openrouter_completion_id)
+        }
       }
 
       const resp: ChatResponse = await chatMealWithProgress(
@@ -404,6 +429,12 @@ export default function MealLogPage() {
     setSpeechError(null)
     setProgressMessage('Submitting request to model provider...')
     setProgressElapsedMs(0)
+    setProgressRunId(null)
+    setProgressLastUpstreamEvent(null)
+    setProgressLastUpstreamAgeMs(null)
+    setProgressLastUpstreamStatusCode(null)
+    setProgressOpenrouterRequestId(null)
+    setProgressOpenrouterCompletionId(null)
     sessionStorage.removeItem(CHAT_STORAGE_KEY)
     sessionStorage.removeItem(CHAT_SAVED_KEY)
   }
@@ -600,6 +631,20 @@ export default function MealLogPage() {
                     className="h-full bg-blue-500 transition-[width] duration-300"
                     style={{ width: `${Math.min(95, Math.round((progressElapsedMs / 180000) * 100))}%` }}
                   />
+                </div>
+                <div className="mt-2 text-[11px] text-gray-500 space-y-0.5">
+                  <p>Run: <span className="font-mono">{progressRunId ?? 'pending'}</span></p>
+                  <p>
+                    Upstream: <span className="font-mono">{progressLastUpstreamEvent ?? 'awaiting response'}</span>
+                    {' '}({formatAgeMs(progressLastUpstreamAgeMs)} ago)
+                    {progressLastUpstreamStatusCode !== null ? ` · HTTP ${progressLastUpstreamStatusCode}` : ''}
+                  </p>
+                  {progressOpenrouterRequestId && (
+                    <p>Request ID: <span className="font-mono">{progressOpenrouterRequestId}</span></p>
+                  )}
+                  {progressOpenrouterCompletionId && (
+                    <p>Completion ID: <span className="font-mono">{progressOpenrouterCompletionId}</span></p>
+                  )}
                 </div>
               </div>
             </div>

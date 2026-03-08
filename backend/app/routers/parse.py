@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_type
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -24,6 +25,7 @@ from app.llm import (
     LLMUpstreamTimeoutError,
     chat_meal,
     chat_runtime_context,
+    chat_status_callback,
     get_chat_models,
     parse_meal_description,
 )
@@ -612,34 +614,88 @@ async def chat_meal_stream_endpoint(
         raise HTTPException(status_code=400, detail="messages cannot be empty")
 
     async def _stream():
+        run_id = uuid.uuid4().hex[:12]
         start = time.monotonic()
+        last_upstream_event_monotonic: float | None = None
+        latest_upstream: dict[str, str | int | None] = {
+            "event": None,
+            "status_code": None,
+            "openrouter_request_id": None,
+            "openrouter_completion_id": None,
+            "cf_ray": None,
+            "attempt": None,
+            "round": None,
+        }
+
+        def _on_chat_status(event: dict):
+            nonlocal last_upstream_event_monotonic
+            last_upstream_event_monotonic = time.monotonic()
+            if isinstance(event.get("event"), str):
+                latest_upstream["event"] = event["event"]
+            for key in (
+                "status_code",
+                "openrouter_request_id",
+                "openrouter_completion_id",
+                "cf_ray",
+                "attempt",
+                "round",
+            ):
+                value = event.get(key)
+                if value is not None:
+                    latest_upstream[key] = value
+
         yield _ndjson_line({
             "type": "status",
+            "run_id": run_id,
             "stage": "queued",
             "message": "Submitting request to model provider...",
             "elapsed_ms": 0,
+            "last_upstream_event": None,
+            "last_upstream_event_age_ms": None,
+            "last_upstream_status_code": None,
+            "openrouter_request_id": None,
+            "openrouter_completion_id": None,
+            "upstream_cf_ray": None,
+            "upstream_attempt": None,
+            "upstream_round": None,
         })
 
-        task = asyncio.create_task(chat_meal_endpoint(data, session, _user))
+        with chat_status_callback(_on_chat_status):
+            task = asyncio.create_task(chat_meal_endpoint(data, session, _user))
         try:
             while not task.done():
                 elapsed_ms = int((time.monotonic() - start) * 1000)
+                if last_upstream_event_monotonic is None:
+                    upstream_age_ms = None
+                else:
+                    upstream_age_ms = int((time.monotonic() - last_upstream_event_monotonic) * 1000)
                 yield _ndjson_line({
                     "type": "status",
+                    "run_id": run_id,
                     "stage": "processing",
                     "message": "OpenRouter is still processing your request...",
                     "elapsed_ms": elapsed_ms,
+                    "last_upstream_event": latest_upstream["event"],
+                    "last_upstream_event_age_ms": upstream_age_ms,
+                    "last_upstream_status_code": latest_upstream["status_code"],
+                    "openrouter_request_id": latest_upstream["openrouter_request_id"],
+                    "openrouter_completion_id": latest_upstream["openrouter_completion_id"],
+                    "upstream_cf_ray": latest_upstream["cf_ray"],
+                    "upstream_attempt": latest_upstream["attempt"],
+                    "upstream_round": latest_upstream["round"],
                 })
                 await asyncio.sleep(CHAT_STREAM_HEARTBEAT_SECONDS)
 
             result = await task
             yield _ndjson_line({
                 "type": "result",
+                "run_id": run_id,
                 "data": result,
             })
         except HTTPException as exc:
             yield _ndjson_line({
                 "type": "error",
+                "run_id": run_id,
                 "status": exc.status_code,
                 "detail": str(exc.detail),
             })
@@ -647,6 +703,7 @@ async def chat_meal_stream_endpoint(
             logger.exception("chat stream failed unexpectedly")
             yield _ndjson_line({
                 "type": "error",
+                "run_id": run_id,
                 "status": 500,
                 "detail": "Unexpected chat streaming error",
             })

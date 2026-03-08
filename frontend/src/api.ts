@@ -647,18 +647,29 @@ function buildChatPayload(
 
 export interface ChatProgressStatusEvent {
   type: 'status';
+  run_id: string;
   stage: 'queued' | 'processing';
   message: string;
   elapsed_ms: number;
+  last_upstream_event: string | null;
+  last_upstream_event_age_ms: number | null;
+  last_upstream_status_code: number | null;
+  openrouter_request_id: string | null;
+  openrouter_completion_id: string | null;
+  upstream_cf_ray: string | null;
+  upstream_attempt: number | null;
+  upstream_round: number | null;
 }
 
 export interface ChatProgressResultEvent {
   type: 'result';
+  run_id: string;
   data: ChatResponse;
 }
 
 export interface ChatProgressErrorEvent {
   type: 'error';
+  run_id: string;
   status: number;
   detail: string;
 }
