@@ -27,6 +27,11 @@ export default function Layout() {
               {item.label}
             </NavLink>
           ))}
+          {shortCommit ? (
+            <span className="ml-auto text-[10px] font-mono text-gray-400" title={gitCommit}>
+              {shortCommit}
+            </span>
+          ) : null}
         </div>
       </nav>
 
