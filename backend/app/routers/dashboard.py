@@ -110,6 +110,13 @@ def dashboard_trends(
             {
                 "date": str(day),
                 "total_calories": float(summary["total_calories"]),
+                "total_fat": float(summary["total_fat"]),
+                "total_saturated_fat": float(summary["total_saturated_fat"]),
+                "total_cholesterol": float(summary["total_cholesterol"]),
+                "total_sodium": float(summary["total_sodium"]),
+                "total_carbs": float(summary["total_carbs"]),
+                "total_fiber": float(summary["total_fiber"]),
+                "total_protein": float(summary["total_protein"]),
                 "macro_calories": macro_calories,
                 "macro_calorie_percentages": macro_percentages,
                 "active_macro_target": summary.get("active_macro_target"),

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import ScrollablePage from '../components/ScrollablePage'
 import {
   getDailySummary,
@@ -7,11 +7,8 @@ import {
   MACRO_KEYS,
   MACRO_LABELS,
   MACRO_UNITS,
-  upsertMacroTarget,
   type DailySummary,
   type DashboardTrends,
-  type Macros,
-  type MacroTarget,
   type Workout,
 } from '../api'
 
@@ -229,65 +226,23 @@ function WeightTrendCard({ trends }: { trends: DashboardTrends }) {
   )
 }
 
-function CaloriesTrendCard({ trends }: { trends: DashboardTrends }) {
-  const maxCalories = Math.max(
-    ...trends.days.map((day) => day.total_calories),
-    ...trends.days.map((day) => day.active_macro_target?.calories ?? 0),
-    1,
-  )
+function DailyTargetsBreakdownCard({ trends }: { trends: DashboardTrends }) {
+  const chartMaxRatio = useMemo(() => {
+    const ratios = trends.days.map((day) => {
+      const target = day.active_macro_target?.calories ?? 0
+      if (target > 0) return day.total_calories / target
+      return day.total_calories > 0 ? 1 : 0
+    })
+    return Math.max(1.25, ...ratios)
+  }, [trends])
+
+  const targetLineBottom = `${Math.min((1 / chartMaxRatio) * 100, 100)}%`
 
   return (
     <section className="bg-white border border-gray-200 rounded-2xl p-5">
       <div className="mb-4">
         <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">
-          Calories Per Day
-        </p>
-        <h2 className="text-xl font-semibold text-gray-900 mt-1">Past 7 days</h2>
-      </div>
-
-      <div className="grid grid-cols-7 gap-3 items-end h-56">
-        {trends.days.map((day) => {
-          const ratio = day.total_calories / maxCalories
-          const targetCalories = day.active_macro_target?.calories ?? 0
-          const targetRatio = targetCalories / maxCalories
-          const height = day.total_calories > 0 ? `${Math.max(ratio * 100, 6)}%` : '4%'
-          return (
-            <div key={day.date} className="flex flex-col items-center justify-end h-full gap-2">
-              <span className="text-xs text-gray-500 tabular-nums">
-                {Math.round(day.total_calories)}
-              </span>
-              <div className="w-full h-full flex items-end relative">
-                <div
-                  className="w-full rounded-t-2xl bg-gradient-to-b from-blue-400 to-blue-600"
-                  style={{ height }}
-                  title={`${shortDateLabel(day.date)}: ${Math.round(day.total_calories)} kcal`}
-                />
-                {targetCalories > 0 && (
-                  <div
-                    className="absolute left-0 right-0 border-t-2 border-amber-500 border-dashed"
-                    style={{ bottom: `${Math.min(targetRatio * 100, 100)}%` }}
-                    title={`Target: ${Math.round(targetCalories)} kcal`}
-                  />
-                )}
-              </div>
-              <span className="text-[10px] text-amber-600 tabular-nums">
-                {targetCalories > 0 ? `T ${Math.round(targetCalories)}` : 'T —'}
-              </span>
-              <span className="text-xs text-gray-500">{weekdayLabel(day.date)}</span>
-            </div>
-          )
-        })}
-      </div>
-    </section>
-  )
-}
-
-function MacroBreakdownCard({ trends }: { trends: DashboardTrends }) {
-  return (
-    <section className="bg-white border border-gray-200 rounded-2xl p-5">
-      <div className="mb-4">
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">
-          Macro Mix By Calories
+          Daily Targets
         </p>
         <h2 className="text-xl font-semibold text-gray-900 mt-1">Estimated 7-day breakdown</h2>
       </div>
@@ -304,30 +259,56 @@ function MacroBreakdownCard({ trends }: { trends: DashboardTrends }) {
         </span>
       </div>
 
-      <div className="space-y-4">
+      <div className="grid grid-cols-7 gap-3 items-end h-64">
         {trends.days.map((day) => {
+          const targetCalories = day.active_macro_target?.calories ?? 0
+          const ratioToTarget = targetCalories > 0
+            ? day.total_calories / targetCalories
+            : (day.total_calories > 0 ? 1 : 0)
+          const barHeightPercent = day.total_calories > 0
+            ? Math.max((ratioToTarget / chartMaxRatio) * 100, 6)
+            : 4
+
           const fat = day.macro_calorie_percentages.fat
           const carbs = day.macro_calorie_percentages.carbs
           const protein = day.macro_calorie_percentages.protein
           const remainder = Math.max(0, 100 - fat - carbs - protein)
 
           return (
-            <div key={day.date}>
-              <div className="flex items-center justify-between text-sm mb-1.5">
-                <span className="font-medium text-gray-700">{shortDateLabel(day.date)}</span>
-                <span className="text-gray-500">{Math.round(day.total_calories)} kcal</span>
-              </div>
-              <div className="flex h-4 overflow-hidden rounded-full bg-gray-100 border border-gray-200">
-                <div className="bg-amber-400" style={{ width: `${fat}%` }} />
-                <div className="bg-blue-500" style={{ width: `${carbs}%` }} />
-                <div className="bg-emerald-500" style={{ width: `${protein}%` }} />
-                {remainder > 0 && (
-                  <div className="bg-gray-200" style={{ width: `${remainder}%` }} />
+            <div key={day.date} className="flex flex-col items-center justify-end h-full gap-2">
+              <span className="text-[10px] text-gray-500 tabular-nums">
+                {Math.round(day.total_calories)} kcal
+              </span>
+              <div className="relative w-full h-full flex items-end">
+                <div
+                  className="w-full rounded-t-xl overflow-hidden border border-gray-200 bg-gray-50"
+                  style={{ height: `${Math.min(barHeightPercent, 100)}%` }}
+                  title={`${shortDateLabel(day.date)}: ${Math.round(day.total_calories)} kcal`}
+                >
+                  <div className="h-full flex flex-col-reverse">
+                    <div className="bg-amber-400" style={{ height: `${fat}%` }} />
+                    <div className="bg-blue-500" style={{ height: `${carbs}%` }} />
+                    <div className="bg-emerald-500" style={{ height: `${protein}%` }} />
+                    {remainder > 0 && (
+                      <div className="bg-gray-200" style={{ height: `${remainder}%` }} />
+                    )}
+                  </div>
+                </div>
+                {targetCalories > 0 && (
+                  <div
+                    className="absolute left-0 right-0 border-t-2 border-amber-500 border-dashed"
+                    style={{ bottom: targetLineBottom }}
+                    title={`Target: ${Math.round(targetCalories)} kcal`}
+                  />
                 )}
               </div>
-              <p className="text-xs text-gray-500 mt-1.5">
-                F {fat.toFixed(1)}% · C {carbs.toFixed(1)}% · P {protein.toFixed(1)}%
+              <p className="text-[10px] text-amber-600 tabular-nums">
+                {targetCalories > 0 ? `T ${Math.round(targetCalories)}` : 'T —'}
               </p>
+              <p className="text-[10px] text-gray-500 text-center">
+                F {fat.toFixed(0)} · C {carbs.toFixed(0)} · P {protein.toFixed(0)}
+              </p>
+              <span className="text-xs text-gray-500">{weekdayLabel(day.date)}</span>
             </div>
           )
         })}
@@ -336,11 +317,127 @@ function MacroBreakdownCard({ trends }: { trends: DashboardTrends }) {
   )
 }
 
-function targetDraftFrom(target: MacroTarget | null): Record<keyof Macros, number> {
-  return MACRO_KEYS.reduce((acc, macro) => {
-    acc[macro] = target?.[macro] ?? 0
-    return acc
-  }, {} as Record<keyof Macros, number>)
+type TargetNormalizedMetric = {
+  targetKey: 'saturated_fat' | 'cholesterol' | 'sodium' | 'fiber'
+  totalKey: 'total_saturated_fat' | 'total_cholesterol' | 'total_sodium' | 'total_fiber'
+  label: string
+  unit: string
+  colorClass: string
+}
+
+const TARGET_NORMALIZED_METRICS: TargetNormalizedMetric[] = [
+  {
+    targetKey: 'saturated_fat',
+    totalKey: 'total_saturated_fat',
+    label: 'Saturated Fat',
+    unit: 'g',
+    colorClass: 'bg-rose-500',
+  },
+  {
+    targetKey: 'cholesterol',
+    totalKey: 'total_cholesterol',
+    label: 'Cholesterol',
+    unit: 'mg',
+    colorClass: 'bg-fuchsia-500',
+  },
+  {
+    targetKey: 'sodium',
+    totalKey: 'total_sodium',
+    label: 'Sodium',
+    unit: 'mg',
+    colorClass: 'bg-indigo-500',
+  },
+  {
+    targetKey: 'fiber',
+    totalKey: 'total_fiber',
+    label: 'Fiber',
+    unit: 'g',
+    colorClass: 'bg-lime-600',
+  },
+]
+
+function formatMacroTrendValue(value: number, unit: string): string {
+  if (unit === 'mg') return `${Math.round(value)}`
+  return `${value.toFixed(1)}`
+}
+
+function TargetNormalizedMacroTrendsCard({ trends }: { trends: DashboardTrends }) {
+  const chartMaxRatio = useMemo(() => {
+    let maxRatio = 1.25
+    for (const day of trends.days) {
+      for (const metric of TARGET_NORMALIZED_METRICS) {
+        const target = day.active_macro_target?.[metric.targetKey] ?? 0
+        if (target <= 0) continue
+        const total = day[metric.totalKey]
+        maxRatio = Math.max(maxRatio, total / target)
+      }
+    }
+    return maxRatio
+  }, [trends])
+
+  const targetLineBottom = `${Math.min((1 / chartMaxRatio) * 100, 100)}%`
+
+  return (
+    <section className="bg-white border border-gray-200 rounded-2xl p-5">
+      <div className="mb-4">
+        <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">
+          Target-Normalized Trends
+        </p>
+        <h2 className="text-xl font-semibold text-gray-900 mt-1">
+          Saturated Fat, Cholesterol, Sodium, Fiber (7 days)
+        </h2>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        {TARGET_NORMALIZED_METRICS.map((metric) => (
+          <div key={metric.targetKey} className="rounded-xl border border-gray-200 p-3">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-sm font-medium text-gray-800">{metric.label}</p>
+              <p className="text-xs text-gray-500">Height = % of target</p>
+            </div>
+            <div className="grid grid-cols-7 gap-2 items-end h-44">
+              {trends.days.map((day) => {
+                const total = day[metric.totalKey]
+                const target = day.active_macro_target?.[metric.targetKey] ?? 0
+                const ratio = target > 0 ? total / target : 0
+                const barHeightPercent = target > 0 && total > 0
+                  ? Math.max((ratio / chartMaxRatio) * 100, 6)
+                  : 4
+                const overTarget = target > 0 && total > target
+                const barClass = overTarget ? 'bg-red-500' : metric.colorClass
+
+                return (
+                  <div key={day.date} className="flex flex-col items-center justify-end h-full gap-1.5">
+                    <span className="text-[10px] text-gray-500 tabular-nums">
+                      {formatMacroTrendValue(total, metric.unit)}
+                    </span>
+                    <div className="relative w-full h-full flex items-end">
+                      <div
+                        className={`w-full rounded-t-md ${barClass}`}
+                        style={{ height: `${Math.min(barHeightPercent, 100)}%` }}
+                        title={`${shortDateLabel(day.date)}: ${formatMacroTrendValue(total, metric.unit)} ${metric.unit}`}
+                      />
+                      {target > 0 && (
+                        <div
+                          className="absolute left-0 right-0 border-t border-gray-400 border-dashed"
+                          style={{ bottom: targetLineBottom }}
+                          title={`Target: ${formatMacroTrendValue(target, metric.unit)} ${metric.unit}`}
+                        />
+                      )}
+                    </div>
+                    <span className="text-[10px] text-gray-400 tabular-nums">
+                      {target > 0 ? `T ${formatMacroTrendValue(target, metric.unit)}` : 'T —'}
+                    </span>
+                    <span className="text-[10px] text-gray-500">{weekdayLabel(day.date)}</span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
 }
 
 export default function DashboardPage() {
@@ -348,54 +445,31 @@ export default function DashboardPage() {
   const [summary, setSummary] = useState<DailySummary | null>(null)
   const [trends, setTrends] = useState<DashboardTrends | null>(null)
   const [workouts, setWorkouts] = useState<Workout[]>([])
-  const [targetDraft, setTargetDraft] = useState<Record<keyof Macros, number>>(
-    targetDraftFrom(null),
-  )
-  const [savingTarget, setSavingTarget] = useState(false)
-  const [targetError, setTargetError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
-  const loadDashboard = useCallback(async (targetDate: string) => {
-    setLoading(true)
-    try {
-      const [dailyData, trendData, workoutData] = await Promise.all([
-        getDailySummary(targetDate),
-        getDashboardTrends(targetDate),
-        getWorkouts(targetDate),
-      ])
-      setSummary(dailyData)
-      setTrends(trendData)
-      setWorkouts(workoutData)
-      setTargetDraft(targetDraftFrom(dailyData.active_macro_target))
-      setTargetError(null)
-    } catch {
-      setSummary(null)
-      setTrends(null)
-      setWorkouts([])
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
   useEffect(() => {
-    loadDashboard(date)
-  }, [date, loadDashboard])
-
-  const handleSaveTarget = async () => {
-    setSavingTarget(true)
-    setTargetError(null)
-    try {
-      await upsertMacroTarget({
-        day: date,
-        ...targetDraft,
-      })
-      await loadDashboard(date)
-    } catch {
-      setTargetError('Could not save target. Please try again.')
-    } finally {
-      setSavingTarget(false)
+    const loadDashboard = async () => {
+      setLoading(true)
+      try {
+        const [dailyData, trendData, workoutData] = await Promise.all([
+          getDailySummary(date),
+          getDashboardTrends(date),
+          getWorkouts(date),
+        ])
+        setSummary(dailyData)
+        setTrends(trendData)
+        setWorkouts(workoutData)
+      } catch {
+        setSummary(null)
+        setTrends(null)
+        setWorkouts([])
+      } finally {
+        setLoading(false)
+      }
     }
-  }
+
+    loadDashboard()
+  }, [date])
 
   const activeTarget = summary?.active_macro_target ?? null
 
@@ -454,60 +528,12 @@ export default function DashboardPage() {
             </div>
           </section>
 
-          <section className="bg-white border border-gray-200 rounded-2xl p-5">
-            <div className="flex items-start justify-between gap-4 flex-wrap mb-4">
-              <div>
-                <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">
-                  Daily Targets
-                </p>
-                <h2 className="text-xl font-semibold text-gray-900 mt-1">
-                  Set targets for {shortDateLabel(date)}
-                </h2>
-              </div>
-              <p className="text-sm text-gray-500">
-                This target applies until the next target date.
-              </p>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
-              {MACRO_KEYS.map((macro) => (
-                <label key={macro} className="block">
-                  <span className="text-xs text-gray-500">{MACRO_LABELS[macro]} ({MACRO_UNITS[macro]})</span>
-                  <input
-                    type="number"
-                    min="0"
-                    step={macro === 'calories' ? '10' : '0.1'}
-                    value={targetDraft[macro]}
-                    onChange={(e) => {
-                      const value = Number(e.target.value)
-                      setTargetDraft((prev) => ({
-                        ...prev,
-                        [macro]: Number.isFinite(value) ? value : 0,
-                      }))
-                    }}
-                    className="mt-1 w-full rounded-lg border border-gray-300 px-2.5 py-2 text-sm"
-                  />
-                </label>
-              ))}
-            </div>
-            <div className="mt-4 flex items-center gap-3">
-              <button
-                type="button"
-                onClick={handleSaveTarget}
-                disabled={savingTarget}
-                className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
-              >
-                {savingTarget ? 'Saving...' : 'Save Target'}
-              </button>
-              {targetError && <p className="text-sm text-red-600">{targetError}</p>}
-            </div>
-          </section>
-
           <div className="grid grid-cols-1 xl:grid-cols-[1.15fr_0.85fr] gap-6">
             <WeightTrendCard trends={trends} />
-            <CaloriesTrendCard trends={trends} />
+            <DailyTargetsBreakdownCard trends={trends} />
           </div>
 
-          <MacroBreakdownCard trends={trends} />
+          <TargetNormalizedMacroTrendsCard trends={trends} />
 
           {workouts.length > 0 && (
             <section className="bg-white border border-gray-200 rounded-2xl p-5">

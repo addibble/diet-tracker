@@ -244,6 +244,13 @@ export interface MacroCalorieBreakdown {
 export interface DashboardTrendDay {
   date: string;
   total_calories: number;
+  total_fat: number;
+  total_saturated_fat: number;
+  total_cholesterol: number;
+  total_sodium: number;
+  total_carbs: number;
+  total_fiber: number;
+  total_protein: number;
   macro_calories: MacroCalorieBreakdown;
   macro_calorie_percentages: MacroCalorieBreakdown;
   active_macro_target: MacroTarget | null;
