@@ -19,12 +19,13 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 MODEL = "anthropic/claude-haiku-4.5"
 VISION_MODEL = "anthropic/claude-haiku-4.5"
-CHAT_MODEL_MAX_INPUT_COST_PER_MILLION = 1.0
-CHAT_MODEL_MAX_OUTPUT_COST_PER_MILLION = 2.0
+CHAT_MODEL_MAX_INPUT_COST_PER_MILLION = 1000.0
+CHAT_MODEL_MAX_OUTPUT_COST_PER_MILLION = 1000.0
 CHAT_MODEL_CACHE_TTL_SECONDS = 600.0
 
 CHAT_PROVIDER_LABELS = {
     "anthropic": "Anthropic",
+    "openai": "OpenAI",
     "gemini": "Gemini",
     "nvidia": "NVIDIA",
     "bytedance": "Bytedance",
@@ -33,10 +34,11 @@ CHAT_PROVIDER_LABELS = {
 
 CHAT_PROVIDER_ORDER = {
     "anthropic": 0,
-    "gemini": 1,
-    "nvidia": 2,
-    "bytedance": 3,
-    "qwen": 4,
+    "openai": 1,
+    "gemini": 2,
+    "nvidia": 3,
+    "bytedance": 4,
+    "qwen": 5,
 }
 
 _CHAT_MODEL_CACHE: dict[str, Any] = {
@@ -180,6 +182,8 @@ def _chat_provider_key_for_model(model_id: str) -> str | None:
     lower = model_id.lower()
     if lower.startswith("anthropic/"):
         return "anthropic"
+    if lower.startswith("openai/"):
+        return "openai"
     if lower.startswith("google/") or "gemini" in lower:
         return "gemini"
     if lower.startswith("nvidia/"):
