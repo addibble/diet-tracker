@@ -25,8 +25,6 @@ CHAT_MODEL_MAX_INPUT_COST_PER_MILLION = 1000.0
 CHAT_MODEL_MAX_OUTPUT_COST_PER_MILLION = 1000.0
 CHAT_MODEL_CACHE_TTL_SECONDS = 600.0
 CHAT_MODEL_RECENCY_WINDOW_SECONDS = 400 * 24 * 60 * 60
-OPENROUTER_CHAT_TIMEOUT_SECONDS = 95.0
-OPENROUTER_CHAT_CONNECT_TIMEOUT_SECONDS = 10.0
 OPENROUTER_CHAT_MAX_RETRIES = 2
 OPENROUTER_RETRY_BASE_DELAY_SECONDS = 0.8
 OPENROUTER_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -1283,11 +1281,7 @@ async def chat_meal(
     ]
 
     max_rounds = 10
-    timeout = httpx.Timeout(
-        timeout=OPENROUTER_CHAT_TIMEOUT_SECONDS,
-        connect=OPENROUTER_CHAT_CONNECT_TIMEOUT_SECONDS,
-    )
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(timeout=None) as client:
         for _round in range(max_rounds):
             payload: dict[str, Any] = {
                 "model": active_model,

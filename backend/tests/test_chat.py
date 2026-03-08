@@ -1,3 +1,4 @@
+import json
 from datetime import date
 from unittest.mock import AsyncMock, patch
 
@@ -214,6 +215,41 @@ def test_chat_returns_402_on_llm_credit_limit(client):
 
     assert resp.status_code == 402
     assert "credit limit" in resp.json()["detail"]
+
+
+def test_chat_stream_returns_status_and_result(client):
+    with patch("app.routers.parse.chat_meal", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = "Got it."
+        resp = client.post("/api/meals/chat/stream", json={
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+
+    assert resp.status_code == 200
+    events = [
+        json.loads(line)
+        for line in resp.text.splitlines()
+        if line.strip()
+    ]
+    assert any(event.get("type") == "status" for event in events)
+    result_event = next(event for event in events if event.get("type") == "result")
+    assert result_event["data"]["message"] == "Got it."
+
+
+def test_chat_stream_emits_error_event(client):
+    with patch("app.routers.parse.chat_meal", new_callable=AsyncMock) as mock_llm:
+        mock_llm.side_effect = LLMUpstreamTimeoutError("timed out")
+        resp = client.post("/api/meals/chat/stream", json={
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+
+    assert resp.status_code == 200
+    events = [
+        json.loads(line)
+        for line in resp.text.splitlines()
+        if line.strip()
+    ]
+    error_event = next(event for event in events if event.get("type") == "error")
+    assert error_event["status"] == 504
 
 
 def test_chat_does_not_preload_recent_meals(client):

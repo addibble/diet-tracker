@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
-  chatMeal,
+  chatMealWithProgress,
   getChatModels,
   importFoodLabel,
   MACRO_KEYS, MACRO_LABELS, MACRO_UNITS,
+  type ChatProgressEvent,
   type ChatMessage, type ChatModelOption, type ChatProposedItem, type ChatResponse, type Meal, type Macros, type FoodImportResult,
 } from '../api'
 
@@ -89,6 +90,13 @@ function modelOptionLabel(model: ChatModelOption): string {
     `${model.provider} · ${tierPrefix}${model.name} · `
     + `${formatModelDate(model.created)} · $${inCost}/$${outCost}`
   )
+}
+
+function formatElapsedTime(elapsedMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
 }
 
 function importedFoodToChatPrompt(food: FoodImportResult): string {
@@ -245,6 +253,8 @@ export default function MealLogPage() {
   const [modelLoadError, setModelLoadError] = useState<string | null>(null)
   const [modelsLoading, setModelsLoading] = useState(true)
   const [saved, setSaved] = useState(initial.saved)
+  const [progressMessage, setProgressMessage] = useState('Submitting request to model provider...')
+  const [progressElapsedMs, setProgressElapsedMs] = useState(0)
   const bottomRef = useRef<HTMLDivElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
@@ -334,14 +344,23 @@ export default function MealLogPage() {
     if (isManualSend) setInput('')
     setEditingMessageIndex(null)
     setLoading(true)
+    setProgressMessage('Submitting request to model provider...')
+    setProgressElapsedMs(0)
 
     try {
       const apiHistory: ChatMessage[] = newMessages.map((m) => ({
         role: m.role,
         content: m.content,
       }))
-      const resp: ChatResponse = await chatMeal(
+      const onProgressEvent = (event: ChatProgressEvent) => {
+        if (event.type !== 'status') return
+        setProgressMessage(event.message)
+        setProgressElapsedMs(event.elapsed_ms)
+      }
+
+      const resp: ChatResponse = await chatMealWithProgress(
         apiHistory,
+        onProgressEvent,
         undefined,
         undefined,
         undefined,
@@ -364,8 +383,9 @@ export default function MealLogPage() {
         role: 'assistant',
         content: err instanceof Error ? err.message : 'Something went wrong. Please try again.',
       }])
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -382,6 +402,8 @@ export default function MealLogPage() {
     setEditingMessageIndex(null)
     setSaved(false)
     setSpeechError(null)
+    setProgressMessage('Submitting request to model provider...')
+    setProgressElapsedMs(0)
     sessionStorage.removeItem(CHAT_STORAGE_KEY)
     sessionStorage.removeItem(CHAT_SAVED_KEY)
   }
@@ -567,8 +589,18 @@ export default function MealLogPage() {
 
           {loading && (
             <div className="flex justify-start">
-              <div className="bg-white border border-gray-200 rounded-lg px-4 py-2">
-                <p className="text-sm text-gray-400">Thinking...</p>
+              <div className="bg-white border border-gray-200 rounded-lg px-4 py-2 w-full max-w-md">
+                <div className="flex items-center gap-2">
+                  <div className="h-3.5 w-3.5 rounded-full border-2 border-gray-300 border-t-blue-600 animate-spin" />
+                  <p className="text-sm text-gray-600">{progressMessage}</p>
+                  <span className="ml-auto text-xs text-gray-400">{formatElapsedTime(progressElapsedMs)}</span>
+                </div>
+                <div className="mt-2 h-1.5 w-full rounded-full bg-gray-100 overflow-hidden">
+                  <div
+                    className="h-full bg-blue-500 transition-[width] duration-300"
+                    style={{ width: `${Math.min(95, Math.round((progressElapsedMs / 180000) * 100))}%` }}
+                  />
+                </div>
               </div>
             </div>
           )}

@@ -1,13 +1,17 @@
 """Endpoint for LLM-powered meal parsing with USDA lookup."""
 
+import asyncio
+import contextlib
 import json
 import logging
 import re
+import time
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_type
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
@@ -34,6 +38,7 @@ logger = logging.getLogger("parse")
 router = APIRouter(prefix="/api/meals", tags=["parse"])
 
 SERVING_FIELDS = [f"{m}_per_serving" for m in MACRO_FIELDS]
+CHAT_STREAM_HEARTBEAT_SECONDS = 2.5
 
 
 class ParseRequest(BaseModel):
@@ -590,6 +595,75 @@ def _resolve_chat_items(raw_items: list[dict], session: Session) -> list[dict]:
             "macros_per_serving": {m: 0 for m in MACRO_FIELDS},
         })
     return result
+
+
+def _ndjson_line(payload: dict) -> str:
+    return json.dumps(payload, separators=(",", ":"), default=str) + "\n"
+
+
+@router.post("/chat/stream")
+async def chat_meal_stream_endpoint(
+    data: ChatRequest,
+    session: Session = Depends(get_session),
+    _user: str = Depends(get_current_user),
+):
+    """Stream chat progress heartbeats, then emit the final chat response payload."""
+    if not data.messages:
+        raise HTTPException(status_code=400, detail="messages cannot be empty")
+
+    async def _stream():
+        start = time.monotonic()
+        yield _ndjson_line({
+            "type": "status",
+            "stage": "queued",
+            "message": "Submitting request to model provider...",
+            "elapsed_ms": 0,
+        })
+
+        task = asyncio.create_task(chat_meal_endpoint(data, session, _user))
+        try:
+            while not task.done():
+                elapsed_ms = int((time.monotonic() - start) * 1000)
+                yield _ndjson_line({
+                    "type": "status",
+                    "stage": "processing",
+                    "message": "OpenRouter is still processing your request...",
+                    "elapsed_ms": elapsed_ms,
+                })
+                await asyncio.sleep(CHAT_STREAM_HEARTBEAT_SECONDS)
+
+            result = await task
+            yield _ndjson_line({
+                "type": "result",
+                "data": result,
+            })
+        except HTTPException as exc:
+            yield _ndjson_line({
+                "type": "error",
+                "status": exc.status_code,
+                "detail": str(exc.detail),
+            })
+        except Exception:
+            logger.exception("chat stream failed unexpectedly")
+            yield _ndjson_line({
+                "type": "error",
+                "status": 500,
+                "detail": "Unexpected chat streaming error",
+            })
+        finally:
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+    return StreamingResponse(
+        _stream(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/chat")

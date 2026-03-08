@@ -100,13 +100,22 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     ...options,
     headers,
   });
+  const errorDetail = await readErrorDetail(res);
+  if (errorDetail) {
+    throw new Error(errorDetail);
+  }
+  if (res.status === 204) return undefined as T;
+  return res.json();
+}
+
+async function readErrorDetail(res: Response): Promise<string | null> {
   if (res.status === 401) {
     window.location.href = '/login';
-    throw new Error('Unauthorized');
+    return 'Unauthorized';
   }
   if (!res.ok) {
     if (res.status === 413) {
-      throw new Error('Image is too large. Please retake closer or crop the photo.');
+      return 'Image is too large. Please retake closer or crop the photo.';
     }
 
     let detail = '';
@@ -119,10 +128,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       detail = normalizeServerErrorText(res.status, text);
     }
 
-    throw new Error(detail || res.statusText || 'Request failed');
+    return detail || res.statusText || 'Request failed';
   }
-  if (res.status === 204) return undefined as T;
-  return res.json();
+  return null;
 }
 
 // Macro fields shared across all interfaces
@@ -617,13 +625,13 @@ export interface ChatModelsResponse {
 export const getChatModels = () =>
   request<ChatModelsResponse>('/meals/chat/models');
 
-export const chatMeal = (
+function buildChatPayload(
   messages: ChatMessage[],
   date?: string,
   meal_type?: string,
   notes?: string,
   model?: string,
-) => {
+): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     messages,
     client_now_iso: new Date().toISOString(),
@@ -634,9 +642,113 @@ export const chatMeal = (
   if (meal_type) payload.meal_type = meal_type
   if (notes) payload.notes = notes
   if (model) payload.model = model
+  return payload
+}
+
+export interface ChatProgressStatusEvent {
+  type: 'status';
+  stage: 'queued' | 'processing';
+  message: string;
+  elapsed_ms: number;
+}
+
+export interface ChatProgressResultEvent {
+  type: 'result';
+  data: ChatResponse;
+}
+
+export interface ChatProgressErrorEvent {
+  type: 'error';
+  status: number;
+  detail: string;
+}
+
+export type ChatProgressEvent =
+  | ChatProgressStatusEvent
+  | ChatProgressResultEvent
+  | ChatProgressErrorEvent;
+
+export const chatMeal = (
+  messages: ChatMessage[],
+  date?: string,
+  meal_type?: string,
+  notes?: string,
+  model?: string,
+) => {
+  const payload = buildChatPayload(messages, date, meal_type, notes, model)
 
   return request<ChatResponse>('/meals/chat', {
     method: 'POST',
     body: JSON.stringify(payload),
   })
+}
+
+export const chatMealWithProgress = async (
+  messages: ChatMessage[],
+  onEvent: (event: ChatProgressEvent) => void,
+  date?: string,
+  meal_type?: string,
+  notes?: string,
+  model?: string,
+): Promise<ChatResponse> => {
+  const payload = buildChatPayload(messages, date, meal_type, notes, model)
+  const res = await fetch(`${BASE}/meals/chat/stream`, {
+    credentials: 'include',
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+
+  const errorDetail = await readErrorDetail(res)
+  if (errorDetail) {
+    throw new Error(errorDetail)
+  }
+
+  if (!res.body) {
+    return chatMeal(messages, date, meal_type, notes, model)
+  }
+
+  const decoder = new TextDecoder()
+  const reader = res.body.getReader()
+  let buffer = ''
+  let finalResult: ChatResponse | null = null
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    while (true) {
+      const newlineIndex = buffer.indexOf('\n')
+      if (newlineIndex < 0) break
+      const line = buffer.slice(0, newlineIndex).trim()
+      buffer = buffer.slice(newlineIndex + 1)
+      if (!line) continue
+
+      const event = JSON.parse(line) as ChatProgressEvent
+      onEvent(event)
+      if (event.type === 'result') {
+        finalResult = event.data
+      }
+      if (event.type === 'error') {
+        throw new Error(event.detail || `Request failed (${event.status})`)
+      }
+    }
+  }
+
+  const tail = buffer.trim()
+  if (tail) {
+    const event = JSON.parse(tail) as ChatProgressEvent
+    onEvent(event)
+    if (event.type === 'result') {
+      finalResult = event.data
+    } else if (event.type === 'error') {
+      throw new Error(event.detail || `Request failed (${event.status})`)
+    }
+  }
+
+  if (finalResult) {
+    return finalResult
+  }
+  throw new Error('Chat stream ended without a result')
 }
