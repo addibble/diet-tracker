@@ -168,7 +168,12 @@ def _resolve_client_now(
         except ZoneInfoNotFoundError:
             logger.warning("Invalid client_timezone=%r; using UTC", client_timezone)
 
-    return now.astimezone(UTC), "UTC"
+    # Fall back to server-local timezone when the client timezone is unavailable.
+    # This avoids date shifts around UTC midnight for natural-language phrases
+    # like "yesterday" when callers omit client timezone metadata.
+    local_now = now.astimezone()
+    local_tz_name = local_now.tzname() or "local"
+    return local_now, local_tz_name
 
 
 def _infer_request_date(

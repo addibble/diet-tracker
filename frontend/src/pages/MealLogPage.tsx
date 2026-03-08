@@ -7,6 +7,71 @@ import {
   type ChatMessage, type ChatProposedItem, type ChatResponse, type DailySummary, type Meal, type Macros, type FoodImportResult,
 } from '../api'
 
+interface SpeechRecognitionAlternativeLike {
+  transcript: string
+}
+
+interface SpeechRecognitionResultLike {
+  isFinal: boolean
+  [index: number]: SpeechRecognitionAlternativeLike
+}
+
+interface SpeechRecognitionResultListLike {
+  length: number
+  [index: number]: SpeechRecognitionResultLike
+}
+
+interface SpeechRecognitionEventLike extends Event {
+  resultIndex: number
+  results: SpeechRecognitionResultListLike
+}
+
+interface SpeechRecognitionErrorEventLike extends Event {
+  error: string
+}
+
+interface SpeechRecognitionLike extends EventTarget {
+  continuous: boolean
+  interimResults: boolean
+  lang: string
+  onstart: ((this: SpeechRecognitionLike, ev: Event) => unknown) | null
+  onend: ((this: SpeechRecognitionLike, ev: Event) => unknown) | null
+  onresult: ((this: SpeechRecognitionLike, ev: SpeechRecognitionEventLike) => unknown) | null
+  onerror: ((this: SpeechRecognitionLike, ev: SpeechRecognitionErrorEventLike) => unknown) | null
+  start(): void
+  stop(): void
+  abort(): void
+}
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
+
+interface WindowWithSpeechRecognition extends Window {
+  SpeechRecognition?: SpeechRecognitionConstructor
+  webkitSpeechRecognition?: SpeechRecognitionConstructor
+}
+
+function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null {
+  if (typeof window === 'undefined') return null
+  const speechWindow = window as WindowWithSpeechRecognition
+  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null
+}
+
+function speechErrorMessage(error: string): string {
+  switch (error) {
+    case 'not-allowed':
+    case 'service-not-allowed':
+      return 'Microphone permission is blocked. Allow microphone access in Safari settings.'
+    case 'audio-capture':
+      return 'No microphone was detected.'
+    case 'no-speech':
+      return 'No speech detected. Try again and speak closer to the microphone.'
+    case 'network':
+      return 'Speech recognition needs a network connection.'
+    default:
+      return 'Voice input failed. You can still use keyboard dictation on iPhone/Mac.'
+  }
+}
+
 function importedFoodToChatPrompt(food: FoodImportResult): string {
   const descriptor = food.brand ? `${food.brand} ${food.name}` : food.name
   const lines = [
@@ -218,9 +283,13 @@ export default function MealLogPage() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [importingImage, setImportingImage] = useState(false)
+  const [listening, setListening] = useState(false)
+  const [speechError, setSpeechError] = useState<string | null>(null)
   const [saved, setSaved] = useState(initial.saved)
   const bottomRef = useRef<HTMLDivElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
+  const speechRecognitionAvailable = getSpeechRecognitionConstructor() !== null
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -229,6 +298,19 @@ export default function MealLogPage() {
   useEffect(() => {
     saveChatState(messages, saved)
   }, [messages, saved])
+
+  useEffect(() => {
+    return () => {
+      recognitionRef.current?.abort()
+      recognitionRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    if (tab !== 'chat' || loading || importingImage || saved) {
+      recognitionRef.current?.stop()
+    }
+  }, [importingImage, loading, saved, tab])
 
   const handleSend = async (overrideContent?: string) => {
     const userContent = overrideContent ?? input.trim()
@@ -280,9 +362,11 @@ export default function MealLogPage() {
   }
 
   const handleNewMeal = () => {
+    recognitionRef.current?.stop()
     setMessages([])
     setInput('')
     setSaved(false)
+    setSpeechError(null)
     sessionStorage.removeItem(CHAT_STORAGE_KEY)
     sessionStorage.removeItem(CHAT_SAVED_KEY)
   }
@@ -305,6 +389,59 @@ export default function MealLogPage() {
       ])
     } finally {
       setImportingImage(false)
+    }
+  }
+
+  const handleToggleSpeechInput = () => {
+    if (saved || loading || importingImage) return
+
+    if (listening && recognitionRef.current) {
+      recognitionRef.current.stop()
+      return
+    }
+
+    const SpeechRecognitionCtor = getSpeechRecognitionConstructor()
+    if (!SpeechRecognitionCtor) {
+      setSpeechError('Voice input is unavailable. Use the keyboard mic for native dictation.')
+      return
+    }
+
+    if (!recognitionRef.current) {
+      const recognition = new SpeechRecognitionCtor()
+      recognition.continuous = true
+      recognition.interimResults = false
+      recognition.onstart = () => {
+        setListening(true)
+      }
+      recognition.onend = () => {
+        setListening(false)
+      }
+      recognition.onresult = (event) => {
+        let transcript = ''
+        for (let i = event.resultIndex; i < event.results.length; i += 1) {
+          const result = event.results[i]
+          if (result.isFinal) {
+            transcript += result[0]?.transcript ?? ''
+          }
+        }
+        const normalized = transcript.trim()
+        if (!normalized) return
+        setInput((previous) => (previous.trim() ? `${previous.trimEnd()} ${normalized}` : normalized))
+      }
+      recognition.onerror = (event) => {
+        setSpeechError(speechErrorMessage(event.error))
+      }
+      recognitionRef.current = recognition
+    }
+
+    const recognition = recognitionRef.current
+    if (!recognition) return
+    recognition.lang = navigator.language || 'en-US'
+    setSpeechError(null)
+    try {
+      recognition.start()
+    } catch {
+      setSpeechError('Could not start voice input. Check microphone permission and try again.')
     }
   }
 
@@ -402,51 +539,90 @@ export default function MealLogPage() {
       )}
 
       {tab === 'chat' && (
-        <div className="flex gap-2">
-          <input
-            ref={cameraInputRef}
-            type="file"
-            accept="image/*"
-            capture="environment"
-            onChange={handleImportImage}
-            className="hidden"
-            disabled={loading || saved || importingImage}
-          />
-          <button
-            type="button"
-            onClick={() => cameraInputRef.current?.click()}
-            disabled={loading || saved || importingImage}
-            className="px-3 py-2.5 border border-gray-300 rounded-md text-gray-600 hover:text-gray-900 hover:border-gray-400 disabled:opacity-50"
-            aria-label="Scan nutrition label"
-            title="Scan nutrition label"
-          >
-            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path
-                d="M4 8.5C4 7.12 5.12 6 6.5 6H8l1.2-1.6A2 2 0 0 1 10.8 3.5h2.4a2 2 0 0 1 1.6.9L16 6h1.5A2.5 2.5 0 0 1 20 8.5V18a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18V8.5Z"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-              <circle cx="12" cy="13" r="3.5" stroke="currentColor" strokeWidth="1.8" />
-            </svg>
-          </button>
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={saved ? 'Meal saved — tap New Meal to log another' : 'Describe what you ate...'}
-            className="flex-1 px-3 py-2.5 border border-gray-300 rounded-md text-sm disabled:bg-gray-50"
-            disabled={loading || saved || importingImage}
-          />
-          <button
-            onClick={() => handleSend()}
-            disabled={loading || importingImage || !input.trim() || saved}
-            className="px-4 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50"
-          >
-            {importingImage ? 'Importing...' : 'Send'}
-          </button>
-        </div>
+        <>
+          <div className="flex gap-2">
+            <input
+              ref={cameraInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              onChange={handleImportImage}
+              className="hidden"
+              disabled={loading || saved || importingImage}
+            />
+            <button
+              type="button"
+              onClick={() => cameraInputRef.current?.click()}
+              disabled={loading || saved || importingImage}
+              className="px-3 py-2.5 border border-gray-300 rounded-md text-gray-600 hover:text-gray-900 hover:border-gray-400 disabled:opacity-50"
+              aria-label="Scan nutrition label"
+              title="Scan nutrition label"
+            >
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="M4 8.5C4 7.12 5.12 6 6.5 6H8l1.2-1.6A2 2 0 0 1 10.8 3.5h2.4a2 2 0 0 1 1.6.9L16 6h1.5A2.5 2.5 0 0 1 20 8.5V18a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18V8.5Z"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <circle cx="12" cy="13" r="3.5" stroke="currentColor" strokeWidth="1.8" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              onClick={handleToggleSpeechInput}
+              disabled={(!speechRecognitionAvailable && !listening) || loading || saved || importingImage}
+              className={`px-3 py-2.5 border rounded-md disabled:opacity-50 ${
+                listening
+                  ? 'border-red-300 text-red-600 bg-red-50'
+                  : 'border-gray-300 text-gray-600 hover:text-gray-900 hover:border-gray-400'
+              }`}
+              aria-label={listening ? 'Stop voice input' : 'Start voice input'}
+              title={
+                speechRecognitionAvailable
+                  ? (listening ? 'Stop voice input' : 'Start voice input')
+                  : 'Voice input unavailable here. Use keyboard dictation mic.'
+              }
+            >
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="M12 15.5a3.5 3.5 0 0 0 3.5-3.5V7.5a3.5 3.5 0 1 0-7 0V12a3.5 3.5 0 0 0 3.5 3.5Z"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <path d="M6.5 11.5a5.5 5.5 0 0 0 11 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                <path d="M12 17v3.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                <path d="M9 20.5h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+              </svg>
+            </button>
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={saved ? 'Meal saved — tap New Meal to log another' : 'Describe what you ate...'}
+              className="flex-1 px-3 py-2.5 border border-gray-300 rounded-md text-sm disabled:bg-gray-50"
+              disabled={loading || saved || importingImage}
+            />
+            <button
+              onClick={() => handleSend()}
+              disabled={loading || importingImage || !input.trim() || saved}
+              className="px-4 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50"
+            >
+              {importingImage ? 'Importing...' : 'Send'}
+            </button>
+          </div>
+          {speechError ? (
+            <p className="mt-2 text-xs text-red-500">{speechError}</p>
+          ) : !speechRecognitionAvailable ? (
+            <p className="mt-2 text-xs text-gray-400">
+              Voice button is unavailable here. On iPhone/Mac Safari, use the keyboard microphone for dictation.
+            </p>
+          ) : null}
+          {listening && <p className="mt-2 text-xs text-red-500">Listening...</p>}
+        </>
       )}
     </div>
   )
