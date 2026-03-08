@@ -6,7 +6,7 @@ interface ScrollablePageProps {
 }
 
 const pageHeightStyle: CSSProperties = {
-  height: 'calc(100dvh - var(--safe-top) - var(--safe-bottom) - 8rem)',
+  height: 'calc(100dvh - var(--safe-top) - var(--safe-bottom) - 6rem)',
 }
 
 export default function ScrollablePage({ children, className = '' }: ScrollablePageProps) {

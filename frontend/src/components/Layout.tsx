@@ -11,8 +11,8 @@ export default function Layout() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Keep top safe-area clear on iOS/mobile. */}
-      <div className="md:hidden pt-[var(--safe-top)] bg-white border-b border-gray-200" />
+      {/* Keep top safe-area clear on iOS/mobile. Use inline style so env() is resolved at runtime. */}
+      <div className="md:hidden bg-white border-b border-gray-200" style={{ paddingTop: 'env(safe-area-inset-top)' }} />
 
       {/* Desktop nav links */}
       <nav className="hidden md:block bg-white border-b border-gray-200">
