@@ -297,15 +297,15 @@ export default function MealLogPage() {
   }, [])
 
   useEffect(() => {
-    if (loading || importingImage || saved) {
+    if (loading || importingImage) {
       recognitionRef.current?.stop()
     }
-  }, [importingImage, loading, saved])
+  }, [importingImage, loading])
 
   const handleSend = async (overrideContent?: string) => {
     const isManualSend = overrideContent === undefined
     const userContent = (overrideContent ?? input).trim()
-    if (!userContent || loading || saved) return
+    if (!userContent || loading) return
     recognitionRef.current?.stop()
 
     const activeEditIndex = isManualSend ? editingMessageIndex : null
@@ -343,7 +343,7 @@ export default function MealLogPage() {
       }
       setMessages([...newMessages, assistantBubble])
       if (resp.saved_meal) {
-        setSaved(true)
+        setSaved(true)  // track for session persistence only
       }
     } catch (err) {
       setMessages([...newMessages, {
@@ -376,7 +376,7 @@ export default function MealLogPage() {
     const target = e.target
     const file = target.files?.[0]
     target.value = ''
-    if (!file || loading || importingImage || saved) return
+    if (!file || loading || importingImage) return
 
     setImportingImage(true)
     try {
@@ -408,7 +408,7 @@ export default function MealLogPage() {
   }
 
   const handleToggleSpeechInput = () => {
-    if (saved || loading || importingImage) return
+    if (loading || importingImage) return
 
     if (listening && recognitionRef.current) {
       recognitionRef.current.stop()
@@ -513,7 +513,7 @@ export default function MealLogPage() {
                   <ProposedItemsCard
                     items={msg.proposedItems}
                     onConfirm={() => handleSend('Yes, save it')}
-                    confirmed={saved || i < messages.length - 1}
+                    confirmed={!!msg.savedMeal || i < messages.length - 1}
                     isEdit={!!msg.editMealId}
                   />
                 )}
@@ -523,7 +523,7 @@ export default function MealLogPage() {
                 <button
                   type="button"
                   onClick={() => handleStartMessageEdit(i)}
-                  disabled={loading || importingImage || saved}
+                  disabled={loading || importingImage}
                   className="text-xs text-gray-400 hover:text-gray-600 disabled:opacity-40"
                 >
                   Edit
@@ -551,7 +551,7 @@ export default function MealLogPage() {
           id="chat-model-select"
           value={selectedModel}
           onChange={(e) => setSelectedModel(e.target.value)}
-          disabled={modelsLoading || loading || importingImage || saved}
+          disabled={modelsLoading || loading || importingImage}
           className="min-w-0 flex-1 px-2 py-1.5 border border-gray-300 rounded-md text-xs bg-white disabled:bg-gray-50"
         >
           {chatModels.length === 0 && <option value="">Default model</option>}
@@ -590,12 +590,12 @@ export default function MealLogPage() {
               capture="environment"
               onChange={handleImportImage}
               className="hidden"
-              disabled={loading || saved || importingImage}
+              disabled={loading || importingImage}
             />
             <button
               type="button"
               onClick={() => cameraInputRef.current?.click()}
-              disabled={loading || saved || importingImage}
+              disabled={loading || importingImage}
               className="px-3 py-2.5 border border-gray-300 rounded-md text-gray-600 hover:text-gray-900 hover:border-gray-400 disabled:opacity-50"
               aria-label="Scan nutrition label"
               title="Scan nutrition label"
@@ -614,7 +614,7 @@ export default function MealLogPage() {
             <button
               type="button"
               onClick={handleToggleSpeechInput}
-              disabled={(!speechRecognitionAvailable && !listening) || loading || saved || importingImage}
+              disabled={(!speechRecognitionAvailable && !listening) || loading || importingImage}
               className={`px-3 py-2.5 border rounded-md disabled:opacity-50 ${
                 listening
                   ? 'border-red-300 text-red-600 bg-red-50'
@@ -644,13 +644,13 @@ export default function MealLogPage() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={saved ? 'Meal saved — tap Clear Chat to start another' : 'Describe what you ate...'}
+              placeholder="Describe what you ate..."
               className="flex-1 px-3 py-2.5 border border-gray-300 rounded-md text-sm disabled:bg-gray-50"
-              disabled={loading || saved || importingImage}
+              disabled={loading || importingImage}
             />
             <button
               onClick={() => handleSend()}
-              disabled={loading || importingImage || !input.trim() || saved}
+              disabled={loading || importingImage || !input.trim()}
               className="px-4 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50"
             >
               {importingImage ? 'Importing...' : editingMessageIndex !== null ? 'Resend' : 'Send'}
