@@ -473,6 +473,12 @@ You have tools to query and modify the food log database. Use them when:
 delete_meal_item)
 - The user wants to create or delete entire meals (use create_meal, delete_meal)
 
+On EVERY interaction:
+- Call query_food_log before relying on any existing meal facts, totals, or IDs.
+- Use the current local date from context when no date is specified.
+- If the user references a different date, call query_food_log for that date.
+- Treat earlier chat messages as potentially stale; rely on fresh tool output.
+
 When modifying meals via tools, briefly confirm what you changed.
 Do NOT use <ITEMS>/<CONFIRM/> tags when using tools to edit existing data — \
 just use the tools directly.

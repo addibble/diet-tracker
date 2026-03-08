@@ -526,8 +526,6 @@ async def chat_meal_endpoint(
 
     all_recipes = session.exec(select(Recipe).order_by(Recipe.name)).all()
     known_recipes = [{"id": r.id, "name": r.name} for r in all_recipes]
-
-    # Fetch recent meals (today + yesterday) so the LLM can reference/edit them
     from app.routers.meals import _build_meal_response
 
     client_now, client_timezone = _resolve_client_now(
@@ -536,14 +534,6 @@ async def chat_meal_endpoint(
     )
     request_date = _infer_request_date(data.messages, data.date, client_now)
     meal_type = _infer_meal_type(data.messages, data.meal_type, client_now)
-    today = client_now.date()
-    yesterday = today - timedelta(days=1)
-    recent_logs = session.exec(
-        select(MealLog)
-        .where(MealLog.date >= yesterday)
-        .order_by(MealLog.date, MealLog.created_at)
-    ).all()
-    recent_meals = [_build_meal_response(m, session) for m in recent_logs]
 
     llm_time_context = {
         "client_local_datetime": client_now.isoformat(timespec="minutes"),
@@ -561,12 +551,12 @@ async def chat_meal_endpoint(
             if data.model:
                 raw_response = await chat_meal(
                     messages, known_foods, known_recipes,
-                    recent_meals, tool_executor, model=data.model,
+                    None, tool_executor, model=data.model,
                 )
             else:
                 raw_response = await chat_meal(
                     messages, known_foods, known_recipes,
-                    recent_meals, tool_executor,
+                    None, tool_executor,
                 )
     except Exception as e:
         logger.exception("LLM chat failed")

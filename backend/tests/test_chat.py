@@ -178,6 +178,20 @@ def test_chat_models_endpoint(client):
     mock_models.assert_awaited_once()
 
 
+def test_chat_does_not_preload_recent_meals(client):
+    with patch("app.routers.parse.chat_meal", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = "Got it."
+        client.post("/api/meals/chat", json={
+            "messages": [
+                {"role": "user", "content": "what did I eat today?"},
+            ],
+        })
+
+    mock_llm.assert_called_once()
+    recent_meals = mock_llm.call_args.args[3]
+    assert recent_meals is None
+
+
 def test_chat_infers_date_and_meal_type_from_message(client):
     food = client.post("/api/foods", json={
         "name": "Greek Yogurt",
