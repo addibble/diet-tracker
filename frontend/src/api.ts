@@ -272,12 +272,19 @@ export interface WeightRegression {
   line: WeightRegressionPoint[];
 }
 
+export interface WeightDay {
+  date: string;
+  weight_lb: number;
+  weight_logged_at: string;
+}
+
 export interface DashboardTrends {
   start_date: string;
   end_date: string;
   latest_weight_lb: number | null;
   latest_weight_logged_at: string | null;
   days: DashboardTrendDay[];
+  weight_days: WeightDay[];
   weight_regression: WeightRegression | null;
 }
 
