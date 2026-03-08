@@ -427,14 +427,19 @@ export default function MealLogPage() {
           setProgressElapsedMs(event.elapsed_ms)
           const activityEvent = event.last_activity_event
 
-          // Raw stream lines get their own log entries
+          // Raw stream lines: skip keepalive comments, show everything else
           if (activityEvent === 'upstream_raw_line' && event.stream_line) {
-            const truncated = event.stream_line.length > 120
-              ? event.stream_line.slice(0, 120) + '...'
-              : event.stream_line
-            setProgressLog((prev) => [...prev, { time: event.elapsed_ms, text: `SSE: ${truncated}` }])
+            if (!event.stream_line.startsWith(':')) {
+              const truncated = event.stream_line.length > 120
+                ? event.stream_line.slice(0, 120) + '...'
+                : event.stream_line
+              setProgressLog((prev) => [...prev, { time: event.elapsed_ms, text: `SSE: ${truncated}` }])
+            }
             return
           }
+
+          // Skip keepalive events from cluttering the log
+          if (activityEvent === 'upstream_keepalive_comment') return
 
           // Only append a log entry when the activity event changes
           if (activityEvent !== prevActivityEvent) {
