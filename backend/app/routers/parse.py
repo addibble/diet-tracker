@@ -15,7 +15,7 @@ from app.auth import get_current_user
 from app.database import get_session
 from app.llm import chat_meal, chat_runtime_context, parse_meal_description
 from app.macros import MACRO_FIELDS
-from app.models import Food, MealItem, MealLog, Recipe, WeightLog
+from app.models import Food, MacroTarget, MealItem, MealLog, Recipe, WeightLog
 from app.usda import search_usda
 
 logger = logging.getLogger("parse")
@@ -348,6 +348,48 @@ def _make_tool_executor(session: Session, state: _ToolState):
                 "food_id": food.id,
                 "name": food.name,
                 "brand": food.brand,
+            }
+
+        elif name == "set_macro_target":
+            day = date_type.fromisoformat(args["day"])
+            target = session.exec(
+                select(MacroTarget).where(MacroTarget.day == day)
+            ).first()
+            for macro in MACRO_FIELDS:
+                if macro not in args or args[macro] is None:
+                    continue
+                if float(args[macro]) < 0:
+                    return {"error": f"{macro} must be >= 0"}
+
+            if not target:
+                target = MacroTarget(
+                    day=day,
+                    **{
+                        macro: float(args.get(macro, 0))
+                        for macro in MACRO_FIELDS
+                    },
+                )
+            else:
+                for macro in MACRO_FIELDS:
+                    if macro in args and args[macro] is not None:
+                        setattr(target, macro, float(args[macro]))
+
+            session.add(target)
+            session.commit()
+            session.refresh(target)
+            state.data_changed = True
+
+            next_target = session.exec(
+                select(MacroTarget)
+                .where(MacroTarget.day > target.day)
+                .order_by(MacroTarget.day)
+            ).first()
+            return {
+                "success": True,
+                "id": target.id,
+                "day": str(target.day),
+                "next_day": str(next_target.day) if next_target else None,
+                **{macro: float(getattr(target, macro)) for macro in MACRO_FIELDS},
             }
 
         elif name == "delete_meal":

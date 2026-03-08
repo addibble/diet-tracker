@@ -1,9 +1,9 @@
-from datetime import date, timedelta
+from datetime import date
 from unittest.mock import AsyncMock, patch
 
 from sqlmodel import select
 
-from app.models import WeightLog
+from app.models import MacroTarget, WeightLog
 
 
 def test_chat_proposes_items(client):
@@ -165,13 +165,15 @@ def test_chat_infers_date_and_meal_type_from_message(client):
                 {"role": "user", "content": "Yesterday for dinner I had greek yogurt"},
                 {"role": "user", "content": "yes save it"},
             ],
+            "client_now_iso": "2026-03-07T20:00:00-07:00",
+            "client_timezone": "America/Denver",
         })
 
     assert resp.status_code == 200
     data = resp.json()
     assert data["saved_meal"] is not None
     assert data["saved_meal"]["meal_type"] == "dinner"
-    assert data["saved_meal"]["date"] == str(date.today() - timedelta(days=1))
+    assert data["saved_meal"]["date"] == "2026-03-06"
 
 
 def test_chat_uses_client_local_datetime_for_inferred_defaults(client):
@@ -237,3 +239,56 @@ def test_chat_can_log_weight(client, session):
     weight_logs = session.exec(select(WeightLog)).all()
     assert len(weight_logs) == 1
     assert weight_logs[0].weight_lb == 180.4
+
+
+def test_chat_can_set_macro_target(client, session):
+    async def fake_chat(
+        messages,
+        known_foods,
+        known_recipes,
+        recent_meals,
+        tool_executor,
+    ):
+        expected = (
+            "Set my macro targets for today to 2200 calories and 180 protein"
+        )
+        assert messages[-1]["content"] == expected
+        result = await tool_executor("set_macro_target", {
+            "day": "2026-03-07",
+            "calories": 2200,
+            "protein": 180,
+            "carbs": 220,
+            "fat": 70,
+        })
+        assert result["success"] is True
+        return "Saved your macro targets for 2026-03-07."
+
+    with patch("app.routers.parse.chat_meal", new_callable=AsyncMock) as mock_llm:
+        mock_llm.side_effect = fake_chat
+        resp = client.post("/api/meals/chat", json={
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Set my macro targets for today to 2200 calories and 180 protein",
+                },
+            ],
+            "client_now_iso": "2026-03-07T18:00:00+00:00",
+            "client_timezone": "America/Denver",
+        })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["message"] == "Saved your macro targets for 2026-03-07."
+    assert data["proposed_items"] is None
+    assert data["saved_meal"] is None
+    assert data["data_changed"] is True
+
+    target = session.exec(
+        select(MacroTarget).where(MacroTarget.day == date(2026, 3, 7))
+    ).first()
+    assert target is not None
+    assert target.calories == 2200
+    assert target.protein == 180
+    assert target.carbs == 220
+    assert target.fat == 70
+    assert target.saturated_fat == 0

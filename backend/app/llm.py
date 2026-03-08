@@ -329,6 +329,14 @@ When modifying meals via tools, briefly confirm what you changed.
 Do NOT use <ITEMS>/<CONFIRM/> tags when using tools to edit existing data — \
 just use the tools directly.
 
+## Macro target management
+You can set daily macro targets that apply from their day until the next target.
+- Use set_macro_target when the user asks to set or update daily targets.
+- If the user does not specify a date, use the current local date from context.
+- When updating a day, unspecified fields should remain unchanged.
+- Do NOT use <ITEMS>/<CONFIRM/> tags for macro-target changes.
+- After saving, confirm which day and targets were recorded.
+
 ## Weight logging
 You also have a tool to log body weight. Use it when the user asks to record or \
 log their weight.
@@ -581,6 +589,35 @@ CHAT_TOOLS = [
                     "sodium_per_serving", "carbs_per_serving",
                     "fiber_per_serving", "protein_per_serving",
                 ],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_macro_target",
+            "description": (
+                "Create or update a macro target day."
+                " If a target already exists for that day, supplied fields overwrite it."
+                " Omitted fields remain unchanged."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "day": {
+                        "type": "string",
+                        "description": "Target start date in YYYY-MM-DD format",
+                    },
+                    "calories": {"type": "number", "description": "Calories (kcal)"},
+                    "fat": {"type": "number", "description": "Fat (g)"},
+                    "saturated_fat": {"type": "number", "description": "Saturated fat (g)"},
+                    "cholesterol": {"type": "number", "description": "Cholesterol (mg)"},
+                    "sodium": {"type": "number", "description": "Sodium (mg)"},
+                    "carbs": {"type": "number", "description": "Carbohydrates (g)"},
+                    "fiber": {"type": "number", "description": "Fiber (g)"},
+                    "protein": {"type": "number", "description": "Protein (g)"},
+                },
+                "required": ["day"],
             },
         },
     },
