@@ -302,13 +302,13 @@ function DailyTargetsBreakdownCard({ trends }: { trends: DashboardTrends }) {
                   />
                 )}
               </div>
-              <p className="text-[10px] text-amber-600 tabular-nums">
+              <p className="text-[10px] text-amber-600 tabular-nums h-4 leading-4">
                 {targetCalories > 0 ? `T ${Math.round(targetCalories)}` : 'T —'}
               </p>
-              <p className="text-[10px] text-gray-500 text-center">
+              <p className="text-[10px] text-gray-500 text-center h-8 leading-4 overflow-hidden">
                 F {fat.toFixed(0)} · C {carbs.toFixed(0)} · P {protein.toFixed(0)}
               </p>
-              <span className="text-xs text-gray-500">{weekdayLabel(day.date)}</span>
+              <span className="text-xs text-gray-500 h-4 leading-4">{weekdayLabel(day.date)}</span>
             </div>
           )
         })}
