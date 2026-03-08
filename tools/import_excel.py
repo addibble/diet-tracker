@@ -9,7 +9,7 @@ imports everything via the diet tracker API.
 
 Usage:
     python tools/import_excel.py mydata.xlsx
-    python tools/import_excel.py mydata.xlsx --api https://diettracker.kndyman.com
+    python tools/import_excel.py mydata.xlsx --api $APP_URL
     python tools/import_excel.py mydata.xlsx --dry-run   # parse only, no import
     python tools/import_excel.py mydata.xlsx --chol-sodium-unit g  # if stored in grams
 

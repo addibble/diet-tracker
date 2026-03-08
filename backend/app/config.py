@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     model_config = {
         "env_file": str(_env_file) if _env_file.exists() else ".env",
         "env_file_encoding": "utf-8",
+        "extra": "ignore",
     }
 
 

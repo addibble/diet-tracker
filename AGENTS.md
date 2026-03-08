@@ -197,7 +197,6 @@ Inline JSON-style tool definitions (OpenRouter/OpenAI function calling format) e
 
 ## Production
 
-- **URL:** https://diettracker.kndyman.com/
 - **Deploy:** Push to `main` triggers GitHub Actions CD → builds images → pushes to ghcr.io → deploys to VPS
 - **VPS compose:** `docker-compose.prod.yml` is synced to VPS during deploy
 
@@ -205,13 +204,16 @@ Inline JSON-style tool definitions (OpenRouter/OpenAI function calling format) e
 
 Tail production backend logs from your local machine:
 
+Find the password as APP_PASSWORD in .env
+Find the URL as APP_URL in .env
+
 ```bash
 # Last 100 lines (default)
-curl -u logs:iemeM5ja https://diettracker.kndyman.com/api/debug/logs
+curl -u logs:$APP_PASSWORD $APP_URL/api/debug/logs
 
 # Last 50 lines
-curl -u logs:iemeM5ja https://diettracker.kndyman.com/api/debug/logs?lines=50
+curl -u logs:$APP_PASSWORD $APP_URL/api/debug/logs?lines=50
 
 # Only errors
-curl -u logs:iemeM5ja https://diettracker.kndyman.com/api/debug/logs?level=ERROR
+curl -u logs:$APP_PASSWORD $APP_URL/api/debug/logs?level=ERROR
 ```
