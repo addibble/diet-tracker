@@ -663,6 +663,7 @@ export interface ChatProgressStatusEvent {
   upstream_cf_ray: string | null;
   upstream_attempt: number | null;
   upstream_round: number | null;
+  stream_line: string | null;
 }
 
 export interface ChatProgressResultEvent {

@@ -99,7 +99,7 @@ function formatElapsedTime(elapsedMs: number): string {
   return `${minutes}:${String(seconds).padStart(2, '0')}`
 }
 
-function progressMessageForEvent(eventName: string | null): string {
+function progressMessageForEvent(eventName: string | null): string | null {
   switch (eventName) {
     case 'upstream_request_started':
       return 'Request sent to OpenRouter...'
@@ -133,6 +133,16 @@ function progressMessageForEvent(eventName: string | null): string {
       return 'Model returned invalid tool arguments...'
     case 'upstream_round_complete':
       return 'Model provider finished; finalizing response...'
+    case 'upstream_stream_done':
+      return 'Stream completed ([DONE] received)'
+    case 'upstream_stream_idle_timeout':
+      return 'Stream timed out waiting for data'
+    case 'upstream_stream_exhausted':
+      return 'Stream closed without finish signal'
+    case 'upstream_finish_reason':
+      return 'Received finish reason from provider'
+    case 'upstream_raw_line':
+      return null  // handled specially below
     default:
       return 'OpenRouter is still processing your request...'
   }
@@ -416,13 +426,24 @@ export default function MealLogPage() {
         if (event.type === 'status') {
           setProgressElapsedMs(event.elapsed_ms)
           const activityEvent = event.last_activity_event
+
+          // Raw stream lines get their own log entries
+          if (activityEvent === 'upstream_raw_line' && event.stream_line) {
+            const truncated = event.stream_line.length > 120
+              ? event.stream_line.slice(0, 120) + '...'
+              : event.stream_line
+            setProgressLog((prev) => [...prev, { time: event.elapsed_ms, text: `SSE: ${truncated}` }])
+            return
+          }
+
           // Only append a log entry when the activity event changes
           if (activityEvent !== prevActivityEvent) {
             prevActivityEvent = activityEvent
             const source = progressSourceLabel(event.activity_source)
             const toolSuffix = event.active_tool_name ? ` (${event.active_tool_name})` : ''
             const roundPrefix = event.upstream_round ? `[R${event.upstream_round}] ` : ''
-            const line = `${roundPrefix}${source}: ${progressMessageForEvent(activityEvent)}${toolSuffix}`
+            const msg = progressMessageForEvent(activityEvent) || activityEvent || 'processing'
+            const line = `${roundPrefix}${source}: ${msg}${toolSuffix}`
             setProgressLog((prev) => [...prev, { time: event.elapsed_ms, text: line }])
           }
         }

@@ -30,6 +30,7 @@ OPENROUTER_RETRY_BASE_DELAY_SECONDS = 0.8
 OPENROUTER_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 OPENROUTER_CHAT_MAX_TOKENS = 4096
 OPENROUTER_CHAT_MAX_TOKENS_REASONING = 16384
+OPENROUTER_STREAM_IDLE_TIMEOUT_SECONDS = 20
 
 CHAT_PROVIDER_LABELS = {
     "anthropic": "Anthropic",
@@ -1517,10 +1518,39 @@ async def _stream_openrouter_chat_completion(
                 content_parts: list[str] = []
                 tool_calls_by_index: dict[int, dict[str, Any]] = {}
 
-                async for raw_line in resp.aiter_lines():
+                line_count = 0
+                line_iter = resp.aiter_lines().__aiter__()
+                while True:
+                    try:
+                        raw_line = await asyncio.wait_for(
+                            line_iter.__anext__(),
+                            timeout=OPENROUTER_STREAM_IDLE_TIMEOUT_SECONDS,
+                        )
+                    except StopAsyncIteration:
+                        break
+                    except TimeoutError:
+                        logger.error(
+                            "Stream idle timeout after %ds (line %d, finish_reason=%s)",
+                            OPENROUTER_STREAM_IDLE_TIMEOUT_SECONDS,
+                            line_count,
+                            finish_reason,
+                        )
+                        _emit_chat_status({
+                            "event": "upstream_stream_idle_timeout",
+                            "attempt": attempt + 1,
+                            "line_count": line_count,
+                        })
+                        break
                     line = (raw_line or "").strip()
+                    line_count += 1
                     if not line:
                         continue
+                    _emit_chat_status({
+                        "event": "upstream_raw_line",
+                        "attempt": attempt + 1,
+                        "line_num": line_count,
+                        "stream_line": line[:200],
+                    })
                     if line.startswith(":"):
                         _emit_chat_status({
                             "event": "upstream_keepalive_comment",
@@ -1529,12 +1559,20 @@ async def _stream_openrouter_chat_completion(
                         })
                         continue
                     if not line.startswith("data:"):
+                        logger.debug(
+                            "Stream line %d not SSE data: %s",
+                            line_count, line[:200],
+                        )
                         continue
 
                     data_str = line[5:].strip()
                     if not data_str:
                         continue
                     if data_str == "[DONE]":
+                        _emit_chat_status({
+                            "event": "upstream_stream_done",
+                            "attempt": attempt + 1,
+                        })
                         break
 
                     try:
@@ -1610,7 +1648,23 @@ async def _stream_openrouter_chat_completion(
                         native_finish_reason = native_fr
 
                     if finish_reason is not None:
+                        logger.info(
+                            "Breaking stream loop after finish_reason=%s (line %d)",
+                            finish_reason, line_count,
+                        )
                         break
+
+                if finish_reason is None:
+                    # Stream exhausted without finish_reason or [DONE]
+                    logger.warning(
+                        "Stream ended without finish_reason or [DONE] after %d lines",
+                        line_count,
+                    )
+                    _emit_chat_status({
+                        "event": "upstream_stream_exhausted",
+                        "attempt": attempt + 1,
+                        "line_count": line_count,
+                    })
 
                 message: dict[str, Any] = {"content": "".join(content_parts).strip()}
                 tool_calls = _finalize_tool_calls(tool_calls_by_index)
