@@ -105,6 +105,27 @@ function formatAgeMs(ageMs: number | null): string {
   return `${(ageMs / 1000).toFixed(ageMs < 10_000 ? 1 : 0)}s`
 }
 
+function progressMessageForEvent(eventName: string | null): string {
+  switch (eventName) {
+    case 'upstream_request_started':
+      return 'Request sent to OpenRouter...'
+    case 'upstream_keepalive_comment':
+      return 'OpenRouter acknowledged request and is still processing...'
+    case 'upstream_text_chunk':
+      return 'Receiving response chunks...'
+    case 'tool_calls_received':
+      return 'Model requested tool calls...'
+    case 'upstream_response_received':
+      return 'OpenRouter responded, processing payload...'
+    case 'upstream_transport_error':
+      return 'Transient network issue; retrying if possible...'
+    case 'upstream_retryable_status':
+      return 'OpenRouter returned a retryable error; retrying...'
+    default:
+      return 'OpenRouter is still processing your request...'
+  }
+}
+
 function importedFoodToChatPrompt(food: FoodImportResult): string {
   const descriptor = food.brand ? `${food.brand} ${food.name}` : food.name
   const lines = [
@@ -373,7 +394,7 @@ export default function MealLogPage() {
       const onProgressEvent = (event: ChatProgressEvent) => {
         if (event.type === 'status') {
           setProgressRunId(event.run_id)
-          setProgressMessage(event.message)
+          setProgressMessage(progressMessageForEvent(event.last_upstream_event) || event.message)
           setProgressElapsedMs(event.elapsed_ms)
           setProgressLastUpstreamEvent(event.last_upstream_event)
           setProgressLastUpstreamAgeMs(event.last_upstream_event_age_ms)

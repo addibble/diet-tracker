@@ -660,8 +660,11 @@ async def chat_meal_stream_endpoint(
             "upstream_round": None,
         })
 
-        with chat_status_callback(_on_chat_status):
-            task = asyncio.create_task(chat_meal_endpoint(data, session, _user))
+        async def _run_chat_with_status():
+            with chat_status_callback(_on_chat_status):
+                return await chat_meal_endpoint(data, session, _user)
+
+        task = asyncio.create_task(_run_chat_with_status())
         try:
             while not task.done():
                 elapsed_ms = int((time.monotonic() - start) * 1000)

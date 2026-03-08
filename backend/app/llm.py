@@ -1191,8 +1191,91 @@ async def _post_openrouter_chat_completion(
     client: httpx.AsyncClient,
     payload: dict[str, Any],
 ) -> httpx.Response:
+    raise NotImplementedError("Use _stream_openrouter_chat_completion for chat requests")
+
+
+def _openrouter_error_message(payload: Any, fallback: str) -> str:
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+    return fallback
+
+
+def _merge_tool_call_delta(
+    tool_calls_by_index: dict[int, dict[str, Any]],
+    delta_tool_calls: Any,
+) -> None:
+    if not isinstance(delta_tool_calls, list):
+        return
+    for entry in delta_tool_calls:
+        if not isinstance(entry, dict):
+            continue
+        index_raw = entry.get("index", 0)
+        try:
+            index = int(index_raw)
+        except (TypeError, ValueError):
+            index = len(tool_calls_by_index)
+        tool_call = tool_calls_by_index.setdefault(
+            index,
+            {
+                "id": "",
+                "type": "function",
+                "function": {
+                    "name": "",
+                    "arguments": "",
+                },
+            },
+        )
+        tc_id = entry.get("id")
+        if isinstance(tc_id, str) and tc_id:
+            tool_call["id"] = tc_id
+        function = entry.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if isinstance(name, str) and name:
+            tool_call["function"]["name"] = name
+        arguments = function.get("arguments")
+        if isinstance(arguments, str) and arguments:
+            tool_call["function"]["arguments"] += arguments
+
+
+def _finalize_tool_calls(tool_calls_by_index: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+    finalized: list[dict[str, Any]] = []
+    for index in sorted(tool_calls_by_index):
+        tool_call = tool_calls_by_index[index]
+        tc_id = str(tool_call.get("id") or f"tool_call_{index}")
+        function = tool_call.get("function")
+        if not isinstance(function, dict):
+            function = {"name": "unknown_tool", "arguments": ""}
+        name = str(function.get("name") or "unknown_tool")
+        arguments = str(function.get("arguments") or "")
+        finalized.append({
+            "id": tc_id,
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": arguments,
+            },
+        })
+    return finalized
+
+
+async def _stream_openrouter_chat_completion(
+    client: httpx.AsyncClient,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    headers = {
+        "Authorization": f"Bearer {settings.openrouter_api_key}",
+        "Content-Type": "application/json",
+    }
+    stream_payload = {**payload, "stream": True}
     last_error: Exception | None = None
     max_attempts = OPENROUTER_CHAT_MAX_RETRIES + 1
+
     for attempt in range(max_attempts):
         _emit_chat_status({
             "event": "upstream_request_started",
@@ -1200,72 +1283,165 @@ async def _post_openrouter_chat_completion(
             "max_attempts": max_attempts,
         })
         try:
-            resp = await client.post(
+            async with client.stream(
+                "POST",
                 OPENROUTER_URL,
-                headers={
-                    "Authorization": f"Bearer {settings.openrouter_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
-            logger.info("Chat LLM response status: %s", resp.status_code)
-            _emit_chat_status({
-                "event": "upstream_response_received",
-                "status_code": resp.status_code,
-                "attempt": attempt + 1,
-                "openrouter_request_id": (
+                headers=headers,
+                json=stream_payload,
+            ) as resp:
+                request_id = (
                     resp.headers.get("x-request-id")
                     or resp.headers.get("request-id")
                     or resp.headers.get("x-openrouter-request-id")
-                ),
-                "cf_ray": resp.headers.get("cf-ray"),
-            })
-            if resp.status_code == 402:
-                detail = "Model request exceeds current provider credit limit"
-                try:
-                    body = resp.json()
-                    if isinstance(body, dict):
-                        err = body.get("error")
-                        if isinstance(err, dict) and isinstance(err.get("message"), str):
-                            detail = err["message"]
-                except Exception:
-                    detail = resp.text[:500] or detail
-                logger.error("Billing-limited OpenRouter response body: %s", resp.text[:2000])
+                )
+                cf_ray = resp.headers.get("cf-ray")
                 _emit_chat_status({
-                    "event": "upstream_billing_limited",
+                    "event": "upstream_response_received",
                     "status_code": resp.status_code,
                     "attempt": attempt + 1,
+                    "openrouter_request_id": request_id,
+                    "cf_ray": cf_ray,
                 })
-                raise LLMUpstreamBillingError(detail)
+                logger.info("Chat LLM response status: %s", resp.status_code)
 
-            if resp.status_code in OPENROUTER_RETRYABLE_STATUS_CODES:
-                preview = resp.text[:500]
-                logger.warning(
-                    "Retryable OpenRouter error status=%s attempt=%d/%d body=%s",
-                    resp.status_code,
-                    attempt + 1,
-                    max_attempts,
-                    preview,
-                )
-                _emit_chat_status({
-                    "event": "upstream_retryable_status",
-                    "status_code": resp.status_code,
-                    "attempt": attempt + 1,
-                })
-                if attempt < max_attempts - 1:
-                    await asyncio.sleep(
-                        OPENROUTER_RETRY_BASE_DELAY_SECONDS * (2**attempt),
-                    )
-                    continue
-                last_error = LLMUpstreamRetryableError(
-                    f"OpenRouter returned {resp.status_code} after retries",
-                )
-                break
+                if resp.status_code != 200:
+                    body_bytes = await resp.aread()
+                    body_text = body_bytes.decode("utf-8", errors="replace")
+                    body_preview = body_text[:2000]
+                    body_json: Any | None = None
+                    try:
+                        body_json = json.loads(body_text)
+                    except json.JSONDecodeError:
+                        body_json = None
 
-            if resp.status_code != 200:
-                logger.error("Chat LLM response body: %s", resp.text[:2000])
-            resp.raise_for_status()
-            return resp
+                    if resp.status_code == 402:
+                        detail = _openrouter_error_message(
+                            body_json,
+                            "Model request exceeds current provider credit limit",
+                        )
+                        logger.error("Billing-limited OpenRouter response body: %s", body_preview)
+                        _emit_chat_status({
+                            "event": "upstream_billing_limited",
+                            "status_code": resp.status_code,
+                            "attempt": attempt + 1,
+                        })
+                        raise LLMUpstreamBillingError(detail)
+
+                    if resp.status_code in OPENROUTER_RETRYABLE_STATUS_CODES:
+                        logger.warning(
+                            "Retryable OpenRouter error status=%s attempt=%d/%d body=%s",
+                            resp.status_code,
+                            attempt + 1,
+                            max_attempts,
+                            body_preview[:500],
+                        )
+                        _emit_chat_status({
+                            "event": "upstream_retryable_status",
+                            "status_code": resp.status_code,
+                            "attempt": attempt + 1,
+                        })
+                        if attempt < max_attempts - 1:
+                            await asyncio.sleep(
+                                OPENROUTER_RETRY_BASE_DELAY_SECONDS * (2**attempt),
+                            )
+                            continue
+                        last_error = LLMUpstreamRetryableError(
+                            f"OpenRouter returned {resp.status_code} after retries",
+                        )
+                        break
+
+                    logger.error("Chat LLM response body: %s", body_preview)
+                    resp.raise_for_status()
+
+                completion_id: str | None = None
+                finish_reason: str | None = None
+                content_parts: list[str] = []
+                tool_calls_by_index: dict[int, dict[str, Any]] = {}
+
+                async for raw_line in resp.aiter_lines():
+                    line = (raw_line or "").strip()
+                    if not line:
+                        continue
+                    if line.startswith(":"):
+                        _emit_chat_status({
+                            "event": "upstream_keepalive_comment",
+                            "attempt": attempt + 1,
+                            "comment": line[1:].strip(),
+                        })
+                        continue
+                    if not line.startswith("data:"):
+                        continue
+
+                    data_str = line[5:].strip()
+                    if not data_str:
+                        continue
+                    if data_str == "[DONE]":
+                        break
+
+                    try:
+                        chunk = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "Could not parse OpenRouter stream chunk: %s",
+                            data_str[:300],
+                        )
+                        continue
+
+                    if not isinstance(chunk, dict):
+                        continue
+
+                    if completion_id is None:
+                        chunk_id = chunk.get("id")
+                        if isinstance(chunk_id, str) and chunk_id:
+                            completion_id = chunk_id
+                            _emit_chat_status({
+                                "event": "upstream_completion_id",
+                                "attempt": attempt + 1,
+                                "openrouter_completion_id": completion_id,
+                            })
+
+                    choices = chunk.get("choices")
+                    if not isinstance(choices, list) or not choices:
+                        continue
+                    choice = choices[0]
+                    if not isinstance(choice, dict):
+                        continue
+
+                    delta = choice.get("delta")
+                    if isinstance(delta, dict):
+                        text_delta = _message_content_to_text(delta.get("content"))
+                        if text_delta:
+                            content_parts.append(text_delta)
+                            _emit_chat_status({
+                                "event": "upstream_text_chunk",
+                                "attempt": attempt + 1,
+                                "chunk_chars": len(text_delta),
+                            })
+                        _merge_tool_call_delta(tool_calls_by_index, delta.get("tool_calls"))
+
+                    fr = choice.get("finish_reason")
+                    if isinstance(fr, str) and fr:
+                        finish_reason = fr
+                        _emit_chat_status({
+                            "event": "upstream_finish_reason",
+                            "attempt": attempt + 1,
+                            "finish_reason": finish_reason,
+                        })
+
+                message: dict[str, Any] = {"content": "".join(content_parts).strip()}
+                tool_calls = _finalize_tool_calls(tool_calls_by_index)
+                if tool_calls:
+                    message["tool_calls"] = tool_calls
+
+                return {
+                    "id": completion_id,
+                    "choices": [
+                        {
+                            "message": message,
+                            "finish_reason": finish_reason,
+                        },
+                    ],
+                }
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             logger.warning(
                 "OpenRouter request transport error on attempt=%d/%d: %s",
@@ -1352,8 +1528,7 @@ async def chat_meal(
             if tool_executor:
                 payload["tools"] = _all_chat_tools()
 
-            resp = await _post_openrouter_chat_completion(client, payload)
-            data = resp.json()
+            data = await _stream_openrouter_chat_completion(client, payload)
             completion_id = data.get("id")
             if isinstance(completion_id, str) and completion_id:
                 _emit_chat_status({
