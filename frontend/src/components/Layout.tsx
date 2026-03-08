@@ -36,7 +36,7 @@ export default function Layout() {
       </nav>
 
       {/* Main content — on mobile, reserve space at bottom for the tab bar */}
-      <main className="max-w-5xl mx-auto px-4 pt-4 md:pt-6 pb-[calc(5rem_+_var(--safe-bottom))] md:pb-6">
+      <main className="max-w-5xl mx-auto px-4 pt-1 md:pt-6 pb-[calc(4rem_+_var(--safe-bottom))] md:pb-6">
         <Outlet />
       </main>
 
