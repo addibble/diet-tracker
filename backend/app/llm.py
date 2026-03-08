@@ -85,6 +85,11 @@ class LLMUpstreamRetryableError(RuntimeError):
 class LLMUpstreamBillingError(RuntimeError):
     """Raised when upstream refuses request for billing/credit reasons."""
 
+
+class LLMUpstreamCompletionError(RuntimeError):
+    """Raised when a streamed completion ends with an upstream generation error."""
+
+
 BASE_SYSTEM_PROMPT = (
     "You are a meal parsing assistant. Given a description of a meal, "
     "extract each food item with its estimated weight in grams.\n\n"
@@ -788,6 +793,15 @@ verification. You MUST:
 4. Then log the meal using the newly created food's id
 Do NOT save the food without user verification first.
 
+## Function calling
+- When using tools, output tool calls only. Do not generate Python, pseudo-code, \
+markdown, or XML instead of a tool call.
+- Call the tool name exactly as defined. Never prepend namespaces such as \
+default_api. or any other prefix.
+- Tool arguments must be valid JSON that matches the provided schema.
+- Prefer one tool call at a time unless a batch tool explicitly expects a list.
+- After tool results are returned, either call the next tool or answer normally.
+
 {food_context}
 {meals_context}
 
@@ -1180,11 +1194,138 @@ CHAT_TOOLS = [
     },
 ]
 
+CHAT_TOOL_BY_NAME = {
+    tool["function"]["name"]: tool
+    for tool in CHAT_TOOLS
+}
+
 
 def _all_chat_tools() -> list[dict]:
     from app.workout_tools import WORKOUT_TOOLS
 
     return CHAT_TOOLS + WORKOUT_TOOLS
+
+
+WORKOUT_MESSAGE_PATTERN = re.compile(
+    r"\b("
+    r"workout|train|training|exercise|lift|lifting|bench|squat|deadlift|press|curl|row|"
+    r"run|running|walk|walking|cardio|routine|rep|reps|set|sets|rpe|"
+    r"tissue|pain|painful|sore|soreness|tight|tightness|injur|rehab|recovery"
+    r")\b",
+    re.IGNORECASE,
+)
+TOOL_REQUIRED_MESSAGE_PATTERN = re.compile(
+    r"\b("
+    r"what did i eat|show|list|query|look up|move|delete|remove|add|edit|update|change|"
+    r"log my weight|weigh|weight|macro target|macro targets|calorie target|protein target|"
+    r"nutrition label|nutrition facts|scan|ocr|save this food|create food|"
+    r"workout|routine|exercise|rep|reps|set|sets|pain|sore|injur|rehab"
+    r")\b",
+    re.IGNORECASE,
+)
+WEIGHT_MESSAGE_PATTERN = re.compile(
+    r"\b(weight|weigh|weighed|lb|lbs|pound|pounds|kg|kgs|kilogram|kilograms)\b",
+    re.IGNORECASE,
+)
+MACRO_TARGET_MESSAGE_PATTERN = re.compile(
+    r"\b(macro target|macro targets|calorie target|protein target|fat target|carb target)\b",
+    re.IGNORECASE,
+)
+NUTRITION_LABEL_MESSAGE_PATTERN = re.compile(
+    r"\b(nutrition label|nutrition facts|scan|ocr|barcode|label)\b",
+    re.IGNORECASE,
+)
+MEAL_LOG_QUERY_PATTERN = re.compile(
+    r"\b(what did i eat|show|list|move|delete|remove|add|edit|update|change)\b",
+    re.IGNORECASE,
+)
+
+
+def _latest_user_message_text(messages: list[dict[str, Any]]) -> str:
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+    return ""
+
+
+def _is_workout_related_message(text: str) -> bool:
+    if not text:
+        return False
+    if WORKOUT_MESSAGE_PATTERN.search(text):
+        return True
+    # Common shorthand like "3x10" or "430x5x3" usually indicates workout logging.
+    return bool(re.search(r"\b\d+\s*x\s*\d+(?:\s*x\s*\d+)?\b", text, re.IGNORECASE))
+
+
+def _message_likely_requires_tools(messages: list[dict[str, Any]]) -> bool:
+    return bool(TOOL_REQUIRED_MESSAGE_PATTERN.search(_latest_user_message_text(messages)))
+
+
+def _select_chat_tools(messages: list[dict[str, Any]]) -> list[dict]:
+    latest_user_message = _latest_user_message_text(messages)
+    if _is_workout_related_message(latest_user_message):
+        from app.workout_tools import WORKOUT_TOOLS
+
+        return WORKOUT_TOOLS
+    if WEIGHT_MESSAGE_PATTERN.search(latest_user_message):
+        return [CHAT_TOOL_BY_NAME["log_weight"]]
+    if MACRO_TARGET_MESSAGE_PATTERN.search(latest_user_message):
+        return [
+            CHAT_TOOL_BY_NAME["query_macro_targets"],
+            CHAT_TOOL_BY_NAME["set_macro_target"],
+        ]
+    if NUTRITION_LABEL_MESSAGE_PATTERN.search(latest_user_message):
+        return [CHAT_TOOL_BY_NAME["create_food"]]
+    if MEAL_LOG_QUERY_PATTERN.search(latest_user_message):
+        return [
+            CHAT_TOOL_BY_NAME["query_food_log"],
+            CHAT_TOOL_BY_NAME["move_meal_to_date"],
+            CHAT_TOOL_BY_NAME["delete_meal_item"],
+            CHAT_TOOL_BY_NAME["add_item_to_meal"],
+            CHAT_TOOL_BY_NAME["create_meal"],
+            CHAT_TOOL_BY_NAME["delete_meal"],
+        ]
+    return CHAT_TOOLS
+
+
+def _chat_temperature_for_model(model_id: str) -> float:
+    # Gemini 3 docs recommend leaving temperature at the model default (1.0).
+    if _chat_provider_key_for_model(model_id) == "gemini":
+        return 1.0
+    return 0.3
+
+
+def _forced_tool_choice(tools: list[dict]) -> str | dict[str, Any]:
+    if len(tools) == 1:
+        return {
+            "type": "function",
+            "function": {"name": tools[0]["function"]["name"]},
+        }
+    return "required"
+
+
+def _build_chat_completion_payload(
+    *,
+    model_id: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict] | None,
+    force_tool_choice: bool = False,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "model": model_id,
+        "messages": messages,
+        "temperature": _chat_temperature_for_model(model_id),
+        "max_tokens": OPENROUTER_CHAT_MAX_TOKENS,
+    }
+    if tools:
+        payload["tools"] = tools
+        payload["parallel_tool_calls"] = False
+        if force_tool_choice:
+            payload["tool_choice"] = _forced_tool_choice(tools)
+    return payload
 
 
 async def _post_openrouter_chat_completion(
@@ -1355,6 +1496,9 @@ async def _stream_openrouter_chat_completion(
 
                 completion_id: str | None = None
                 finish_reason: str | None = None
+                native_finish_reason: str | None = None
+                stream_error_code: str | int | None = None
+                stream_error_message: str | None = None
                 content_parts: list[str] = []
                 tool_calls_by_index: dict[int, dict[str, Any]] = {}
 
@@ -1389,6 +1533,23 @@ async def _stream_openrouter_chat_completion(
 
                     if not isinstance(chunk, dict):
                         continue
+
+                    chunk_error = chunk.get("error")
+                    if isinstance(chunk_error, dict):
+                        code = chunk_error.get("code")
+                        message = chunk_error.get("message")
+                        if isinstance(code, (str, int)):
+                            stream_error_code = code
+                        if isinstance(message, str) and message.strip():
+                            stream_error_message = message.strip()
+                        error_code_value = (
+                            str(stream_error_code) if stream_error_code is not None else None
+                        )
+                        _emit_chat_status({
+                            "event": "upstream_stream_error_chunk",
+                            "attempt": attempt + 1,
+                            "error_code": error_code_value,
+                        })
 
                     if completion_id is None:
                         chunk_id = chunk.get("id")
@@ -1427,11 +1588,53 @@ async def _stream_openrouter_chat_completion(
                             "attempt": attempt + 1,
                             "finish_reason": finish_reason,
                         })
+                    native_fr = choice.get("native_finish_reason")
+                    if not isinstance(native_fr, str) or not native_fr:
+                        native_fr = chunk.get("native_finish_reason")
+                    if isinstance(native_fr, str) and native_fr:
+                        native_finish_reason = native_fr
 
                 message: dict[str, Any] = {"content": "".join(content_parts).strip()}
                 tool_calls = _finalize_tool_calls(tool_calls_by_index)
                 if tool_calls:
                     message["tool_calls"] = tool_calls
+
+                if finish_reason == "error":
+                    detail_parts = ["OpenRouter stream ended with finish_reason=error"]
+                    if native_finish_reason:
+                        detail_parts.append(f"native_finish_reason={native_finish_reason}")
+                    if stream_error_code is not None:
+                        detail_parts.append(f"code={stream_error_code}")
+                    if stream_error_message:
+                        detail_parts.append(f"message={stream_error_message}")
+                    detail = "; ".join(detail_parts)
+                    logger.error("Chat LLM mid-stream generation error: %s", detail)
+                    error_code_value = (
+                        str(stream_error_code) if stream_error_code is not None else None
+                    )
+                    _emit_chat_status({
+                        "event": "upstream_generation_error",
+                        "attempt": attempt + 1,
+                        "native_finish_reason": native_finish_reason,
+                        "error_code": error_code_value,
+                    })
+                    raise LLMUpstreamCompletionError(detail)
+
+                if not message["content"] and not tool_calls:
+                    detail_parts = ["OpenRouter stream ended without content or tool calls"]
+                    if finish_reason:
+                        detail_parts.append(f"finish_reason={finish_reason}")
+                    if native_finish_reason:
+                        detail_parts.append(f"native_finish_reason={native_finish_reason}")
+                    if stream_error_message:
+                        detail_parts.append(f"message={stream_error_message}")
+                    detail = "; ".join(detail_parts)
+                    logger.error("Chat LLM empty terminal response: %s", detail)
+                    _emit_chat_status({
+                        "event": "upstream_empty_terminal_response",
+                        "attempt": attempt + 1,
+                    })
+                    raise LLMUpstreamCompletionError(detail)
 
                 return {
                     "id": completion_id,
@@ -1514,21 +1717,45 @@ async def chat_meal(
     async with httpx.AsyncClient(timeout=None) as client:
         for _round in range(max_rounds):
             round_index = _round + 1
+            selected_tools = _select_chat_tools(all_messages) if tool_executor else None
             _emit_chat_status({
                 "event": "round_started",
                 "round": round_index,
                 "max_rounds": max_rounds,
             })
-            payload: dict[str, Any] = {
-                "model": active_model,
-                "messages": all_messages,
-                "temperature": 0.3,
-                "max_tokens": OPENROUTER_CHAT_MAX_TOKENS,
-            }
-            if tool_executor:
-                payload["tools"] = _all_chat_tools()
-
-            data = await _stream_openrouter_chat_completion(client, payload)
+            payload = _build_chat_completion_payload(
+                model_id=active_model,
+                messages=all_messages,
+                tools=selected_tools,
+            )
+            try:
+                data = await _stream_openrouter_chat_completion(client, payload)
+            except LLMUpstreamCompletionError:
+                should_force_tool_retry = (
+                    _chat_provider_key_for_model(active_model) == "gemini"
+                    and selected_tools is not None
+                    and bool(selected_tools)
+                    and _message_likely_requires_tools(all_messages)
+                    and not any(message.get("role") == "tool" for message in all_messages)
+                )
+                if not should_force_tool_retry:
+                    raise
+                _emit_chat_status({
+                    "event": "gemini_forced_tool_retry",
+                    "round": round_index,
+                    "tool_count": len(selected_tools),
+                })
+                logger.warning(
+                    "Retrying Gemini chat round=%d with forced tool choice after generation error",
+                    round_index,
+                )
+                forced_payload = _build_chat_completion_payload(
+                    model_id=active_model,
+                    messages=all_messages,
+                    tools=selected_tools,
+                    force_tool_choice=True,
+                )
+                data = await _stream_openrouter_chat_completion(client, forced_payload)
             completion_id = data.get("id")
             if isinstance(completion_id, str) and completion_id:
                 _emit_chat_status({
@@ -1547,10 +1774,27 @@ async def chat_meal(
                     "round": round_index,
                     "tool_call_count": len(tool_calls),
                 })
-                all_messages.append(message)
+                assistant_tool_message = {
+                    "role": "assistant",
+                    "content": message.get("content") or "",
+                    "tool_calls": tool_calls,
+                }
+                all_messages.append(assistant_tool_message)
                 for tc in tool_calls:
                     func_name = tc["function"]["name"]
-                    func_args = json.loads(tc["function"]["arguments"])
+                    try:
+                        func_args = json.loads(tc["function"]["arguments"])
+                    except json.JSONDecodeError as exc:
+                        detail = (
+                            f"Tool call arguments were not valid JSON for {func_name}: {exc.msg}"
+                        )
+                        logger.error(detail)
+                        _emit_chat_status({
+                            "event": "tool_call_arguments_invalid",
+                            "round": round_index,
+                            "tool_name": func_name,
+                        })
+                        raise LLMUpstreamCompletionError(detail) from exc
                     logger.info("Executing tool: %s(%s)", func_name, func_args)
                     try:
                         result = await tool_executor(func_name, func_args)

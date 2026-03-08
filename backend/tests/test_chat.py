@@ -6,6 +6,7 @@ from sqlmodel import select
 
 from app.llm import (
     LLMUpstreamBillingError,
+    LLMUpstreamCompletionError,
     LLMUpstreamRetryableError,
     LLMUpstreamTimeoutError,
 )
@@ -217,6 +218,20 @@ def test_chat_returns_402_on_llm_credit_limit(client):
     assert "credit limit" in resp.json()["detail"]
 
 
+def test_chat_returns_502_on_llm_generation_error(client):
+    with patch("app.routers.parse.chat_meal", new_callable=AsyncMock) as mock_llm:
+        mock_llm.side_effect = LLMUpstreamCompletionError(
+            "finish_reason=error; native_finish_reason=MALFORMED_FUNCTION_CALL",
+        )
+        resp = client.post("/api/meals/chat", json={
+            "messages": [{"role": "user", "content": "large prompt"}],
+        })
+
+    assert resp.status_code == 502
+    assert "generation error" in resp.json()["detail"]
+    assert "MALFORMED_FUNCTION_CALL" in resp.json()["detail"]
+
+
 def test_chat_stream_returns_status_and_result(client):
     with patch("app.routers.parse.chat_meal", new_callable=AsyncMock) as mock_llm:
         mock_llm.return_value = "Got it."
@@ -250,6 +265,27 @@ def test_chat_stream_emits_error_event(client):
     ]
     error_event = next(event for event in events if event.get("type") == "error")
     assert error_event["status"] == 504
+
+
+def test_chat_stream_emits_generation_error_event(client):
+    with patch("app.routers.parse.chat_meal", new_callable=AsyncMock) as mock_llm:
+        mock_llm.side_effect = LLMUpstreamCompletionError(
+            "finish_reason=error; native_finish_reason=MALFORMED_FUNCTION_CALL",
+        )
+        resp = client.post("/api/meals/chat/stream", json={
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+
+    assert resp.status_code == 200
+    events = [
+        json.loads(line)
+        for line in resp.text.splitlines()
+        if line.strip()
+    ]
+    error_event = next(event for event in events if event.get("type") == "error")
+    assert error_event["status"] == 502
+    assert "generation error" in error_event["detail"]
+    assert "MALFORMED_FUNCTION_CALL" in error_event["detail"]
 
 
 def test_chat_does_not_preload_recent_meals(client):

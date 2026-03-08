@@ -121,6 +121,16 @@ function progressMessageForEvent(eventName: string | null): string {
       return 'Transient network issue; retrying if possible...'
     case 'upstream_retryable_status':
       return 'OpenRouter returned a retryable error; retrying...'
+    case 'upstream_stream_error_chunk':
+      return 'OpenRouter reported a stream error...'
+    case 'upstream_generation_error':
+      return 'Model provider returned a generation error...'
+    case 'upstream_empty_terminal_response':
+      return 'Model provider ended with an empty response...'
+    case 'gemini_forced_tool_retry':
+      return 'Retrying with stricter tool-calling mode...'
+    case 'tool_call_arguments_invalid':
+      return 'Model returned invalid tool arguments...'
     default:
       return 'OpenRouter is still processing your request...'
   }
