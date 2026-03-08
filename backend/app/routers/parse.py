@@ -20,6 +20,7 @@ from app.llm import (
     get_chat_models,
     parse_meal_description,
 )
+from app.macro_targets import get_active_macro_target, macro_target_to_dict
 from app.macros import MACRO_FIELDS
 from app.models import Food, MacroTarget, MealItem, MealLog, Recipe, WeightLog
 from app.usda import search_usda
@@ -263,7 +264,11 @@ class _ToolState:
         self.data_changed = False
 
 
-def _make_tool_executor(session: Session, state: _ToolState):
+def _make_tool_executor(
+    session: Session,
+    state: _ToolState,
+    default_target_day: date_type,
+):
     """Create a tool executor closure with DB access."""
     from app.routers.meals import _build_meal_response
 
@@ -421,6 +426,73 @@ def _make_tool_executor(session: Session, state: _ToolState):
                 **{macro: float(getattr(target, macro)) for macro in MACRO_FIELDS},
             }
 
+        elif name == "query_macro_targets":
+            day_raw = args.get("day")
+            start_raw = args.get("start_date")
+            end_raw = args.get("end_date")
+
+            if start_raw or end_raw:
+                try:
+                    start_date = (
+                        date_type.fromisoformat(start_raw) if start_raw else None
+                    )
+                    end_date = (
+                        date_type.fromisoformat(end_raw) if end_raw else None
+                    )
+                except ValueError:
+                    return {"error": "start_date/end_date must be YYYY-MM-DD"}
+
+                query = select(MacroTarget).order_by(MacroTarget.day)
+                if start_date:
+                    query = query.where(MacroTarget.day >= start_date)
+                if end_date:
+                    query = query.where(MacroTarget.day <= end_date)
+                targets = session.exec(query).all()
+
+                limit_raw = args.get("limit")
+                if limit_raw is not None:
+                    try:
+                        limit = int(limit_raw)
+                    except (TypeError, ValueError):
+                        return {"error": "limit must be an integer"}
+                    if limit < 1:
+                        return {"error": "limit must be >= 1"}
+                    if len(targets) > limit:
+                        targets = targets[-limit:]
+
+                payload = []
+                for index, target in enumerate(targets):
+                    next_day = (
+                        targets[index + 1].day
+                        if index + 1 < len(targets)
+                        else None
+                    )
+                    payload.append(
+                        macro_target_to_dict(target, next_day=next_day)
+                    )
+
+                return {
+                    "mode": "range",
+                    "start_date": str(start_date) if start_date else None,
+                    "end_date": str(end_date) if end_date else None,
+                    "targets": payload,
+                }
+
+            if day_raw:
+                try:
+                    target_day = date_type.fromisoformat(day_raw)
+                except ValueError:
+                    return {"error": "day must be YYYY-MM-DD"}
+            else:
+                target_day = default_target_day
+
+            active_target = get_active_macro_target(target_day, session)
+            return {
+                "mode": "active",
+                "day": str(target_day),
+                "active_target": active_target,
+            }
+
         elif name == "delete_meal":
             meal = session.get(MealLog, args["meal_id"])
             if not meal:
@@ -543,7 +615,7 @@ async def chat_meal_endpoint(
     }
 
     tool_state = _ToolState()
-    tool_executor = _make_tool_executor(session, tool_state)
+    tool_executor = _make_tool_executor(session, tool_state, client_now.date())
 
     messages = [{"role": m.role, "content": m.content} for m in data.messages]
     try:

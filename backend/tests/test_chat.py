@@ -340,3 +340,67 @@ def test_chat_can_set_macro_target(client, session):
     assert target.carbs == 220
     assert target.fat == 70
     assert target.saturated_fat == 0
+
+
+def test_chat_can_query_macro_targets(client):
+    client.post("/api/macro-targets", json={
+        "day": "2026-03-01",
+        "calories": 2100,
+        "fat": 65,
+        "saturated_fat": 20,
+        "cholesterol": 300,
+        "sodium": 2300,
+        "carbs": 220,
+        "fiber": 30,
+        "protein": 170,
+    })
+    client.post("/api/macro-targets", json={
+        "day": "2026-03-05",
+        "calories": 2400,
+        "fat": 80,
+        "saturated_fat": 25,
+        "cholesterol": 320,
+        "sodium": 2500,
+        "carbs": 260,
+        "fiber": 32,
+        "protein": 190,
+    })
+
+    async def fake_chat(
+        messages,
+        known_foods,
+        known_recipes,
+        recent_meals,
+        tool_executor,
+    ):
+        active_result = await tool_executor("query_macro_targets", {})
+        assert active_result["mode"] == "active"
+        assert active_result["day"] == "2026-03-07"
+        assert active_result["active_target"] is not None
+        assert active_result["active_target"]["day"] == "2026-03-05"
+        assert active_result["active_target"]["calories"] == 2400
+
+        range_result = await tool_executor("query_macro_targets", {
+            "start_date": "2026-03-01",
+            "end_date": "2026-03-10",
+        })
+        assert range_result["mode"] == "range"
+        assert len(range_result["targets"]) == 2
+        return "Your active target is 2400 calories."
+
+    with patch("app.routers.parse.chat_meal", new_callable=AsyncMock) as mock_llm:
+        mock_llm.side_effect = fake_chat
+        resp = client.post("/api/meals/chat", json={
+            "messages": [
+                {"role": "user", "content": "What are my macro targets?"},
+            ],
+            "client_now_iso": "2026-03-07T18:00:00+00:00",
+            "client_timezone": "America/Denver",
+        })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["message"] == "Your active target is 2400 calories."
+    assert data["proposed_items"] is None
+    assert data["saved_meal"] is None
+    assert data["data_changed"] is False

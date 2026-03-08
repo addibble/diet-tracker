@@ -486,6 +486,7 @@ just use the tools directly.
 ## Macro target management
 You can set daily macro targets that apply from their day until the next target.
 - Use set_macro_target when the user asks to set or update daily targets.
+- Use query_macro_targets when the user asks to view current or historical targets.
 - If the user does not specify a date, use the current local date from context.
 - When updating a day, unspecified fields should remain unchanged.
 - Do NOT use <ITEMS>/<CONFIRM/> tags for macro-target changes.
@@ -743,6 +744,47 @@ CHAT_TOOLS = [
                     "sodium_per_serving", "carbs_per_serving",
                     "fiber_per_serving", "protein_per_serving",
                 ],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_macro_targets",
+            "description": (
+                "View macro targets. Returns the active target for a day"
+                " or an explicit date range."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "day": {
+                        "type": "string",
+                        "description": (
+                            "Optional date YYYY-MM-DD. Returns the active target for that day."
+                        ),
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": (
+                            "Optional range start YYYY-MM-DD."
+                            " Use with end_date to list target entries."
+                        ),
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": (
+                            "Optional range end YYYY-MM-DD."
+                            " Use with start_date to list target entries."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": (
+                            "Optional max number of entries to return when listing a range."
+                        ),
+                    },
+                },
             },
         },
     },
