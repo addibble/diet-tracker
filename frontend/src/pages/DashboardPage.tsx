@@ -56,10 +56,9 @@ function WeightTrendCard({ trends }: { trends: DashboardTrends }) {
     const right = 18
     const top = 16
     const bottom = 34
-    const step = (width - left - right) / Math.max(trends.days.length - 1, 1)
-    const actualWeights = trends.days
-      .map((day) => day.weight_lb)
-      .filter((value): value is number => value !== null)
+    const weightDays = trends.weight_days
+    const step = (width - left - right) / Math.max(weightDays.length - 1, 1)
+    const actualWeights = weightDays.map((day) => day.weight_lb)
     const regressionWeights = trends.weight_regression?.line.map((point) => point.weight_lb) ?? []
     const allWeights = [...actualWeights, ...regressionWeights]
 
@@ -67,6 +66,7 @@ function WeightTrendCard({ trends }: { trends: DashboardTrends }) {
       return {
         width,
         height,
+        weightDays: [] as typeof weightDays,
         actualPoints: [] as { x: number; y: number; value: number; date: string }[],
         regressionPoints: [] as { x: number; y: number }[],
         guides: [] as { y: number; label: string }[],
@@ -82,15 +82,12 @@ function WeightTrendCard({ trends }: { trends: DashboardTrends }) {
     const plotHeight = height - top - bottom
     const toY = (value: number) => top + ((scaledMax - value) / yRange) * plotHeight
 
-    const actualPoints = trends.days.flatMap((day, index) => {
-      if (day.weight_lb === null) return []
-      return [{
-        x: left + step * index,
-        y: toY(day.weight_lb),
-        value: day.weight_lb,
-        date: day.date,
-      }]
-    })
+    const actualPoints = weightDays.map((day, index) => ({
+      x: left + step * index,
+      y: toY(day.weight_lb),
+      value: day.weight_lb,
+      date: day.date,
+    }))
     const regressionPoints = (trends.weight_regression?.line ?? []).map((point, index) => ({
       x: left + step * index,
       y: toY(point.weight_lb),
@@ -101,7 +98,7 @@ function WeightTrendCard({ trends }: { trends: DashboardTrends }) {
       label: value.toFixed(1),
     }))
 
-    return { width, height, actualPoints, regressionPoints, guides }
+    return { width, height, weightDays, actualPoints, regressionPoints, guides }
   }, [trends])
 
   return (
@@ -190,8 +187,8 @@ function WeightTrendCard({ trends }: { trends: DashboardTrends }) {
                 </text>
               </g>
             ))}
-            {trends.days.map((day, index) => {
-              const x = 22 + ((chart.width - 22 - 18) / Math.max(trends.days.length - 1, 1)) * index
+            {(chart.weightDays ?? []).map((day, index) => {
+              const x = 22 + ((chart.width - 22 - 18) / Math.max((chart.weightDays ?? []).length - 1, 1)) * index
               return (
                 <text
                   key={day.date}
@@ -219,7 +216,7 @@ function WeightTrendCard({ trends }: { trends: DashboardTrends }) {
         </div>
       ) : (
         <div className="rounded-2xl border border-dashed border-gray-300 bg-gray-50 px-4 py-8 text-center text-sm text-gray-500">
-          No weights logged since the current macro target started.
+          No weights logged yet.
         </div>
       )}
     </section>
@@ -244,7 +241,7 @@ function DailyTargetsBreakdownCard({ trends }: { trends: DashboardTrends }) {
         <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">
           Daily Targets
         </p>
-        <h2 className="text-xl font-semibold text-gray-900 mt-1">Breakdown since current target</h2>
+        <h2 className="text-xl font-semibold text-gray-900 mt-1">Last 7 days</h2>
       </div>
 
       <div className="flex flex-wrap gap-3 text-xs text-gray-500 mb-4">
@@ -479,7 +476,7 @@ export default function DashboardPage() {
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Daily Summary</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Daily totals for the selected date plus weight and macro trends since the current target.
+            Daily totals for the selected date. Weight trend from first entry since current target; macro trends over the last 7 days.
           </p>
         </div>
         <input

@@ -53,17 +53,23 @@ def _latest_weights_by_day(
     return latest_by_day
 
 
-def _weight_regression(days: list[dict]) -> dict | None:
-    points = [
-        (index, float(day["weight_lb"]))
-        for index, day in enumerate(days)
-        if day["weight_lb"] is not None
-    ]
-    if not points:
+def _weight_regression(weight_days: list[dict]) -> dict | None:
+    """Compute linear regression over days that have weight data.
+
+    Uses actual date offsets from the first entry so gaps between readings
+    are correctly reflected in the slope.
+    """
+    if not weight_days:
         return None
 
-    xs = [point[0] for point in points]
-    ys = [point[1] for point in points]
+    first_date = date.fromisoformat(weight_days[0]["date"])
+    points = [
+        ((date.fromisoformat(d["date"]) - first_date).days, float(d["weight_lb"]))
+        for d in weight_days
+    ]
+
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
     count = len(points)
     mean_x = sum(xs) / count
     mean_y = sum(ys) / count
@@ -75,10 +81,13 @@ def _weight_regression(days: list[dict]) -> dict | None:
 
     regression_line = [
         {
-            "date": day["date"],
-            "weight_lb": round(intercept + (slope * index), 2),
+            "date": d["date"],
+            "weight_lb": round(
+                intercept + slope * (date.fromisoformat(d["date"]) - first_date).days,
+                2,
+            ),
         }
-        for index, day in enumerate(days)
+        for d in weight_days
     ]
     return {
         "points_used": count,
@@ -108,16 +117,17 @@ def dashboard_trends(
     _user: str = Depends(get_current_user),
 ):
     resolved_end_date = end_date or date.today()
-    start_date = _macro_target_window_start(resolved_end_date, session)
-    total_days = (resolved_end_date - start_date).days + 1
-    weights_by_day = _latest_weights_by_day(session, start_date, resolved_end_date)
+
+    # 7-day window drives the daily macros breakdown and target-normalized trends
+    seven_day_start = resolved_end_date - timedelta(days=6)
+    weights_7day = _latest_weights_by_day(session, seven_day_start, resolved_end_date)
 
     days: list[dict] = []
-    for offset in range(total_days):
-        day = start_date + timedelta(days=offset)
+    for offset in range(7):
+        day = seven_day_start + timedelta(days=offset)
         summary = build_daily_summary(day, session)
         macro_calories, macro_percentages = _macro_calorie_breakdown(summary)
-        weight_log = weights_by_day.get(day)
+        weight_log = weights_7day.get(day)
         days.append(
             {
                 "date": str(day),
@@ -139,17 +149,27 @@ def dashboard_trends(
             }
         )
 
-    latest_weight = next(
-        (day for day in reversed(days) if day["weight_lb"] is not None),
-        None,
-    )
+    # Weight regression window: from macro target start, only days with data
+    weight_start = _macro_target_window_start(resolved_end_date, session)
+    all_weights = _latest_weights_by_day(session, weight_start, resolved_end_date)
+    weight_days = [
+        {
+            "date": str(day_date),
+            "weight_lb": round(log.weight_lb, 2),
+            "weight_logged_at": log.logged_at.isoformat(),
+        }
+        for day_date, log in sorted(all_weights.items())
+    ]
+
+    latest_weight = weight_days[-1] if weight_days else None
     return {
-        "start_date": str(start_date),
+        "start_date": str(seven_day_start),
         "end_date": str(resolved_end_date),
         "latest_weight_lb": latest_weight["weight_lb"] if latest_weight else None,
         "latest_weight_logged_at": (
             latest_weight["weight_logged_at"] if latest_weight else None
         ),
         "days": days,
-        "weight_regression": _weight_regression(days),
+        "weight_days": weight_days,
+        "weight_regression": _weight_regression(weight_days),
     }

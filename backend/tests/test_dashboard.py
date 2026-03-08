@@ -64,6 +64,14 @@ def test_dashboard_trends(client, session):
         "protein": 19.0,
     }
 
+    # weight_days: only days with weight data (no macro target → 7-day fallback = Mar 1)
+    weight_days = data["weight_days"]
+    assert len(weight_days) == 3
+    weight_day_map = {d["date"]: d for d in weight_days}
+    assert weight_day_map["2026-03-01"]["weight_lb"] == 180.0
+    assert weight_day_map["2026-03-04"]["weight_lb"] == 179.0
+    assert weight_day_map["2026-03-07"]["weight_lb"] == 178.0
+
     regression = data["weight_regression"]
     assert regression["points_used"] == 3
     assert regression["slope_lb_per_day"] == -0.333
@@ -73,14 +81,14 @@ def test_dashboard_trends(client, session):
 
 
 def test_dashboard_trends_uses_macro_target_window(client, session):
-    """Weight trend window starts from the most recent macro target change date."""
-    # Macro target set on 2026-03-04 — window should start there, not 7 days back
+    """Weight regression window starts from the most recent macro target change date."""
+    # Macro target set on 2026-03-04 — weight regression window starts there
     session.add(MacroTarget(
         day=date(2026, 3, 4),
         calories=2000, fat=80, saturated_fat=20, cholesterol=300,
         sodium=2300, carbs=200, fiber=25, protein=150,
     ))
-    # Weight before the target change — should not be included in the window
+    # Weight before the target change — excluded from weight_days but in 7-day boxes
     session.add(WeightLog(
         weight_lb=180.0,
         logged_at=datetime(2026, 3, 1, 14, 0, tzinfo=UTC),
@@ -100,14 +108,24 @@ def test_dashboard_trends_uses_macro_target_window(client, session):
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["start_date"] == "2026-03-04"
+
+    # days always covers 7 days
+    assert data["start_date"] == "2026-03-01"
     assert data["end_date"] == "2026-03-07"
-    assert len(data["days"]) == 4
+    assert len(data["days"]) == 7
 
     day_map = {day["date"]: day for day in data["days"]}
-    assert "2026-03-01" not in day_map
+    assert day_map["2026-03-01"]["weight_lb"] == 180.0
     assert day_map["2026-03-04"]["weight_lb"] == 179.0
     assert day_map["2026-03-07"]["weight_lb"] == 178.0
+
+    # weight_days: only from macro target start (Mar 4), excludes Mar 1
+    weight_days = data["weight_days"]
+    assert len(weight_days) == 2
+    weight_day_map = {d["date"]: d for d in weight_days}
+    assert "2026-03-01" not in weight_day_map
+    assert weight_day_map["2026-03-04"]["weight_lb"] == 179.0
+    assert weight_day_map["2026-03-07"]["weight_lb"] == 178.0
 
     regression = data["weight_regression"]
     assert regression["points_used"] == 2
