@@ -276,7 +276,7 @@ function DailyTargetsBreakdownCard({ trends }: { trends: DashboardTrends }) {
 
           return (
             <div key={day.date} className="flex flex-col items-center h-full gap-2">
-              <span className="text-[10px] text-gray-500 tabular-nums">
+              <span className="text-[10px] text-gray-500 tabular-nums h-8 leading-4 text-center">
                 {Math.round(day.total_calories)} kcal
               </span>
               <div className="relative w-full flex-1 min-h-0 flex items-end">
