@@ -7,6 +7,7 @@ import logging
 import re
 import time
 import uuid
+from collections import deque
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_type
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -633,6 +634,8 @@ async def chat_meal_stream_endpoint(
         start = time.monotonic()
         last_upstream_event_monotonic: float | None = None
         last_activity_event_monotonic: float | None = None
+        status_queue: deque[str] = deque()
+        status_ready = asyncio.Event()
         latest_upstream: dict[str, str | int | None] = {
             "event": None,
             "status_code": None,
@@ -648,6 +651,37 @@ async def chat_meal_stream_endpoint(
             "tool_name": None,
             "round": None,
         }
+
+        def _status_payload(*, stage: str, message: str, now: float | None = None) -> dict:
+            snapshot_now = time.monotonic() if now is None else now
+            if last_activity_event_monotonic is None:
+                activity_age_ms = None
+            else:
+                activity_age_ms = int((snapshot_now - last_activity_event_monotonic) * 1000)
+            if last_upstream_event_monotonic is None:
+                upstream_age_ms = None
+            else:
+                upstream_age_ms = int((snapshot_now - last_upstream_event_monotonic) * 1000)
+            elapsed_ms = int((snapshot_now - start) * 1000)
+            return {
+                "type": "status",
+                "run_id": run_id,
+                "stage": stage,
+                "message": message,
+                "elapsed_ms": elapsed_ms,
+                "activity_source": latest_activity["source"],
+                "last_activity_event": latest_activity["event"],
+                "last_activity_event_age_ms": activity_age_ms,
+                "active_tool_name": latest_activity["tool_name"],
+                "last_upstream_event": latest_upstream["event"],
+                "last_upstream_event_age_ms": upstream_age_ms,
+                "last_upstream_status_code": latest_upstream["status_code"],
+                "openrouter_request_id": latest_upstream["openrouter_request_id"],
+                "openrouter_completion_id": latest_upstream["openrouter_completion_id"],
+                "upstream_cf_ray": latest_upstream["cf_ray"],
+                "upstream_attempt": latest_upstream["attempt"],
+                "upstream_round": latest_upstream["round"],
+            }
 
         def _on_chat_status(event: dict):
             nonlocal last_upstream_event_monotonic
@@ -678,26 +712,18 @@ async def chat_meal_stream_endpoint(
                 value = event.get(key)
                 if value is not None:
                     latest_activity[key] = value
+            status_queue.append(_ndjson_line(_status_payload(
+                stage="processing",
+                message="Processing your request...",
+                now=now,
+            )))
+            status_ready.set()
 
-        yield _ndjson_line({
-            "type": "status",
-            "run_id": run_id,
-            "stage": "queued",
-            "message": "Submitting request to model provider...",
-            "elapsed_ms": 0,
-            "activity_source": "backend",
-            "last_activity_event": None,
-            "last_activity_event_age_ms": None,
-            "active_tool_name": None,
-            "last_upstream_event": None,
-            "last_upstream_event_age_ms": None,
-            "last_upstream_status_code": None,
-            "openrouter_request_id": None,
-            "openrouter_completion_id": None,
-            "upstream_cf_ray": None,
-            "upstream_attempt": None,
-            "upstream_round": None,
-        })
+        yield _ndjson_line(_status_payload(
+            stage="queued",
+            message="Submitting request to model provider...",
+            now=start,
+        ))
 
         async def _run_chat_with_status():
             with chat_status_callback(_on_chat_status):
@@ -706,35 +732,28 @@ async def chat_meal_stream_endpoint(
         task = asyncio.create_task(_run_chat_with_status())
         try:
             while not task.done():
-                elapsed_ms = int((time.monotonic() - start) * 1000)
-                if last_activity_event_monotonic is None:
-                    activity_age_ms = None
-                else:
-                    activity_age_ms = int((time.monotonic() - last_activity_event_monotonic) * 1000)
-                if last_upstream_event_monotonic is None:
-                    upstream_age_ms = None
-                else:
-                    upstream_age_ms = int((time.monotonic() - last_upstream_event_monotonic) * 1000)
-                yield _ndjson_line({
-                    "type": "status",
-                    "run_id": run_id,
-                    "stage": "processing",
-                    "message": "Processing your request...",
-                    "elapsed_ms": elapsed_ms,
-                    "activity_source": latest_activity["source"],
-                    "last_activity_event": latest_activity["event"],
-                    "last_activity_event_age_ms": activity_age_ms,
-                    "active_tool_name": latest_activity["tool_name"],
-                    "last_upstream_event": latest_upstream["event"],
-                    "last_upstream_event_age_ms": upstream_age_ms,
-                    "last_upstream_status_code": latest_upstream["status_code"],
-                    "openrouter_request_id": latest_upstream["openrouter_request_id"],
-                    "openrouter_completion_id": latest_upstream["openrouter_completion_id"],
-                    "upstream_cf_ray": latest_upstream["cf_ray"],
-                    "upstream_attempt": latest_upstream["attempt"],
-                    "upstream_round": latest_upstream["round"],
-                })
-                await asyncio.sleep(CHAT_STREAM_HEARTBEAT_SECONDS)
+                if status_queue:
+                    yield status_queue.popleft()
+                    if not status_queue:
+                        status_ready.clear()
+                    continue
+                try:
+                    await asyncio.wait_for(
+                        status_ready.wait(),
+                        timeout=CHAT_STREAM_HEARTBEAT_SECONDS,
+                    )
+                except TimeoutError:
+                    pass
+                if status_queue:
+                    continue
+                yield _ndjson_line(_status_payload(
+                    stage="processing",
+                    message="Processing your request...",
+                ))
+
+            while status_queue:
+                yield status_queue.popleft()
+            status_ready.clear()
 
             result = await task
             yield _ndjson_line({

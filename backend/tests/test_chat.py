@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import date
 from unittest.mock import AsyncMock, patch
@@ -286,6 +287,50 @@ def test_chat_stream_emits_generation_error_event(client):
     assert error_event["status"] == 502
     assert "generation error" in error_event["detail"]
     assert "MALFORMED_FUNCTION_CALL" in error_event["detail"]
+
+
+def test_chat_stream_flushes_rapid_status_transitions(client):
+    async def fake_chat(*_args, **_kwargs):
+        from app.llm import _emit_chat_status
+
+        _emit_chat_status({
+            "event": "upstream_round_complete",
+            "round": 1,
+            "finish_reason": "tool_calls",
+        })
+        _emit_chat_status({
+            "event": "tool_call_started",
+            "round": 1,
+            "tool_name": "log_workout",
+        })
+        await asyncio.sleep(0)
+        return "Logged it."
+
+    with patch("app.routers.parse.chat_meal", new_callable=AsyncMock) as mock_llm:
+        mock_llm.side_effect = fake_chat
+        resp = client.post("/api/meals/chat/stream", json={
+            "messages": [{"role": "user", "content": "log a workout"}],
+        })
+
+    assert resp.status_code == 200
+    events = [
+        json.loads(line)
+        for line in resp.text.splitlines()
+        if line.strip()
+    ]
+    activity_events = [
+        event for event in events
+        if event.get("type") == "status" and event.get("last_activity_event")
+    ]
+    event_names = [event["last_activity_event"] for event in activity_events]
+    assert "upstream_round_complete" in event_names
+    assert "tool_call_started" in event_names
+    tool_event = next(
+        event for event in activity_events
+        if event["last_activity_event"] == "tool_call_started"
+    )
+    assert tool_event["activity_source"] == "local_tool"
+    assert tool_event["active_tool_name"] == "log_workout"
 
 
 def test_chat_does_not_preload_recent_meals(client):
