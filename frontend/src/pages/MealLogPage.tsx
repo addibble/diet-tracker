@@ -456,7 +456,7 @@ export default function MealLogPage() {
     // Height formula: full dynamic viewport minus layout paddings and the mobile tab bar area.
     <div
       className="flex flex-col"
-      style={{ height: 'calc(100dvh - var(--safe-top) - var(--safe-bottom) - 8rem)' }}
+      style={{ height: 'calc(100dvh - var(--safe-top) - var(--safe-bottom) - 6rem)' }}
     >
       {/* Header */}
       <div className="flex items-center justify-between gap-2 mb-3">
