@@ -1631,7 +1631,26 @@ async def _stream_openrouter_chat_completion(
                                 "attempt": attempt + 1,
                                 "chunk_chars": len(text_delta),
                             })
-                        _merge_tool_call_delta(tool_calls_by_index, delta.get("tool_calls"))
+                        delta_tc = delta.get("tool_calls")
+                        if delta_tc:
+                            logger.info(
+                                "Stream tool_call delta (line %d): %s",
+                                line_count, json.dumps(delta_tc, default=str)[:500],
+                            )
+                        _merge_tool_call_delta(tool_calls_by_index, delta_tc)
+                    # Also check for non-delta "message" in chunk (some providers)
+                    chunk_message = choice.get("message")
+                    if isinstance(chunk_message, dict):
+                        text_msg = _message_content_to_text(chunk_message.get("content"))
+                        if text_msg:
+                            content_parts.append(text_msg)
+                        msg_tc = chunk_message.get("tool_calls")
+                        if msg_tc:
+                            logger.info(
+                                "Stream message.tool_calls (line %d): %s",
+                                line_count, json.dumps(msg_tc, default=str)[:500],
+                            )
+                            _merge_tool_call_delta(tool_calls_by_index, msg_tc)
 
                     fr = choice.get("finish_reason")
                     if isinstance(fr, str) and fr:
@@ -1715,6 +1734,9 @@ async def _stream_openrouter_chat_completion(
                         detail_parts.append(f"native_finish_reason={native_finish_reason}")
                     if stream_error_message:
                         detail_parts.append(f"message={stream_error_message}")
+                    detail_parts.append(f"lines_parsed={line_count}")
+                    detail_parts.append(f"content_parts={len(content_parts)}")
+                    detail_parts.append(f"tool_call_indices={list(tool_calls_by_index.keys())}")
                     detail = "; ".join(detail_parts)
                     logger.error("Chat LLM empty terminal response: %s", detail)
                     _emit_chat_status({
