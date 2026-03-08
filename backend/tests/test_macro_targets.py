@@ -53,6 +53,7 @@ def test_daily_summary_uses_active_target_window(client):
 
 
 def test_dashboard_trends_include_day_specific_active_targets(client):
+    """Window starts from the most recent macro target; per-day targets are correct."""
     food = client.post("/api/foods", json={
         "name": "Yogurt", "serving_size_grams": 100,
         "calories_per_serving": 100, "fat_per_serving": 4,
@@ -73,10 +74,12 @@ def test_dashboard_trends_include_day_specific_active_targets(client):
     resp = client.get("/api/dashboard/trends?end_date=2026-03-07")
     assert resp.status_code == 200
     data = resp.json()
+    # Window starts from most recent macro target (2026-03-05), not 7 days back
+    assert data["start_date"] == "2026-03-05"
+    assert len(data["days"]) == 3
     day_map = {day["date"]: day for day in data["days"]}
 
-    assert day_map["2026-03-04"]["active_macro_target"]["day"] == "2026-03-01"
-    assert day_map["2026-03-04"]["active_macro_target"]["next_day"] == "2026-03-05"
+    assert "2026-03-04" not in day_map
     assert day_map["2026-03-05"]["active_macro_target"]["day"] == "2026-03-05"
     assert day_map["2026-03-06"]["active_macro_target"]["day"] == "2026-03-05"
     assert day_map["2026-03-06"]["active_macro_target"]["calories"] == 2400
