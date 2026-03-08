@@ -275,11 +275,11 @@ function DailyTargetsBreakdownCard({ trends }: { trends: DashboardTrends }) {
           const remainder = Math.max(0, 100 - fat - carbs - protein)
 
           return (
-            <div key={day.date} className="flex flex-col items-center justify-end h-full gap-2">
+            <div key={day.date} className="flex flex-col items-center h-full gap-2">
               <span className="text-[10px] text-gray-500 tabular-nums">
                 {Math.round(day.total_calories)} kcal
               </span>
-              <div className="relative w-full h-full flex items-end">
+              <div className="relative w-full flex-1 min-h-0 flex items-end">
                 <div
                   className="w-full rounded-t-xl overflow-hidden border border-gray-200 bg-gray-50"
                   style={{ height: `${Math.min(barHeightPercent, 100)}%` }}
@@ -331,7 +331,7 @@ const TARGET_NORMALIZED_METRICS: TargetNormalizedMetric[] = [
     totalKey: 'total_saturated_fat',
     label: 'Saturated Fat',
     unit: 'g',
-    colorClass: 'bg-rose-500',
+    colorClass: 'bg-amber-400',
   },
   {
     targetKey: 'cholesterol',

@@ -260,9 +260,17 @@ export default function MealLogPage() {
         if (cancelled) return
         setChatModels(resp.models)
         const availableIds = new Set(resp.models.map((model) => model.id))
-        const fallbackModel = availableIds.has(resp.default_model)
-          ? resp.default_model
-          : (resp.models[0]?.id ?? '')
+        const nonzero = resp.models.filter(
+          (m) => m.input_cost_per_million + m.output_cost_per_million > 0,
+        )
+        const cheapest = nonzero.length > 0
+          ? nonzero.reduce((a, b) =>
+              a.input_cost_per_million + a.output_cost_per_million <=
+              b.input_cost_per_million + b.output_cost_per_million
+                ? a : b,
+            )
+          : null
+        const fallbackModel = cheapest?.id ?? resp.default_model ?? (resp.models[0]?.id ?? '')
         setSelectedModel((previous) => (availableIds.has(previous) ? previous : fallbackModel))
         setModelLoadError(null)
       })
