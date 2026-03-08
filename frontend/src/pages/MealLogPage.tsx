@@ -199,6 +199,7 @@ function today() {
 
 const CHAT_STORAGE_KEY = 'diet-chat-messages'
 const CHAT_SAVED_KEY = 'diet-chat-saved'
+const CHAT_MODEL_KEY = 'diet-chat-model'
 
 function loadChatState(): { messages: MessageBubble[]; saved: boolean } {
   try {
@@ -235,7 +236,7 @@ export default function MealLogPage() {
   const [listening, setListening] = useState(false)
   const [speechError, setSpeechError] = useState<string | null>(null)
   const [chatModels, setChatModels] = useState<ChatModelOption[]>([])
-  const [selectedModel, setSelectedModel] = useState('')
+  const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem(CHAT_MODEL_KEY) ?? '')
   const [modelLoadError, setModelLoadError] = useState<string | null>(null)
   const [modelsLoading, setModelsLoading] = useState(true)
   const [saved, setSaved] = useState(initial.saved)
@@ -260,6 +261,7 @@ export default function MealLogPage() {
         if (cancelled) return
         setChatModels(resp.models)
         const availableIds = new Set(resp.models.map((model) => model.id))
+        const stored = localStorage.getItem(CHAT_MODEL_KEY)
         const nonzero = resp.models.filter(
           (m) => m.input_cost_per_million + m.output_cost_per_million > 0,
         )
@@ -271,7 +273,14 @@ export default function MealLogPage() {
             )
           : null
         const fallbackModel = cheapest?.id ?? resp.default_model ?? (resp.models[0]?.id ?? '')
-        setSelectedModel((previous) => (availableIds.has(previous) ? previous : fallbackModel))
+        setSelectedModel((previous) => {
+          // Prefer localStorage value, then current state, then cheapest
+          const preferred = stored && availableIds.has(stored) ? stored : null
+          if (preferred) return preferred
+          if (previous && availableIds.has(previous)) return previous
+          localStorage.setItem(CHAT_MODEL_KEY, fallbackModel)
+          return fallbackModel
+        })
         setModelLoadError(null)
       })
       .catch((err) => {
@@ -463,15 +472,34 @@ export default function MealLogPage() {
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Header */}
-      <div className="flex items-center justify-between gap-2 mb-3">
-        <h1 className="text-lg font-semibold text-gray-900">Chat</h1>
+      <div className="flex items-center gap-2 mb-3 shrink-0">
+        <h1 className="text-lg font-semibold text-gray-900 shrink-0">Chat</h1>
+        <select
+          id="chat-model-select"
+          value={selectedModel}
+          onChange={(e) => { setSelectedModel(e.target.value); localStorage.setItem(CHAT_MODEL_KEY, e.target.value) }}
+          disabled={modelsLoading || loading || importingImage}
+          className="min-w-0 flex-1 px-2 py-1.5 border border-gray-300 rounded-md text-xs bg-white disabled:bg-gray-50"
+        >
+          {chatModels.length === 0 && <option value="">Default model</option>}
+          {chatModels.map((model) => (
+            <option key={model.id} value={model.id}>
+              {modelOptionLabel(model)}
+            </option>
+          ))}
+        </select>
         <button
           onClick={handleClearChat}
-          className="px-3 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 active:bg-blue-800"
+          className="shrink-0 px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-md hover:bg-blue-700 active:bg-blue-800"
         >
-          Clear Chat
+          Clear
         </button>
       </div>
+      {modelLoadError && (
+        <p className="mb-2 text-xs text-red-500">
+          Model list unavailable: {modelLoadError}
+        </p>
+      )}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto space-y-3 mb-3 pr-1">
@@ -543,31 +571,6 @@ export default function MealLogPage() {
         <div ref={bottomRef} />
       </div>
 
-      <div className="mb-2 flex items-center gap-2">
-        <label htmlFor="chat-model-select" className="text-xs text-gray-500">
-          Model
-        </label>
-        <select
-          id="chat-model-select"
-          value={selectedModel}
-          onChange={(e) => setSelectedModel(e.target.value)}
-          disabled={modelsLoading || loading || importingImage}
-          className="min-w-0 flex-1 px-2 py-1.5 border border-gray-300 rounded-md text-xs bg-white disabled:bg-gray-50"
-        >
-          {chatModels.length === 0 && <option value="">Default model</option>}
-          {chatModels.map((model) => (
-            <option key={model.id} value={model.id}>
-              {modelOptionLabel(model)}
-            </option>
-          ))}
-        </select>
-        {modelsLoading && <span className="text-xs text-gray-400">Loading...</span>}
-      </div>
-          {modelLoadError && (
-            <p className="mb-2 text-xs text-red-500">
-              Model list unavailable: {modelLoadError}
-            </p>
-          )}
           {editingMessageIndex !== null && (
             <div className="mb-2 flex items-center justify-between rounded-md bg-amber-50 px-2.5 py-1.5">
               <p className="text-xs text-amber-700">
