@@ -1,7 +1,10 @@
+from unittest.mock import patch
+
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
+from app.config import settings
 from app.database import get_session
 from app.main import app
 
@@ -21,7 +24,8 @@ def test_login_success():
         __import__("app.auth", fromlist=["get_current_user"]).get_current_user, None
     )
     client = TestClient(app)
-    resp = client.post("/api/auth/login", json={"password": "changeme"})
+    with patch.object(settings, "app_password", "changeme"):
+        resp = client.post("/api/auth/login", json={"password": "changeme"})
     assert resp.status_code == 200
     assert "session" in resp.cookies
     app.dependency_overrides.clear()

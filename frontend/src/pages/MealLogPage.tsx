@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import Markdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {
   chatMeal,
   getChatModels,
@@ -494,7 +496,15 @@ export default function MealLogPage() {
                     : 'bg-white border border-gray-200 text-gray-700'
                 } ${editingMessageIndex === i ? 'ring-2 ring-amber-300 ring-offset-1' : ''}`}
               >
-                <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                {msg.role === 'assistant' ? (
+                  <div className="text-sm prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-table:my-1 prose-headings:my-1.5 prose-pre:my-1">
+                    <Markdown remarkPlugins={[remarkGfm]}>
+                      {msg.content}
+                    </Markdown>
+                  </div>
+                ) : (
+                  <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                )}
                 {msg.proposedItems && msg.proposedItems.length > 0 && (
                   <ProposedItemsCard
                     items={msg.proposedItems}
