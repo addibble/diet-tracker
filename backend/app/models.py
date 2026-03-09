@@ -107,8 +107,7 @@ class Tissue(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     name: str = Field(index=True)
     display_name: str
-    type: str = "muscle"  # "muscle", "tendon", "joint", "tissue_group"
-    parent_id: int | None = Field(default=None, foreign_key="tissues.id")
+    type: str = "muscle"  # "muscle", "tendon", "joint"
     recovery_hours: float = 48.0
     notes: str | None = None
     updated_at: datetime = Field(default_factory=_utcnow)

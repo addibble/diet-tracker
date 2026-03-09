@@ -104,31 +104,3 @@ def get_all_current_conditions(session: Session) -> list[TissueCondition]:
     return list(session.exec(stmt).all())
 
 
-def get_tissue_tree(session: Session) -> list[dict]:
-    """Get hierarchical tree of all current tissues."""
-    tissues = get_current_tissues(session)
-
-    by_id: dict[int, dict] = {}
-    roots: list[dict] = []
-
-    for t in tissues:
-        node = {
-            "id": t.id,
-            "name": t.name,
-            "display_name": t.display_name,
-            "type": t.type,
-            "parent_id": t.parent_id,
-            "recovery_hours": t.recovery_hours,
-            "notes": t.notes,
-            "children": [],
-        }
-        by_id[t.id] = node
-
-    for node in by_id.values():
-        pid = node["parent_id"]
-        if pid and pid in by_id:
-            by_id[pid]["children"].append(node)
-        else:
-            roots.append(node)
-
-    return roots

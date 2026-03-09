@@ -79,16 +79,6 @@ def get_tissue_readiness(
             if existing is None or last_dt > existing:
                 last_trained_map[tissue_id] = last_dt
 
-    # Propagate to parents: if a child was trained, parent is also trained
-    tissue_by_id = {t.id: t for t in tissues}
-    for tissue_id, last_dt in list(last_trained_map.items()):
-        t = tissue_by_id.get(tissue_id)
-        while t and t.parent_id:
-            parent_dt = last_trained_map.get(t.parent_id)
-            if parent_dt is None or last_dt > parent_dt:
-                last_trained_map[t.parent_id] = last_dt
-            t = tissue_by_id.get(t.parent_id)
-
     # Compute 7-day volume per tissue
     cutoff = now - timedelta(days=7)
     volume_rows = session.exec(
@@ -112,13 +102,6 @@ def get_tissue_readiness(
     for exercise_id, vol in volume_by_exercise.items():
         for tissue_id in exercise_tissues.get(exercise_id, []):
             tissue_volume_7d[tissue_id] = tissue_volume_7d.get(tissue_id, 0.0) + vol
-
-    # Propagate volume up to parents
-    for tissue_id, vol in list(tissue_volume_7d.items()):
-        t = tissue_by_id.get(tissue_id)
-        while t and t.parent_id:
-            tissue_volume_7d[t.parent_id] = tissue_volume_7d.get(t.parent_id, 0.0) + vol
-            t = tissue_by_id.get(t.parent_id)
 
     # Get routine exercises for "exercises_available"
     routine_exercises = session.exec(
@@ -176,7 +159,6 @@ def get_tissue_readiness(
                 "name": t.name,
                 "display_name": t.display_name,
                 "type": t.type,
-                "parent_id": t.parent_id,
                 "recovery_hours": t.recovery_hours,
             },
             "condition": {

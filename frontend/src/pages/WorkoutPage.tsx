@@ -14,24 +14,6 @@ import {
 
 // ── Helpers ──
 
-function readinessColor(r: WkTissueReadiness): string {
-  if (r.condition && (r.condition.status === 'injured' || r.condition.status === 'tender'))
-    return 'border-purple-400 bg-purple-50'
-  if (r.condition && r.condition.status === 'rehabbing')
-    return 'border-purple-300 bg-purple-50/50'
-  if (r.recovery_pct >= 100) return 'border-green-400 bg-green-50'
-  if (r.recovery_pct >= 75) return 'border-yellow-400 bg-yellow-50'
-  return 'border-red-400 bg-red-50'
-}
-
-function readinessDot(r: WkTissueReadiness): string {
-  if (r.condition && r.condition.status === 'injured') return 'bg-purple-500'
-  if (r.condition && r.condition.status === 'tender') return 'bg-purple-400'
-  if (r.recovery_pct >= 100) return 'bg-green-500'
-  if (r.recovery_pct >= 75) return 'bg-yellow-500'
-  return 'bg-red-500'
-}
-
 function repDot(completion: string | null): string {
   if (completion === 'full') return 'bg-green-500'
   if (completion === 'partial') return 'bg-yellow-500'
@@ -60,14 +42,6 @@ function groupSetsByExercise(sets: WkSession['sets']) {
 
 type SortKey = 'name' | 'status' | 'last_worked' | 'recovery' | 'volume_7d'
 
-const GROUP_ACCENT: Record<string, { bar: string; header: string; dot: string }> = {
-  upper_body: { bar: 'bg-sky-400',    header: 'border-sky-300 text-sky-700 bg-sky-50',    dot: 'bg-sky-400' },
-  lower_body: { bar: 'bg-violet-400', header: 'border-violet-300 text-violet-700 bg-violet-50', dot: 'bg-violet-400' },
-  core:       { bar: 'bg-amber-400',  header: 'border-amber-300 text-amber-700 bg-amber-50',  dot: 'bg-amber-400' },
-  joints:     { bar: 'bg-slate-400',  header: 'border-slate-300 text-slate-600 bg-slate-50',  dot: 'bg-slate-400' },
-}
-const DEFAULT_ACCENT = { bar: 'bg-gray-300', header: 'border-gray-200 text-gray-600 bg-gray-50', dot: 'bg-gray-400' }
-
 function recoveryBarClass(pct: number, status: string | undefined): string {
   if (status === 'injured' || status === 'tender') return 'bg-purple-400'
   if (pct >= 100) return 'bg-emerald-400'
@@ -92,46 +66,14 @@ function statusBadge(condition: WkTissueReadiness['condition']): React.ReactNode
 function TissueStatusTable({ readiness }: { readiness: WkTissueReadiness[] }) {
   const [sortKey, setSortKey] = useState<SortKey>('recovery')
   const [sortAsc, setSortAsc] = useState(true)
-  const [collapsed, setCollapsed] = useState<Set<number>>(new Set())
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) setSortAsc((a) => !a)
     else { setSortKey(key); setSortAsc(key === 'name' || key === 'status') }
   }
 
-  const toggleCollapse = (id: number) =>
-    setCollapsed((prev) => {
-      const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
-      return next
-    })
-
-  // Build structure: top-level groups → all descendant non-group tissues
-  const byId = useMemo(() => new Map(readiness.map((r) => [r.tissue.id, r])), [readiness])
-
-  const topGroups = useMemo(
-    () => readiness.filter((r) => r.tissue.parent_id === null && r.tissue.type === 'tissue_group'),
-    [readiness],
-  )
-
-  function descendants(groupId: number): WkTissueReadiness[] {
-    const result: WkTissueReadiness[] = []
-    for (const r of readiness) {
-      if (r.tissue.type === 'tissue_group') continue
-      // Walk up parent chain
-      let t = r.tissue
-      while (t.parent_id !== null) {
-        if (t.parent_id === groupId) { result.push(r); break }
-        const parent = byId.get(t.parent_id)
-        if (!parent) break
-        t = parent.tissue
-      }
-    }
-    return result
-  }
-
-  function sortRows(rows: WkTissueReadiness[]): WkTissueReadiness[] {
-    return [...rows].sort((a, b) => {
+  const sorted = useMemo(() => {
+    return [...readiness].sort((a, b) => {
       let cmp = 0
       if (sortKey === 'name')       cmp = a.tissue.display_name.localeCompare(b.tissue.display_name)
       else if (sortKey === 'status')  cmp = (a.condition?.status ?? 'healthy').localeCompare(b.condition?.status ?? 'healthy')
@@ -140,7 +82,7 @@ function TissueStatusTable({ readiness }: { readiness: WkTissueReadiness[] }) {
       else if (sortKey === 'volume_7d')   cmp = a.volume_7d - b.volume_7d
       return sortAsc ? cmp : -cmp
     })
-  }
+  }, [readiness, sortKey, sortAsc])
 
   const SortBtn = ({ k, label }: { k: SortKey; label: string }) => (
     <button
@@ -151,14 +93,6 @@ function TissueStatusTable({ readiness }: { readiness: WkTissueReadiness[] }) {
       {sortKey === k && <span className="opacity-60">{sortAsc ? '↑' : '↓'}</span>}
     </button>
   )
-
-  const ungrouped = useMemo(() => {
-    const groupedIds = new Set(topGroups.flatMap((g) => descendants(g.tissue.id).map((r) => r.tissue.id)))
-    return readiness.filter(
-      (r) => !groupedIds.has(r.tissue.id) && r.tissue.type !== 'tissue_group' && r.tissue.parent_id === null,
-    )
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [readiness, topGroups])
 
   if (readiness.length === 0) {
     return (
@@ -184,52 +118,10 @@ function TissueStatusTable({ readiness }: { readiness: WkTissueReadiness[] }) {
         </div>
       </div>
 
-      {/* Groups */}
       <div className="divide-y divide-gray-50">
-        {topGroups.map((g) => {
-          const accent = GROUP_ACCENT[g.tissue.name] ?? DEFAULT_ACCENT
-          const rows = sortRows(descendants(g.tissue.id))
-          const isCollapsed = collapsed.has(g.tissue.id)
-          const injured = rows.filter((r) => r.condition && r.condition.status !== 'healthy').length
-          return (
-            <div key={g.tissue.id}>
-              {/* Group header */}
-              <button
-                onClick={() => toggleCollapse(g.tissue.id)}
-                className={`w-full px-5 py-2 flex items-center gap-2 border-l-4 ${accent.header}`}
-                style={{ borderLeftColor: undefined }}
-              >
-                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${accent.dot}`} />
-                <span className="text-[11px] font-semibold uppercase tracking-[0.14em]">
-                  {g.tissue.display_name}
-                </span>
-                <span className="text-[10px] opacity-60 ml-1">
-                  {rows.length} tissues
-                  {injured > 0 && <span className="ml-1 text-purple-600">· {injured} flagged</span>}
-                </span>
-                <span className="ml-auto text-[10px] opacity-50">{isCollapsed ? '+' : '−'}</span>
-              </button>
-
-              {/* Tissue rows */}
-              {!isCollapsed && (
-                <div>
-                  {rows.map((r, i) => (
-                    <TissueRow key={r.tissue.id} r={r} striped={i % 2 === 1} />
-                  ))}
-                </div>
-              )}
-            </div>
-          )
-        })}
-
-        {/* Ungrouped */}
-        {ungrouped.length > 0 && (
-          <div>
-            {sortRows(ungrouped).map((r, i) => (
-              <TissueRow key={r.tissue.id} r={r} striped={i % 2 === 1} />
-            ))}
-          </div>
-        )}
+        {sorted.map((r, i) => (
+          <TissueRow key={r.tissue.id} r={r} striped={i % 2 === 1} />
+        ))}
       </div>
     </section>
   )
@@ -286,115 +178,6 @@ function TissueRow({
         )}
       </div>
     </div>
-  )
-}
-
-// ── Tissue Readiness Dashboard ──
-
-function TissueReadinessCard({
-  readiness,
-}: {
-  readiness: WkTissueReadiness[]
-}) {
-  const [expanded, setExpanded] = useState<string | null>(null)
-
-  // Show only top-level groups (no parent) that are tissue_groups
-  const topLevel = useMemo(
-    () => readiness.filter((r) => r.tissue.parent_id === null && r.tissue.type === 'tissue_group'),
-    [readiness],
-  )
-
-  const childrenOf = useMemo(() => {
-    const map = new Map<number, WkTissueReadiness[]>()
-    for (const r of readiness) {
-      if (r.tissue.parent_id !== null) {
-        const list = map.get(r.tissue.parent_id) || []
-        list.push(r)
-        map.set(r.tissue.parent_id, list)
-      }
-    }
-    return map
-  }, [readiness])
-
-  if (topLevel.length === 0) {
-    return (
-      <section className="bg-white border border-gray-200 rounded-2xl p-5">
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">
-          Tissue Readiness
-        </p>
-        <p className="text-sm text-gray-500 mt-2">
-          No tissue data yet. Log a workout with tissue mappings to see readiness.
-        </p>
-      </section>
-    )
-  }
-
-  return (
-    <section className="bg-white border border-gray-200 rounded-2xl p-5">
-      <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">
-        Tissue Readiness
-      </p>
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 mt-3">
-        {topLevel.map((r) => (
-          <div key={r.tissue.id}>
-            <button
-              onClick={() =>
-                setExpanded(expanded === r.tissue.name ? null : r.tissue.name)
-              }
-              className={`w-full text-left rounded-xl border-2 p-3 transition-colors ${readinessColor(r)}`}
-            >
-              <div className="flex items-center gap-2">
-                <span className={`w-2.5 h-2.5 rounded-full ${readinessDot(r)}`} />
-                <span className="text-sm font-medium text-gray-800 truncate">
-                  {r.tissue.display_name}
-                </span>
-              </div>
-              <div className="mt-1 text-xs text-gray-500">
-                {Math.round(r.recovery_pct)}% recovered
-              </div>
-              <div className="text-xs text-gray-400">
-                {hoursLabel(r.hours_since)}
-              </div>
-              {r.condition && r.condition.status !== 'healthy' && (
-                <span className="inline-block mt-1 text-[10px] font-medium uppercase tracking-wide text-purple-600 bg-purple-100 rounded px-1.5 py-0.5">
-                  {r.condition.status}
-                </span>
-              )}
-            </button>
-            {expanded === r.tissue.name && (
-              <div className="mt-1 ml-2 space-y-1">
-                {(childrenOf.get(r.tissue.id) || []).map((child) => (
-                  <div
-                    key={child.tissue.id}
-                    className="flex items-center gap-2 text-xs text-gray-600 py-0.5"
-                  >
-                    <span className={`w-2 h-2 rounded-full ${readinessDot(child)}`} />
-                    <span className="truncate">{child.tissue.display_name}</span>
-                    <span className="ml-auto text-gray-400">
-                      {Math.round(child.recovery_pct)}%
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-      <div className="flex gap-4 mt-3 text-[10px] text-gray-400">
-        <span className="inline-flex items-center gap-1">
-          <span className="w-2 h-2 rounded-full bg-green-500" /> Ready
-        </span>
-        <span className="inline-flex items-center gap-1">
-          <span className="w-2 h-2 rounded-full bg-yellow-500" /> Almost
-        </span>
-        <span className="inline-flex items-center gap-1">
-          <span className="w-2 h-2 rounded-full bg-red-500" /> Recovering
-        </span>
-        <span className="inline-flex items-center gap-1">
-          <span className="w-2 h-2 rounded-full bg-purple-500" /> Injured
-        </span>
-      </div>
-    </section>
   )
 }
 
@@ -829,7 +612,6 @@ export default function WorkoutPage() {
 
   return (
     <div className="space-y-4 pb-4 overflow-y-auto h-full">
-      <TissueReadinessCard readiness={readiness} />
       <TissueStatusTable readiness={readiness} />
       <SuggestedWorkoutCard routine={routine} readiness={readiness} />
       <RecentSessionsCard sessions={sessions} />

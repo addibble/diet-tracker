@@ -11,59 +11,13 @@ import {
 
 type View = 'tissues' | 'exercises'
 
-interface TissueNode extends WkTissue {
-  children: TissueNode[]
+interface TissueWithExercises extends WkTissue {
   exercises: { exercise_id: number; exercise_name: string; role: string; loading_factor: number }[]
 }
 
-// ── Helpers ──
-
-function buildTree(tissues: WkTissue[], exercises: WkExercise[]): TissueNode[] {
-  const byId = new Map<number, TissueNode>()
-  for (const t of tissues) {
-    byId.set(t.id, { ...t, children: [], exercises: [] })
-  }
-
-  // Attach exercise mappings to tissues
-  for (const ex of exercises) {
-    for (const m of ex.tissues) {
-      const node = byId.get(m.tissue_id)
-      if (node) {
-        node.exercises.push({
-          exercise_id: ex.id,
-          exercise_name: ex.name,
-          role: m.role,
-          loading_factor: m.loading_factor,
-        })
-      }
-    }
-  }
-
-  // Build parent-child
-  const roots: TissueNode[] = []
-  for (const node of byId.values()) {
-    if (node.parent_id !== null) {
-      const parent = byId.get(node.parent_id)
-      if (parent) {
-        parent.children.push(node)
-        continue
-      }
-    }
-    roots.push(node)
-  }
-
-  // Sort children alphabetically
-  const sortChildren = (nodes: TissueNode[]) => {
-    nodes.sort((a, b) => a.display_name.localeCompare(b.display_name))
-    for (const n of nodes) sortChildren(n.children)
-  }
-  sortChildren(roots)
-
-  return roots
-}
+// ── Style Constants ──
 
 const TYPE_BADGE: Record<string, string> = {
-  tissue_group: 'bg-blue-100 text-blue-700',
   muscle: 'bg-green-100 text-green-700',
   tendon: 'bg-orange-100 text-orange-700',
   joint: 'bg-red-100 text-red-700',
@@ -73,12 +27,6 @@ const ROLE_COLORS: Record<string, string> = {
   primary: 'bg-emerald-100 text-emerald-800',
   secondary: 'bg-sky-100 text-sky-800',
   stabilizer: 'bg-gray-100 text-gray-600',
-}
-
-const GROUP_COLORS: Record<string, string> = {
-  upper_body: 'border-l-sky-400 bg-sky-50/50',
-  lower_body: 'border-l-violet-400 bg-violet-50/50',
-  core: 'border-l-amber-400 bg-amber-50/50',
 }
 
 // ── Components ──
@@ -118,7 +66,6 @@ function LoadingEditor({
   const handleSave = async () => {
     setSaving(true)
     try {
-      // Build updated tissues list for this exercise
       const updatedTissues = exercise.tissues.map((t) =>
         t.tissue_id === tissueId
           ? { tissue_id: t.tissue_id, role: editRole, loading_factor: loading }
@@ -172,59 +119,68 @@ function LoadingEditor({
   )
 }
 
-function TissueTreeNode({
-  node,
-  depth,
-  collapsed,
-  toggleCollapse,
+// ── Tissue View ──
+
+function TissueView({
+  tissues,
   exercises,
   onSave,
 }: {
-  node: TissueNode
-  depth: number
-  collapsed: Set<number>
-  toggleCollapse: (id: number) => void
+  tissues: TissueWithExercises[]
   exercises: WkExercise[]
   onSave: () => void
 }) {
-  const hasChildren = node.children.length > 0
-  const isCollapsed = collapsed.has(node.id)
-  const rootGroup = depth === 0 ? GROUP_COLORS[node.name] : undefined
+  const [search, setSearch] = useState('')
+
+  const filtered = useMemo(() => {
+    if (!search) return tissues
+    const q = search.toLowerCase()
+    return tissues.filter(
+      (t) => t.name.toLowerCase().includes(q) || t.display_name.toLowerCase().includes(q),
+    )
+  }, [tissues, search])
 
   return (
-    <>
-      <div
-        className={`border-b border-gray-100 hover:bg-gray-50/80 transition-colors ${rootGroup ? `border-l-4 ${rootGroup}` : ''}`}
-        style={{ paddingLeft: `${depth * 20 + 12}px` }}
-      >
-        <div className="py-1.5 pr-3 flex items-start gap-2">
-          {/* Expand/collapse */}
-          <div className="w-4 flex-shrink-0 pt-0.5">
-            {hasChildren && (
-              <button
-                onClick={() => toggleCollapse(node.id)}
-                className="text-[10px] text-gray-400 hover:text-gray-600 font-mono w-4 h-4 flex items-center justify-center"
-              >
-                {isCollapsed ? '+' : '-'}
-              </button>
-            )}
-          </div>
+    <div>
+      <div className="flex items-center gap-2 mb-3">
+        <input
+          type="text"
+          placeholder="Filter tissues..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="flex-1 max-w-sm border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+        />
+      </div>
 
-          {/* Names */}
-          <div className="flex-1 min-w-0">
+      {/* Legend */}
+      <div className="flex flex-wrap gap-3 mb-3 text-[10px]">
+        {Object.entries(TYPE_BADGE).map(([type, cls]) => (
+          <span key={type} className={`px-1.5 py-px rounded font-medium ${cls}`}>{type}</span>
+        ))}
+        <span className="text-gray-400 ml-2">|</span>
+        {Object.entries(ROLE_COLORS).map(([role, cls]) => (
+          <span key={role} className={`px-1.5 py-px rounded font-medium ${cls}`}>{role}</span>
+        ))}
+      </div>
+
+      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden divide-y divide-gray-100">
+        {filtered.length === 0 && (
+          <p className="text-sm text-gray-500 p-4">No tissues found.</p>
+        )}
+        {filtered.map((t) => (
+          <div key={t.id} className="px-4 py-2 hover:bg-gray-50/80 transition-colors">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-sm font-medium text-gray-800">{node.display_name}</span>
-              <span className="text-[10px] font-mono text-gray-400">{node.name}</span>
-              <span className={`text-[10px] px-1.5 py-px rounded font-medium ${TYPE_BADGE[node.type] ?? 'bg-gray-100 text-gray-600'}`}>
-                {node.type}
+              <span className="text-sm font-medium text-gray-800">{t.display_name}</span>
+              <span className="text-[10px] font-mono text-gray-400">{t.name}</span>
+              <span className={`text-[10px] px-1.5 py-px rounded font-medium ${TYPE_BADGE[t.type] ?? 'bg-gray-100 text-gray-600'}`}>
+                {t.type}
               </span>
-              <span className="text-[10px] text-gray-400">{node.recovery_hours}h</span>
+              <span className="text-[10px] text-gray-400">{t.recovery_hours}h</span>
             </div>
 
-            {/* Exercises that impact this tissue */}
-            {node.exercises.length > 0 && (
+            {t.exercises.length > 0 && (
               <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
-                {node.exercises.map((ex) => {
+                {t.exercises.map((ex) => {
                   const fullExercise = exercises.find((e) => e.id === ex.exercise_id)
                   return (
                     <span key={ex.exercise_id} className="inline-flex items-center gap-1 text-[11px]">
@@ -237,7 +193,7 @@ function TissueTreeNode({
                           value={ex.loading_factor}
                           role={ex.role}
                           exerciseId={ex.exercise_id}
-                          tissueId={node.id}
+                          tissueId={t.id}
                           exercise={fullExercise}
                           onSave={onSave}
                         />
@@ -248,40 +204,10 @@ function TissueTreeNode({
               </div>
             )}
           </div>
-
-          {/* Descendant count */}
-          {hasChildren && (
-            <span className="text-[10px] text-gray-400 flex-shrink-0 pt-0.5">
-              {countDescendants(node)} tissues
-            </span>
-          )}
-        </div>
+        ))}
       </div>
-
-      {/* Children */}
-      {hasChildren && !isCollapsed && (
-        node.children.map((child) => (
-          <TissueTreeNode
-            key={child.id}
-            node={child}
-            depth={depth + 1}
-            collapsed={collapsed}
-            toggleCollapse={toggleCollapse}
-            exercises={exercises}
-            onSave={onSave}
-          />
-        ))
-      )}
-    </>
+    </div>
   )
-}
-
-function countDescendants(node: TissueNode): number {
-  let count = 0
-  for (const child of node.children) {
-    count += 1 + countDescendants(child)
-  }
-  return count
 }
 
 // ── Exercise View ──
@@ -326,6 +252,9 @@ function ExerciseView({ exercises, onSave }: { exercises: WkExercise[]; onSave: 
                   <span key={t.tissue_id} className="inline-flex items-center gap-1 text-[11px]">
                     <span className="text-gray-600">{t.tissue_display_name}</span>
                     <span className="text-[10px] font-mono text-gray-400">({t.tissue_name})</span>
+                    <span className={`text-[10px] px-1.5 py-px rounded font-medium ${TYPE_BADGE[t.tissue_type] ?? 'bg-gray-100 text-gray-600'}`}>
+                      {t.tissue_type}
+                    </span>
                     <span className={`px-1 py-px rounded text-[9px] font-medium ${ROLE_COLORS[t.role] ?? ROLE_COLORS.stabilizer}`}>
                       {t.role}
                     </span>
@@ -356,8 +285,6 @@ export default function TissueAdminPage() {
   const [tissues, setTissues] = useState<WkTissue[]>([])
   const [exercises, setExercises] = useState<WkExercise[]>([])
   const [view, setView] = useState<View>('tissues')
-  const [collapsed, setCollapsed] = useState<Set<number>>(new Set())
-  const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
 
   const load = async () => {
@@ -374,49 +301,27 @@ export default function TissueAdminPage() {
 
   useEffect(() => { load() }, [])
 
-  const tree = useMemo(() => buildTree(tissues, exercises), [tissues, exercises])
-
-  const toggleCollapse = (id: number) =>
-    setCollapsed((prev) => {
-      const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
-      return next
-    })
-
-  const collapseAll = () => {
-    const ids = new Set<number>()
-    const walk = (nodes: TissueNode[]) => {
-      for (const n of nodes) {
-        if (n.children.length > 0) ids.add(n.id)
-        walk(n.children)
-      }
-    }
-    walk(tree)
-    setCollapsed(ids)
-  }
-
-  const expandAll = () => setCollapsed(new Set())
-
-  // Filter tree nodes for tissue search
-  const filteredTree = useMemo(() => {
-    if (!search) return tree
-    const q = search.toLowerCase()
-
-    const filterNodes = (nodes: TissueNode[]): TissueNode[] => {
-      const result: TissueNode[] = []
-      for (const node of nodes) {
-        const matchesSelf =
-          node.name.toLowerCase().includes(q) ||
-          node.display_name.toLowerCase().includes(q)
-        const filteredChildren = filterNodes(node.children)
-        if (matchesSelf || filteredChildren.length > 0) {
-          result.push({ ...node, children: matchesSelf ? node.children : filteredChildren })
+  // Attach exercise mappings to tissues
+  const tissuesWithExercises: TissueWithExercises[] = useMemo(() => {
+    return tissues
+      .map((t) => {
+        const exs: TissueWithExercises['exercises'] = []
+        for (const ex of exercises) {
+          for (const m of ex.tissues) {
+            if (m.tissue_id === t.id) {
+              exs.push({
+                exercise_id: ex.id,
+                exercise_name: ex.name,
+                role: m.role,
+                loading_factor: m.loading_factor,
+              })
+            }
+          }
         }
-      }
-      return result
-    }
-    return filterNodes(tree)
-  }, [tree, search])
+        return { ...t, exercises: exs }
+      })
+      .sort((a, b) => a.display_name.localeCompare(b.display_name))
+  }, [tissues, exercises])
 
   if (loading) {
     return <div className="text-sm text-gray-500 p-6">Loading...</div>
@@ -447,53 +352,10 @@ export default function TissueAdminPage() {
         </div>
       </div>
 
-      {/* Tissue View */}
       {view === 'tissues' && (
-        <div>
-          <div className="flex items-center gap-2 mb-3">
-            <input
-              type="text"
-              placeholder="Filter tissues..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="flex-1 max-w-sm border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-            />
-            <button onClick={expandAll} className="text-[11px] text-gray-500 hover:text-gray-700 px-2 py-1">
-              Expand all
-            </button>
-            <button onClick={collapseAll} className="text-[11px] text-gray-500 hover:text-gray-700 px-2 py-1">
-              Collapse all
-            </button>
-          </div>
-
-          {/* Legend */}
-          <div className="flex flex-wrap gap-3 mb-3 text-[10px]">
-            {Object.entries(TYPE_BADGE).map(([type, cls]) => (
-              <span key={type} className={`px-1.5 py-px rounded font-medium ${cls}`}>{type}</span>
-            ))}
-            <span className="text-gray-400 ml-2">|</span>
-            {Object.entries(ROLE_COLORS).map(([role, cls]) => (
-              <span key={role} className={`px-1.5 py-px rounded font-medium ${cls}`}>{role}</span>
-            ))}
-          </div>
-
-          <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-            {filteredTree.map((node) => (
-              <TissueTreeNode
-                key={node.id}
-                node={node}
-                depth={0}
-                collapsed={collapsed}
-                toggleCollapse={toggleCollapse}
-                exercises={exercises}
-                onSave={load}
-              />
-            ))}
-          </div>
-        </div>
+        <TissueView tissues={tissuesWithExercises} exercises={exercises} onSave={load} />
       )}
 
-      {/* Exercise View */}
       {view === 'exercises' && (
         <ExerciseView exercises={exercises} onSave={load} />
       )}

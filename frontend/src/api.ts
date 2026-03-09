@@ -449,6 +449,7 @@ export interface WkExerciseTissueMapping {
   tissue_id: number;
   tissue_name: string;
   tissue_display_name: string;
+  tissue_type: string;
   role: string;
   loading_factor: number;
 }
@@ -499,7 +500,6 @@ export interface WkTissue {
   name: string;
   display_name: string;
   type: string;
-  parent_id: number | null;
   recovery_hours: number;
 }
 
@@ -567,8 +567,8 @@ export const getRoutine = () =>
 export const getExerciseHistory = (id: number, limit?: number) =>
   request<WkExerciseHistory>(`/exercises/${id}/history${limit ? `?limit=${limit}` : ''}`);
 
-export const getTissues = (tree?: boolean) =>
-  request<WkTissue[]>(`/tissues${tree ? '?tree=true' : ''}`);
+export const getTissues = () =>
+  request<WkTissue[]>('/tissues');
 
 // Parse meal with LLM
 export const parseMeal = (description: string) =>

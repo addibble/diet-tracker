@@ -8,7 +8,6 @@ from app.models import Tissue, TissueCondition
 from app.workout_queries import (
     get_all_current_conditions,
     get_current_tissue_condition,
-    get_tissue_tree,
 )
 
 router = APIRouter(prefix="/api/tissues", tags=["tissues"])
@@ -18,7 +17,6 @@ class TissueCreate(BaseModel):
     name: str
     display_name: str
     type: str = "muscle"
-    parent_id: int | None = None
     recovery_hours: float = 48.0
     notes: str | None = None
 
@@ -40,13 +38,9 @@ class TissueConditionCreate(BaseModel):
 
 @router.get("")
 def list_tissues(
-    tree: bool = Query(default=False),
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    if tree:
-        return get_tissue_tree(session)
-    # Flat list: latest per name
     from app.workout_queries import get_current_tissues
     return [
         {
@@ -54,7 +48,6 @@ def list_tissues(
             "name": t.name,
             "display_name": t.display_name,
             "type": t.type,
-            "parent_id": t.parent_id,
             "recovery_hours": t.recovery_hours,
             "notes": t.notes,
         }
@@ -71,22 +64,14 @@ def get_tissue(
     tissue = session.get(Tissue, tissue_id)
     if not tissue:
         raise HTTPException(status_code=404, detail="Tissue not found")
-    children = session.exec(
-        select(Tissue).where(Tissue.parent_id == tissue_id)
-    ).all()
     condition = get_current_tissue_condition(session, tissue_id)
     return {
         "id": tissue.id,
         "name": tissue.name,
         "display_name": tissue.display_name,
         "type": tissue.type,
-        "parent_id": tissue.parent_id,
         "recovery_hours": tissue.recovery_hours,
         "notes": tissue.notes,
-        "children": [
-            {"id": c.id, "name": c.name, "display_name": c.display_name, "type": c.type}
-            for c in children
-        ],
         "condition": {
             "status": condition.status,
             "severity": condition.severity,
@@ -109,7 +94,6 @@ def create_tissue(
         name=data.name,
         display_name=data.display_name,
         type=data.type,
-        parent_id=data.parent_id,
         recovery_hours=data.recovery_hours,
         notes=data.notes,
     )
@@ -134,7 +118,6 @@ def update_tissue(
         name=tissue.name,
         display_name=tissue.display_name,
         type=tissue.type,
-        parent_id=tissue.parent_id,
         recovery_hours=(
             data.recovery_hours if data.recovery_hours is not None
             else tissue.recovery_hours

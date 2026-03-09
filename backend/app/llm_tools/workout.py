@@ -26,7 +26,6 @@ from app.workout_queries import (
     get_all_current_conditions,
     get_current_exercise_tissues,
     get_current_tissues,
-    get_tissue_tree,
     session_trained_at,
 )
 
@@ -244,16 +243,6 @@ def _compute_tissue_readiness(session: Session) -> list[dict]:
             existing = last_trained_map.get(tissue_id)
             if existing is None or last_dt > existing:
                 last_trained_map[tissue_id] = last_dt
-
-    # Propagate to parents
-    tissue_by_id = {t.id: t for t in tissues}
-    for tissue_id, last_dt in list(last_trained_map.items()):
-        t = tissue_by_id.get(tissue_id)
-        while t and t.parent_id:
-            parent_dt = last_trained_map.get(t.parent_id)
-            if parent_dt is None or last_dt > parent_dt:
-                last_trained_map[t.parent_id] = last_dt
-            t = tissue_by_id.get(t.parent_id)
 
     result = []
     for t in tissues:
@@ -805,8 +794,7 @@ GET_TISSUES_DEF = {
                     "type": "object",
                     "description": (
                         "id({eq,in}), name({eq,fuzzy,contains}), "
-                        "type({eq,in}: muscle/tendon/joint/"
-                        "tissue_group)."
+                        "type({eq,in}: muscle/tendon/joint)."
                     ),
                 },
                 "include": {
@@ -817,7 +805,6 @@ GET_TISSUES_DEF = {
                             "readiness",
                             "current_condition",
                             "volume_7d",
-                            "tree",
                             "history",
                         ],
                     },
@@ -861,8 +848,7 @@ SET_TISSUES_DEF = {
                                 "type": "object",
                                 "description": (
                                     "name, display_name, type, "
-                                    "parent_name, recovery_hours, "
-                                    "notes."
+                                    "recovery_hours, notes."
                                 ),
                             },
                         },
@@ -876,10 +862,6 @@ SET_TISSUES_DEF = {
 
 def handle_get_tissues(args: dict, session: Session) -> dict:
     includes = args.get("include", [])
-
-    # Special: tree include returns hierarchical structure
-    if "tree" in includes:
-        return getter_response("tissues", get_tissue_tree(session))
 
     tissues = get_current_tissues(session)
 
@@ -940,7 +922,6 @@ def handle_get_tissues(args: dict, session: Session) -> dict:
             "name": t.name,
             "display_name": t.display_name,
             "type": t.type,
-            "parent_id": t.parent_id,
             "recovery_hours": t.recovery_hours,
             "notes": t.notes,
         }
@@ -985,16 +966,6 @@ def handle_set_tissues(args: dict, session: Session) -> dict:
             name = set_fields.get("name", "").strip()
             if not name:
                 return error_response("tissues", "name required")
-            parent = None
-            if set_fields.get("parent_name"):
-                parent = _find_tissue_by_name(
-                    set_fields["parent_name"], session
-                )
-                if not parent:
-                    return error_response(
-                        "tissues",
-                        f"Parent '{set_fields['parent_name']}' not found",
-                    )
             display_name = set_fields.get(
                 "display_name", name.replace("_", " ").title()
             )
@@ -1002,7 +973,6 @@ def handle_set_tissues(args: dict, session: Session) -> dict:
                 name=name,
                 display_name=display_name,
                 type=set_fields.get("type", "muscle"),
-                parent_id=parent.id if parent else None,
                 recovery_hours=set_fields.get("recovery_hours", 48),
                 notes=set_fields.get("notes"),
             )
@@ -1041,7 +1011,6 @@ def handle_set_tissues(args: dict, session: Session) -> dict:
                     "display_name", tissue.display_name
                 ),
                 type=set_fields.get("type", tissue.type),
-                parent_id=tissue.parent_id,
                 recovery_hours=set_fields.get(
                     "recovery_hours", tissue.recovery_hours
                 ),
