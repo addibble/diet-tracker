@@ -16,6 +16,7 @@ from app.models import (
 from app.workout_queries import (
     get_all_current_conditions,
     get_current_tissues,
+    session_trained_at,
 )
 
 router = APIRouter(prefix="/api/tissue-readiness", tags=["tissue-readiness"])
@@ -31,7 +32,6 @@ def get_tissue_readiness(
     conditions = {c.tissue_id: c for c in get_all_current_conditions(session)}
 
     # Build map: tissue_id → last trained datetime
-    # Find the most recent workout_set for each tissue via exercise_tissue mappings
     last_trained_map: dict[int, datetime] = {}
 
     # Get all exercise_tissue mappings (current)
@@ -58,21 +58,26 @@ def get_tissue_readiness(
     for et in current_ets:
         exercise_tissues.setdefault(et.exercise_id, []).append(et.tissue_id)
 
-    # Get most recent session date per exercise
+    # Get most recent training time per exercise.
+    # We need the actual session row to apply session_trained_at, so fetch
+    # the max session id per exercise (most recent session).
     stmt = (
-        select(WorkoutSet.exercise_id, func.max(WorkoutSession.date).label("last_date"))
+        select(WorkoutSet.exercise_id, func.max(WorkoutSession.id).label("max_sid"))
         .join(WorkoutSession, WorkoutSet.session_id == WorkoutSession.id)
         .group_by(WorkoutSet.exercise_id)
     )
     for row in session.exec(stmt).all():
-        exercise_id, last_date = row
-        if exercise_id in exercise_tissues:
-            # Convert date to datetime for hours calculation
-            last_dt = datetime(last_date.year, last_date.month, last_date.day, tzinfo=UTC)
-            for tissue_id in exercise_tissues[exercise_id]:
-                existing = last_trained_map.get(tissue_id)
-                if existing is None or last_dt > existing:
-                    last_trained_map[tissue_id] = last_dt
+        exercise_id, max_sid = row
+        if exercise_id not in exercise_tissues:
+            continue
+        ws = session.get(WorkoutSession, max_sid)
+        if not ws:
+            continue
+        last_dt = session_trained_at(ws)
+        for tissue_id in exercise_tissues[exercise_id]:
+            existing = last_trained_map.get(tissue_id)
+            if existing is None or last_dt > existing:
+                last_trained_map[tissue_id] = last_dt
 
     # Propagate to parents: if a child was trained, parent is also trained
     tissue_by_id = {t.id: t for t in tissues}

@@ -1,12 +1,32 @@
 """Helper functions for log-table queries (tissue, exercise_tissue, tissue_condition)."""
 
+from datetime import UTC, datetime, time
+from zoneinfo import ZoneInfo
+
 from sqlmodel import Session, col, select
 
+from app.config import settings
 from app.models import (
     ExerciseTissue,
     Tissue,
     TissueCondition,
+    WorkoutSession,
 )
+
+# Default workout time when started_at is not available
+_DEFAULT_WORKOUT_HOUR = 8
+
+
+def session_trained_at(ws: WorkoutSession) -> datetime:
+    """Best estimate of when a workout session actually happened.
+
+    Priority: started_at > date at 8am in configured timezone.
+    """
+    if ws.started_at:
+        return ws.started_at if ws.started_at.tzinfo else ws.started_at.replace(tzinfo=UTC)
+    tz = ZoneInfo(settings.default_timezone)
+    local_dt = datetime.combine(ws.date, time(_DEFAULT_WORKOUT_HOUR), tzinfo=tz)
+    return local_dt.astimezone(UTC)
 
 
 def get_current_tissues(session: Session) -> list[Tissue]:

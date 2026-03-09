@@ -22,6 +22,7 @@ from app.workout_queries import (
     get_current_exercise_tissues,
     get_current_tissues,
     get_tissue_tree,
+    session_trained_at,
 )
 
 logger = logging.getLogger("parse")
@@ -549,21 +550,25 @@ def _compute_tissue_readiness(session: Session) -> list[dict]:
     for et in current_ets:
         exercise_tissues.setdefault(et.exercise_id, []).append(et.tissue_id)
 
-    # Last trained per tissue
+    # Last trained per tissue (use best available timestamp)
     last_trained_map: dict[int, datetime] = {}
     stmt = (
-        select(WorkoutSet.exercise_id, func.max(WorkoutSession.date).label("last_date"))
+        select(WorkoutSet.exercise_id, func.max(WorkoutSession.id).label("max_sid"))
         .join(WorkoutSession, WorkoutSet.session_id == WorkoutSession.id)
         .group_by(WorkoutSet.exercise_id)
     )
     for row in session.exec(stmt).all():
-        exercise_id, last_date = row
-        if exercise_id in exercise_tissues:
-            last_dt = datetime(last_date.year, last_date.month, last_date.day, tzinfo=UTC)
-            for tissue_id in exercise_tissues[exercise_id]:
-                existing = last_trained_map.get(tissue_id)
-                if existing is None or last_dt > existing:
-                    last_trained_map[tissue_id] = last_dt
+        exercise_id, max_sid = row
+        if exercise_id not in exercise_tissues:
+            continue
+        ws = session.get(WorkoutSession, max_sid)
+        if not ws:
+            continue
+        last_dt = session_trained_at(ws)
+        for tissue_id in exercise_tissues[exercise_id]:
+            existing = last_trained_map.get(tissue_id)
+            if existing is None or last_dt > existing:
+                last_trained_map[tissue_id] = last_dt
 
     # Propagate to parents
     tissue_by_id = {t.id: t for t in tissues}

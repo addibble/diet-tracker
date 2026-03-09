@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./data/diet_tracker.db"
     openrouter_api_key: str | None = None
     api_token: str | None = None  # Bearer token for Shortcuts/external integrations
+    default_timezone: str = "America/Denver"
     logs_user: str = ""
     logs_password: str = ""
 
