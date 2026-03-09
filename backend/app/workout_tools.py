@@ -162,15 +162,16 @@ WORKOUT_TOOLS = [
         "function": {
             "name": "manage_exercise",
             "description": (
-                "Create, update, merge, delete, or list exercises. "
-                "Handles name normalization and deduplication."
+                "Create, update, merge, delete, list, or get exercises. "
+                "Use 'get' with a name to see an exercise's tissue mappings. "
+                "Use 'list' to see all exercises with their tissue mappings."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["create", "update", "merge", "delete", "list"],
+                        "enum": ["create", "update", "merge", "delete", "list", "get"],
                     },
                     "name": {"type": "string"},
                     "new_name": {"type": "string"},
@@ -773,6 +774,29 @@ def handle_edit_workout_session(args: dict, session: Session) -> dict:
     return _build_session_summary(ws, session)
 
 
+def _build_exercise_detail(exercise: Exercise, session: Session) -> dict:
+    """Build exercise dict with current tissue mappings."""
+    tissue_mappings = get_current_exercise_tissues(session, exercise.id)
+    tissues = []
+    for tm in tissue_mappings:
+        tissue = session.get(Tissue, tm.tissue_id)
+        if tissue:
+            tissues.append({
+                "tissue_id": tissue.id,
+                "name": tissue.name,
+                "display_name": tissue.display_name,
+                "role": tm.role,
+                "loading_factor": tm.loading_factor,
+            })
+    return {
+        "id": exercise.id,
+        "name": exercise.name,
+        "equipment": exercise.equipment,
+        "notes": exercise.notes,
+        "tissues": tissues,
+    }
+
+
 def handle_manage_exercise(args: dict, session: Session) -> dict:
     action = args["action"]
 
@@ -780,10 +804,18 @@ def handle_manage_exercise(args: dict, session: Session) -> dict:
         exercises = session.exec(select(Exercise).order_by(Exercise.name)).all()
         return {
             "exercises": [
-                {"id": e.id, "name": e.name, "equipment": e.equipment}
-                for e in exercises
+                _build_exercise_detail(e, session) for e in exercises
             ]
         }
+
+    if action == "get":
+        name = args.get("name", "").strip()
+        if not name:
+            return {"error": "name is required for get"}
+        exercise = _fuzzy_match_exercise(name, session)
+        if not exercise:
+            return {"error": f"Exercise '{name}' not found"}
+        return _build_exercise_detail(exercise, session)
 
     if action == "create":
         name = args.get("name", "").strip()
