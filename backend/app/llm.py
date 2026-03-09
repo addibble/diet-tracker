@@ -856,6 +856,15 @@ PROGRESSIVE OVERLOAD:
 - 2+ consecutive "full" sessions -> suggest weight increase.
 - "failed" -> check tissue conditions, suggest deload or form adjustment.
 
+TISSUE MAPPING CONVENTIONS:
+- loading_factor is 0.0–1.0 (fraction of load, NOT a percentage).
+- role=primary for main movers, role=secondary for synergists and tendons, \
+role=stabilizer for joints.
+- Include all relevant tissues: muscles, tendons (e.g. patellar, achilles), \
+and joints (e.g. knee, hip, shoulder).
+- For isometric bracing (e.g. grip on a crunch machine), use secondary with a \
+low loading_factor (0.1–0.2).
+
 DATA IMPORT:
 - The user may paste spreadsheet data for historical workout import.
 - Parse the data, create exercises and sessions, and assign tissue mappings.

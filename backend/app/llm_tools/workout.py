@@ -418,9 +418,18 @@ SET_EXERCISES_DEF = {
                                                                 "secondary",
                                                                 "stabilizer",
                                                             ],
+                                                            "description": (
+                                                                "primary: main movers. "
+                                                                "secondary: synergists, stabilizing muscles, and tendons. "
+                                                                "stabilizer: joints."
+                                                            ),
                                                         },
                                                         "loading_factor": {
                                                             "type": "number",
+                                                            "description": (
+                                                                "0.0-1.0. Fraction of load this tissue bears. "
+                                                                "1.0 = fully loaded primary mover or directly loaded joint/tendon."
+                                                            ),
                                                         },
                                                     },
                                                 },
