@@ -4,11 +4,13 @@ from unittest.mock import patch
 import pytest
 
 from app.llm import (
-    CHAT_TOOLS,
     LLMUpstreamCompletionError,
     _select_chat_tools,
     chat_meal,
     chat_status_callback,
+)
+from app.llm_tools import (
+    NUTRITION_TOOL_DEFINITIONS,
 )
 
 
@@ -16,23 +18,26 @@ def _tool_names(tools: list[dict]) -> list[str]:
     return [tool["function"]["name"] for tool in tools]
 
 
-def test_select_chat_tools_uses_chat_tools_for_meal_logging():
+def test_select_chat_tools_uses_nutrition_tools_for_meal_logging():
     tools = _select_chat_tools([
         {"role": "user", "content": "I had eggs and toast for breakfast"},
     ])
 
     names = _tool_names(tools)
 
-    assert names == _tool_names(CHAT_TOOLS)
-    assert "log_workout" not in names
+    assert names == _tool_names(NUTRITION_TOOL_DEFINITIONS)
+    assert "set_workout_sessions" not in names
 
 
-def test_select_chat_tools_narrows_to_weight_tool():
+def test_select_chat_tools_includes_weight_tool_for_weight():
     tools = _select_chat_tools([
         {"role": "user", "content": "Log my weight as 180.4 pounds"},
     ])
 
-    assert _tool_names(tools) == ["log_weight"]
+    names = _tool_names(tools)
+    # Weight messages match the nutrition pattern
+    assert "set_weight_logs" in names
+    assert "get_weight_logs" in names
 
 
 def test_select_chat_tools_uses_workout_tools_for_workout_turn():
@@ -42,8 +47,8 @@ def test_select_chat_tools_uses_workout_tools_for_workout_turn():
 
     names = _tool_names(tools)
 
-    assert "log_workout" in names
-    assert "query_food_log" not in names
+    assert "set_workout_sessions" in names
+    assert "get_meal_logs" not in names
 
 
 @pytest.mark.anyio
@@ -64,8 +69,13 @@ async def test_chat_meal_uses_protocol_correct_tool_messages_for_gemini():
                                     "id": "tool_1",
                                     "type": "function",
                                     "function": {
-                                        "name": "log_weight",
-                                        "arguments": json.dumps({"weight_lb": 180.4}),
+                                        "name": "set_weight_logs",
+                                        "arguments": json.dumps({
+                                            "changes": [{
+                                                "operation": "create",
+                                                "set": {"weight_lb": 180.4},
+                                            }],
+                                        }),
                                     },
                                 },
                             ],
@@ -85,9 +95,9 @@ async def test_chat_meal_uses_protocol_correct_tool_messages_for_gemini():
         }
 
     async def fake_tool_executor(name: str, args: dict):
-        assert name == "log_weight"
-        assert args == {"weight_lb": 180.4}
-        return {"success": True, "weight_lb": 180.4}
+        assert name == "set_weight_logs"
+        assert args["changes"][0]["set"]["weight_lb"] == 180.4
+        return {"table": "weight_logs", "operation": "create", "created_count": 1}
 
     with patch("app.llm._stream_openrouter_chat_completion", side_effect=fake_stream):
         result = await chat_meal(
@@ -101,13 +111,13 @@ async def test_chat_meal_uses_protocol_correct_tool_messages_for_gemini():
     assert result == "Logged your weight at 180.4 lb."
     assert payloads[0]["temperature"] == 1.0
     assert payloads[0]["parallel_tool_calls"] is False
-    assert _tool_names(payloads[0]["tools"]) == ["log_weight"]
+    assert "set_weight_logs" in _tool_names(payloads[0]["tools"])
 
     second_messages = payloads[1]["messages"]
     assistant_message = next(msg for msg in second_messages if msg.get("role") == "assistant")
     tool_message = next(msg for msg in second_messages if msg.get("role") == "tool")
-    assert assistant_message["tool_calls"][0]["function"]["name"] == "log_weight"
-    assert json.loads(tool_message["content"])["success"] is True
+    assert assistant_message["tool_calls"][0]["function"]["name"] == "set_weight_logs"
+    assert json.loads(tool_message["content"])["table"] == "weight_logs"
 
 
 @pytest.mark.anyio
@@ -130,8 +140,13 @@ async def test_chat_meal_emits_local_tool_status_events():
                                     "id": "tool_1",
                                     "type": "function",
                                     "function": {
-                                        "name": "log_weight",
-                                        "arguments": json.dumps({"weight_lb": 180.4}),
+                                        "name": "set_weight_logs",
+                                        "arguments": json.dumps({
+                                            "changes": [{
+                                                "operation": "create",
+                                                "set": {"weight_lb": 180.4},
+                                            }],
+                                        }),
                                     },
                                 },
                             ],
@@ -151,9 +166,8 @@ async def test_chat_meal_emits_local_tool_status_events():
         }
 
     async def fake_tool_executor(name: str, args: dict):
-        assert name == "log_weight"
-        assert args == {"weight_lb": 180.4}
-        return {"success": True}
+        assert name == "set_weight_logs"
+        return {"table": "weight_logs", "operation": "create", "created_count": 1}
 
     with patch("app.llm._stream_openrouter_chat_completion", side_effect=fake_stream):
         with chat_status_callback(status_events.append):
@@ -182,10 +196,7 @@ async def test_chat_meal_retries_gemini_with_forced_tool_choice_after_generation
                 "finish_reason=error; native_finish_reason=MALFORMED_FUNCTION_CALL",
             )
         if len(payloads) == 2:
-            assert payload["tool_choice"] == {
-                "type": "function",
-                "function": {"name": "log_weight"},
-            }
+            assert payload["tool_choice"] == "required"
             return {
                 "id": "cmp_retry",
                 "choices": [
@@ -197,8 +208,13 @@ async def test_chat_meal_retries_gemini_with_forced_tool_choice_after_generation
                                     "id": "tool_retry",
                                     "type": "function",
                                     "function": {
-                                        "name": "log_weight",
-                                        "arguments": json.dumps({"weight_lb": 180.4}),
+                                        "name": "set_weight_logs",
+                                        "arguments": json.dumps({
+                                            "changes": [{
+                                                "operation": "create",
+                                                "set": {"weight_lb": 180.4},
+                                            }],
+                                        }),
                                     },
                                 },
                             ],
@@ -218,9 +234,8 @@ async def test_chat_meal_retries_gemini_with_forced_tool_choice_after_generation
         }
 
     async def fake_tool_executor(name: str, args: dict):
-        assert name == "log_weight"
-        assert args == {"weight_lb": 180.4}
-        return {"success": True, "weight_lb": 180.4}
+        assert name == "set_weight_logs"
+        return {"table": "weight_logs", "operation": "create", "created_count": 1}
 
     with patch("app.llm._stream_openrouter_chat_completion", side_effect=fake_stream):
         result = await chat_meal(

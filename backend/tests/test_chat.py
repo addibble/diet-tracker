@@ -301,7 +301,7 @@ def test_chat_stream_flushes_rapid_status_transitions(client):
         _emit_chat_status({
             "event": "tool_call_started",
             "round": 1,
-            "tool_name": "log_workout",
+            "tool_name": "set_workout_sessions",
         })
         await asyncio.sleep(0)
         return "Logged it."
@@ -330,7 +330,7 @@ def test_chat_stream_flushes_rapid_status_transitions(client):
         if event["last_activity_event"] == "tool_call_started"
     )
     assert tool_event["activity_source"] == "local_tool"
-    assert tool_event["active_tool_name"] == "log_workout"
+    assert tool_event["active_tool_name"] == "set_workout_sessions"
 
 
 def test_chat_does_not_preload_recent_meals(client):
@@ -421,8 +421,10 @@ def test_chat_can_log_weight(client, session):
         **kwargs,
     ):
         assert messages[-1]["content"] == "Log my weight as 180.4 pounds"
-        result = await tool_executor("log_weight", {"weight_lb": 180.4})
-        assert result["success"] is True
+        result = await tool_executor("set_weight_logs", {
+            "changes": [{"operation": "create", "set": {"weight_lb": 180.4}}],
+        })
+        assert result["created_count"] == 1
         return "Logged your weight at 180.4 lb."
 
     with patch("app.routers.parse.chat_meal", new_callable=AsyncMock) as mock_llm:
@@ -458,14 +460,19 @@ def test_chat_can_set_macro_target(client, session):
             "Set my macro targets for today to 2200 calories and 180 protein"
         )
         assert messages[-1]["content"] == expected
-        result = await tool_executor("set_macro_target", {
-            "day": "2026-03-07",
-            "calories": 2200,
-            "protein": 180,
-            "carbs": 220,
-            "fat": 70,
+        result = await tool_executor("set_macro_targets", {
+            "changes": [{
+                "operation": "create",
+                "set": {
+                    "day": "2026-03-07",
+                    "calories": 2200,
+                    "protein": 180,
+                    "carbs": 220,
+                    "fat": 70,
+                },
+            }],
         })
-        assert result["success"] is True
+        assert result["created_count"] == 1
         return "Saved your macro targets for 2026-03-07."
 
     with patch("app.routers.parse.chat_meal", new_callable=AsyncMock) as mock_llm:
@@ -531,19 +538,21 @@ def test_chat_can_query_macro_targets(client):
         tool_executor,
         **kwargs,
     ):
-        active_result = await tool_executor("query_macro_targets", {})
-        assert active_result["mode"] == "active"
-        assert active_result["day"] == "2026-03-07"
-        assert active_result["active_target"] is not None
-        assert active_result["active_target"]["day"] == "2026-03-05"
-        assert active_result["active_target"]["calories"] == 2400
-
-        range_result = await tool_executor("query_macro_targets", {
-            "start_date": "2026-03-01",
-            "end_date": "2026-03-10",
+        # Single-day lookup returns the active target for that day
+        active_result = await tool_executor("get_macro_targets", {
+            "filters": {"day": {"eq": "2026-03-07"}},
         })
-        assert range_result["mode"] == "range"
-        assert len(range_result["targets"]) == 2
+        assert active_result["table"] == "macro_targets"
+        assert active_result["count"] == 1
+        assert active_result["matches"][0]["day"] == "2026-03-05"
+        assert active_result["matches"][0]["calories"] == 2400
+
+        # Range lookup returns all targets in the range
+        range_result = await tool_executor("get_macro_targets", {
+            "filters": {"day": {"gte": "2026-03-01", "lte": "2026-03-10"}},
+        })
+        assert range_result["table"] == "macro_targets"
+        assert range_result["count"] == 2
         return "Your active target is 2400 calories."
 
     with patch("app.routers.parse.chat_meal", new_callable=AsyncMock) as mock_llm:

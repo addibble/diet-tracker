@@ -31,11 +31,10 @@ from app.llm import (
     get_chat_models,
     parse_meal_description,
 )
-from app.macro_targets import get_active_macro_target, macro_target_to_dict
+from app.llm_tools import TOOL_HANDLERS, get_workout_context
 from app.macros import MACRO_FIELDS
-from app.models import Food, MacroTarget, MealItem, MealLog, Recipe, WeightLog
+from app.models import Food, MealItem, MealLog, Recipe
 from app.usda import search_usda
-from app.workout_tools import WORKOUT_TOOL_HANDLERS, get_workout_context
 
 logger = logging.getLogger("parse")
 
@@ -296,274 +295,23 @@ def _make_tool_executor(
     state: _ToolState,
     default_target_day: date_type,
 ):
-    """Create a tool executor closure with DB access."""
-    from app.routers.meals import _build_meal_response
+    """Create a tool executor closure with DB access.
 
+    Routes all tool calls through the table-driven TOOL_HANDLERS
+    registry from llm_tools.
+    """
     async def executor(name: str, args: dict):
-        if name == "query_food_log":
-            day = date_type.fromisoformat(args["date"])
-            logs = session.exec(
-                select(MealLog).where(MealLog.date == day).order_by(MealLog.created_at)
-            ).all()
-            return [_build_meal_response(m, session) for m in logs]
+        handler = TOOL_HANDLERS.get(name)
+        if not handler:
+            return {"error": f"Unknown tool: {name}"}
 
-        elif name == "move_meal_to_date":
-            meal = session.get(MealLog, args["meal_id"])
-            if not meal:
-                return {"error": f"Meal {args['meal_id']} not found"}
-            old_date = str(meal.date)
-            meal.date = date_type.fromisoformat(args["new_date"])
-            session.add(meal)
-            session.commit()
-            state.data_changed = True
-            return {
-                "success": True, "meal_id": meal.id,
-                "old_date": old_date, "new_date": str(meal.date),
-            }
+        result = handler(args, session)
 
-        elif name == "delete_meal_item":
-            item = session.get(MealItem, args["item_id"])
-            if not item:
-                return {"error": f"Item {args['item_id']} not found"}
-            meal_id = item.meal_log_id
-            session.delete(item)
-            session.commit()
-            state.data_changed = True
-            meal = session.get(MealLog, meal_id)
-            if meal:
-                return _build_meal_response(meal, session)
-            return {"success": True, "deleted_item_id": args["item_id"]}
-
-        elif name == "add_item_to_meal":
-            meal = session.get(MealLog, args["meal_id"])
-            if not meal:
-                return {"error": f"Meal {args['meal_id']} not found"}
-            food_id = args.get("food_id")
-            recipe_id = args.get("recipe_id")
-            if not food_id and not recipe_id:
-                return {"error": "Provide food_id or recipe_id"}
-            if food_id and not session.get(Food, food_id):
-                return {"error": f"Food {food_id} not found"}
-            if recipe_id and not session.get(Recipe, recipe_id):
-                return {"error": f"Recipe {recipe_id} not found"}
-            session.add(MealItem(
-                meal_log_id=meal.id,
-                food_id=food_id,
-                recipe_id=recipe_id,
-                amount_grams=args["amount_grams"],
-            ))
-            session.commit()
-            state.data_changed = True
-            return _build_meal_response(meal, session)
-
-        elif name == "create_meal":
-            meal = MealLog(
-                date=date_type.fromisoformat(args["date"]),
-                meal_type=args["meal_type"],
-            )
-            session.add(meal)
-            session.commit()
-            session.refresh(meal)
-            for item_data in args["items"]:
-                food_id = item_data.get("food_id")
-                recipe_id = item_data.get("recipe_id")
-                if not food_id and not recipe_id:
-                    continue
-                session.add(MealItem(
-                    meal_log_id=meal.id,
-                    food_id=food_id,
-                    recipe_id=recipe_id,
-                    amount_grams=item_data["amount_grams"],
-                ))
-            session.commit()
-            state.data_changed = True
-            return _build_meal_response(meal, session)
-
-        elif name == "create_food":
-            food = Food(
-                name=args["name"],
-                brand=args.get("brand"),
-                serving_size_grams=args["serving_size_grams"],
-                calories_per_serving=args["calories_per_serving"],
-                fat_per_serving=args["fat_per_serving"],
-                saturated_fat_per_serving=args.get(
-                    "saturated_fat_per_serving", 0,
-                ),
-                cholesterol_per_serving=args.get(
-                    "cholesterol_per_serving", 0,
-                ),
-                sodium_per_serving=args.get(
-                    "sodium_per_serving", 0,
-                ),
-                carbs_per_serving=args["carbs_per_serving"],
-                fiber_per_serving=args.get("fiber_per_serving", 0),
-                protein_per_serving=args["protein_per_serving"],
-                source="label",
-            )
-            session.add(food)
-            session.commit()
-            session.refresh(food)
-            state.data_changed = True
-            return {
-                "success": True,
-                "food_id": food.id,
-                "name": food.name,
-                "brand": food.brand,
-            }
-
-        elif name == "set_macro_target":
-            day = date_type.fromisoformat(args["day"])
-            target = session.exec(
-                select(MacroTarget).where(MacroTarget.day == day)
-            ).first()
-            for macro in MACRO_FIELDS:
-                if macro not in args or args[macro] is None:
-                    continue
-                if float(args[macro]) < 0:
-                    return {"error": f"{macro} must be >= 0"}
-
-            if not target:
-                target = MacroTarget(
-                    day=day,
-                    **{
-                        macro: float(args.get(macro, 0))
-                        for macro in MACRO_FIELDS
-                    },
-                )
-            else:
-                for macro in MACRO_FIELDS:
-                    if macro in args and args[macro] is not None:
-                        setattr(target, macro, float(args[macro]))
-
-            session.add(target)
-            session.commit()
-            session.refresh(target)
+        # Any setter marks data as changed
+        if name.startswith("set_"):
             state.data_changed = True
 
-            next_target = session.exec(
-                select(MacroTarget)
-                .where(MacroTarget.day > target.day)
-                .order_by(MacroTarget.day)
-            ).first()
-            return {
-                "success": True,
-                "id": target.id,
-                "day": str(target.day),
-                "next_day": str(next_target.day) if next_target else None,
-                **{macro: float(getattr(target, macro)) for macro in MACRO_FIELDS},
-            }
-
-        elif name == "query_macro_targets":
-            day_raw = args.get("day")
-            start_raw = args.get("start_date")
-            end_raw = args.get("end_date")
-
-            if start_raw or end_raw:
-                try:
-                    start_date = (
-                        date_type.fromisoformat(start_raw) if start_raw else None
-                    )
-                    end_date = (
-                        date_type.fromisoformat(end_raw) if end_raw else None
-                    )
-                except ValueError:
-                    return {"error": "start_date/end_date must be YYYY-MM-DD"}
-
-                query = select(MacroTarget).order_by(MacroTarget.day)
-                if start_date:
-                    query = query.where(MacroTarget.day >= start_date)
-                if end_date:
-                    query = query.where(MacroTarget.day <= end_date)
-                targets = session.exec(query).all()
-
-                limit_raw = args.get("limit")
-                if limit_raw is not None:
-                    try:
-                        limit = int(limit_raw)
-                    except (TypeError, ValueError):
-                        return {"error": "limit must be an integer"}
-                    if limit < 1:
-                        return {"error": "limit must be >= 1"}
-                    if len(targets) > limit:
-                        targets = targets[-limit:]
-
-                payload = []
-                for index, target in enumerate(targets):
-                    next_day = (
-                        targets[index + 1].day
-                        if index + 1 < len(targets)
-                        else None
-                    )
-                    payload.append(
-                        macro_target_to_dict(target, next_day=next_day)
-                    )
-
-                return {
-                    "mode": "range",
-                    "start_date": str(start_date) if start_date else None,
-                    "end_date": str(end_date) if end_date else None,
-                    "targets": payload,
-                }
-
-            if day_raw:
-                try:
-                    target_day = date_type.fromisoformat(day_raw)
-                except ValueError:
-                    return {"error": "day must be YYYY-MM-DD"}
-            else:
-                target_day = default_target_day
-
-            active_target = get_active_macro_target(target_day, session)
-            return {
-                "mode": "active",
-                "day": str(target_day),
-                "active_target": active_target,
-            }
-
-        elif name == "delete_meal":
-            meal = session.get(MealLog, args["meal_id"])
-            if not meal:
-                return {"error": f"Meal {args['meal_id']} not found"}
-            items = session.exec(
-                select(MealItem).where(MealItem.meal_log_id == meal.id)
-            ).all()
-            for i in items:
-                session.delete(i)
-            session.delete(meal)
-            session.commit()
-            state.data_changed = True
-            return {"success": True, "deleted_meal_id": args["meal_id"]}
-
-        elif name == "log_weight":
-            logged_at_raw = args.get("logged_at")
-            if logged_at_raw:
-                logged_at = datetime.fromisoformat(logged_at_raw)
-                if logged_at.tzinfo is None:
-                    logged_at = logged_at.replace(tzinfo=UTC)
-            else:
-                logged_at = datetime.now(UTC)
-            weight_log = WeightLog(
-                weight_lb=float(args["weight_lb"]),
-                logged_at=logged_at,
-            )
-            session.add(weight_log)
-            session.commit()
-            session.refresh(weight_log)
-            state.data_changed = True
-            return {
-                "success": True,
-                "weight_log_id": weight_log.id,
-                "weight_lb": round(weight_log.weight_lb, 2),
-                "logged_at": weight_log.logged_at.isoformat(),
-            }
-
-        # Workout tools
-        if name in WORKOUT_TOOL_HANDLERS:
-            result = WORKOUT_TOOL_HANDLERS[name](args, session)
-            state.data_changed = True
-            return result
-
-        return {"error": f"Unknown tool: {name}"}
+        return result
 
     return executor
 

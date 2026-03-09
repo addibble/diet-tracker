@@ -721,12 +721,32 @@ def _emit_chat_status(event: dict[str, Any]) -> None:
         logger.exception("chat status callback failed")
 
 CHAT_SYSTEM_PROMPT = """\
-You are a friendly meal-logging assistant. Help the user log what they ate and \
-manage their food log.
+You are a database-backed nutrition and workout assistant.
+
+## Tool system
+The tool system is table-driven:
+- To read records, call get_<table>.
+- To create, update, upsert, or delete records, call set_<table>.
+- Every getter and setter supports single-record and bulk use.
+- Every getter can search by direct fields or relations.
+- Getters can use fuzzy matching on human-facing names.
+- Setters use exact IDs resolved from a prior getter call.
+- Relation tables do not have direct tools. Mutate them through the parent table.
+
+Use getters before relying on existing IDs or existing state.
+Before writing any relation, first call the relevant getter to resolve the exact \
+foreign-key ID.
+Use fuzzy matching in getters. Use exact IDs in setters.
+When changing nested relations on editable tables, prefer replacing the full \
+current child list unless the user clearly asked for an incremental add or remove.
+For append-only log tables, append a new timestamped snapshot instead of \
+replacing prior rows.
+If a fuzzy match is ambiguous, ask a short disambiguating question instead of \
+guessing.
+After every setter call, inspect the returned full tree to verify that the write \
+matches the user intent.
 
 ## Local date/time context
-Use the user's local context for default assumptions unless they explicitly ask \
-for a different date/time/meal type.
 {time_context}
 - For new meal logging, avoid asking for date or meal type when this context \
 and the message already make it clear.
@@ -752,57 +772,51 @@ When a user refers to a recipe name, use recipe_id — do NOT substitute individ
 ingredient foods.
 
 ## Querying and editing the food log
-You have tools to query and modify the food log database. Use them when:
-- The user asks what they ate on any date (use query_food_log)
-- The user wants to move meals between dates (use move_meal_to_date)
-- The user wants to add/remove items from existing meals (use add_item_to_meal, \
-delete_meal_item)
-- The user wants to create or delete entire meals (use create_meal, delete_meal)
-
+- Use get_meal_logs to query meals by date, meal type, or food/recipe name.
+- Use set_meal_logs to create, update (including move date), or delete meals.
+- Use set_meal_logs with relations.items to add/remove/replace meal items.
 On EVERY interaction:
-- Call query_food_log before relying on any existing meal facts, totals, or IDs.
+- Call get_meal_logs before relying on any existing meal facts, totals, or IDs.
 - Use the current local date from context when no date is specified.
-- If the user references a different date, call query_food_log for that date.
+- If the user references a different date, call get_meal_logs for that date.
 - Treat earlier chat messages as potentially stale; rely on fresh tool output.
-
 When modifying meals via tools, briefly confirm what you changed.
 Do NOT use <ITEMS>/<CONFIRM/> tags when using tools to edit existing data — \
 just use the tools directly.
 
+## Food management
+- Use get_foods to search and resolve food IDs before logging meals.
+- Use set_foods to create foods from nutrition labels or manual entry.
+
 ## Macro target management
-You can set daily macro targets that apply from their day until the next target.
-- Use set_macro_target when the user asks to set or update daily targets.
-- Use query_macro_targets when the user asks to view current or historical targets.
+- Use get_macro_targets and set_macro_targets for daily target history.
 - If the user does not specify a date, use the current local date from context.
-- When updating a day, unspecified fields should remain unchanged.
 - Do NOT use <ITEMS>/<CONFIRM/> tags for macro-target changes.
-- After saving, confirm which day and targets were recorded.
 
 ## Weight logging
-You also have a tool to log body weight. Use it when the user asks to record or \
-log their weight.
-- Call log_weight directly once you know the number.
+- Use get_weight_logs and set_weight_logs for body-weight history.
 - If the user gives a bare number with no unit, assume pounds.
 - Convert kilograms to pounds before calling the tool when needed.
-- If the user does not specify a time, omit logged_at so the server uses the \
-current timestamp.
 - Do NOT use <ITEMS>/<CONFIRM/> tags for weight logging.
-- After logging, confirm the recorded weight in pounds.
+
+## Recipe management
+- Use get_recipes and set_recipes for recipe definitions.
+- When a user refers to a recipe, keep it as a recipe record instead of \
+expanding it into ingredient foods unless they explicitly ask to edit the recipe.
 
 ## Nutrition label scanning
 When the user scans a nutrition label, the OCR results are sent to you for \
 verification. You MUST:
 1. Present the detected name, brand, and all macros clearly to the user
 2. Ask if everything looks correct or if they want to change anything
-3. Only call create_food AFTER the user confirms (or provides corrections)
+3. Only call set_foods AFTER the user confirms (or provides corrections)
 4. Then log the meal using the newly created food's id
 Do NOT save the food without user verification first.
 
 ## Function calling
 - When using tools, output tool calls only. Do not generate Python, pseudo-code, \
 markdown, or XML instead of a tool call.
-- Call the tool name exactly as defined. Never prepend namespaces such as \
-default_api. or any other prefix.
+- Call the tool name exactly as defined. Never prepend namespaces.
 - Tool arguments must be valid JSON that matches the provided schema.
 - Prefer one tool call at a time unless a batch tool explicitly expects a list.
 - After tool results are returned, either call the next tool or answer normally.
@@ -811,8 +825,6 @@ default_api. or any other prefix.
 {meals_context}
 
 ## Workout tracking
-You can also help with workout tracking. The user has a strength training routine.
-
 KNOWN EXERCISES: {exercise_list}
 CURRENT ROUTINE:
 {routine_summary}
@@ -820,28 +832,27 @@ CURRENT TISSUE CONDITIONS:
 {conditions_text}
 
 WORKOUT LOGGING:
-- When the user describes a workout, use log_workout to record it.
+- Use set_workout_sessions to log strength sessions with sets, reps, and weights.
 - Parse natural language: "incline DB press 3x10 at 45", "leg press 430x5x3", etc.
 - After logging, if the result includes rep_check data, emit a \
 <REP_CHECK exercises='[...]'/> tag so the frontend shows the rep completion widget.
-- When the user responds with rep completion data, use update_rep_completion.
+- Use set_workout_sessions to update rep completion on existing sessions.
 - Always record actual reps per set for accurate volume calculations.
 
 READINESS & SUGGESTIONS:
-- When asked what to train, use check_tissue_readiness and suggest_workout.
+- Use get_tissues with include=["readiness"] to check what is ready to train.
+- Use get_routine_exercises to see the planned routine with last performance.
 - Show which exercises are available and which are excluded (and why).
 - Include rehab work for any tissues in tender/rehabbing status.
-- Never suggest exercises that exceed a tissue's max_loading_factor condition cap.
 
 INJURY AWARENESS:
-- If the user mentions pain, tenderness, tightness, or discomfort, use log_tissue_condition.
+- Use set_tissue_conditions when the user reports pain, tenderness, or injury.
 - Ask about severity and when it started.
 - Follow the injury state machine: healthy -> tender -> injured -> rehabbing -> healthy.
-- Suggest appropriate rehab protocols based on tissue type and severity.
-- Maintain full training intensity on exercises that don't load affected tissues.
+- Use get_tissue_conditions before making recovery or injury claims.
 
 PROGRESSIVE OVERLOAD:
-- Use suggest_progression to recommend weight increases based on rep_completion streaks.
+- Use get_exercises with include=["stats"] for progression suggestions.
 - 2+ consecutive "full" sessions -> suggest weight increase.
 - "failed" -> check tissue conditions, suggest deload or form adjustment.
 
@@ -921,379 +932,16 @@ def _build_chat_system_prompt(
     )
 
 
-CHAT_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "query_food_log",
-            "description": (
-                "Look up all meals and food items logged on a"
-                " specific date. Returns meals with items and macro totals."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "date": {"type": "string", "description": "Date in YYYY-MM-DD format"},
-                },
-                "required": ["date"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "move_meal_to_date",
-            "description": "Move an entire meal (with all its items) to a different date.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "meal_id": {"type": "integer", "description": "The meal ID to move"},
-                    "new_date": {
-                        "type": "string",
-                        "description": "Target date YYYY-MM-DD",
-                    },
-                },
-                "required": ["meal_id", "new_date"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "delete_meal_item",
-            "description": "Remove a specific food item from a meal by its item ID.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "item_id": {"type": "integer", "description": "The meal item ID to remove"},
-                },
-                "required": ["item_id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "add_item_to_meal",
-            "description": (
-                "Add a food or recipe to an existing meal."
-                " Provide food_id OR recipe_id, not both."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "meal_id": {
-                        "type": "integer",
-                        "description": "The meal ID to add the item to",
-                    },
-                    "food_id": {
-                        "type": "integer",
-                        "description": "Food ID (use for individual foods)",
-                    },
-                    "recipe_id": {
-                        "type": "integer",
-                        "description": "Recipe ID (use for recipes)",
-                    },
-                    "amount_grams": {
-                        "type": "number",
-                        "description": "Amount in grams",
-                    },
-                },
-                "required": ["meal_id", "amount_grams"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "create_meal",
-            "description": "Create a new meal entry with food/recipe items.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "date": {
-                        "type": "string",
-                        "description": "Date in YYYY-MM-DD format",
-                    },
-                    "meal_type": {
-                        "type": "string",
-                        "enum": [
-                            "breakfast", "lunch", "dinner", "snack",
-                        ],
-                    },
-                    "items": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "food_id": {"type": "integer"},
-                                "recipe_id": {"type": "integer"},
-                                "amount_grams": {"type": "number"},
-                            },
-                            "required": ["amount_grams"],
-                        },
-                    },
-                },
-                "required": ["date", "meal_type", "items"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "create_food",
-            "description": (
-                "Create a new food in the database with nutrition info."
-                " Use after verifying OCR results with the user."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Food name (concise, lowercase)",
-                    },
-                    "brand": {
-                        "type": "string",
-                        "description": "Brand name, or null",
-                    },
-                    "serving_size_grams": {
-                        "type": "number",
-                        "description": "Serving size in grams",
-                    },
-                    "calories_per_serving": {"type": "number"},
-                    "fat_per_serving": {"type": "number"},
-                    "saturated_fat_per_serving": {"type": "number"},
-                    "cholesterol_per_serving": {
-                        "type": "number",
-                        "description": "In milligrams",
-                    },
-                    "sodium_per_serving": {
-                        "type": "number",
-                        "description": "In milligrams",
-                    },
-                    "carbs_per_serving": {"type": "number"},
-                    "fiber_per_serving": {"type": "number"},
-                    "protein_per_serving": {"type": "number"},
-                },
-                "required": [
-                    "name", "serving_size_grams",
-                    "calories_per_serving", "fat_per_serving",
-                    "saturated_fat_per_serving",
-                    "cholesterol_per_serving",
-                    "sodium_per_serving", "carbs_per_serving",
-                    "fiber_per_serving", "protein_per_serving",
-                ],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "query_macro_targets",
-            "description": (
-                "View macro targets. Returns the active target for a day"
-                " or an explicit date range."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "day": {
-                        "type": "string",
-                        "description": (
-                            "Optional date YYYY-MM-DD. Returns the active target for that day."
-                        ),
-                    },
-                    "start_date": {
-                        "type": "string",
-                        "description": (
-                            "Optional range start YYYY-MM-DD."
-                            " Use with end_date to list target entries."
-                        ),
-                    },
-                    "end_date": {
-                        "type": "string",
-                        "description": (
-                            "Optional range end YYYY-MM-DD."
-                            " Use with start_date to list target entries."
-                        ),
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": (
-                            "Optional max number of entries to return when listing a range."
-                        ),
-                    },
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "set_macro_target",
-            "description": (
-                "Create or update a macro target day."
-                " If a target already exists for that day, supplied fields overwrite it."
-                " Omitted fields remain unchanged."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "day": {
-                        "type": "string",
-                        "description": "Target start date in YYYY-MM-DD format",
-                    },
-                    "calories": {"type": "number", "description": "Calories (kcal)"},
-                    "fat": {"type": "number", "description": "Fat (g)"},
-                    "saturated_fat": {"type": "number", "description": "Saturated fat (g)"},
-                    "cholesterol": {"type": "number", "description": "Cholesterol (mg)"},
-                    "sodium": {"type": "number", "description": "Sodium (mg)"},
-                    "carbs": {"type": "number", "description": "Carbohydrates (g)"},
-                    "fiber": {"type": "number", "description": "Fiber (g)"},
-                    "protein": {"type": "number", "description": "Protein (g)"},
-                },
-                "required": ["day"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "delete_meal",
-            "description": "Delete an entire meal and all its items.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "meal_id": {"type": "integer", "description": "The meal ID to delete"},
-                },
-                "required": ["meal_id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "log_weight",
-            "description": (
-                "Record a body-weight entry in pounds."
-                " If time is omitted, the server uses the current timestamp."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "weight_lb": {
-                        "type": "number",
-                        "description": "Body weight in pounds",
-                    },
-                    "logged_at": {
-                        "type": "string",
-                        "description": (
-                            "Optional ISO 8601 timestamp when the weight was taken"
-                        ),
-                    },
-                },
-                "required": ["weight_lb"],
-            },
-        },
-    },
-]
-
-CHAT_TOOL_BY_NAME = {
-    tool["function"]["name"]: tool
-    for tool in CHAT_TOOLS
-}
+# Tool definitions and selection are now in llm_tools package
+from app.llm_tools import ALL_TOOL_DEFINITIONS, select_tools  # noqa: E402
 
 
 def _all_chat_tools() -> list[dict]:
-    from app.workout_tools import WORKOUT_TOOLS
-
-    return CHAT_TOOLS + WORKOUT_TOOLS
+    return ALL_TOOL_DEFINITIONS
 
 
-WORKOUT_MESSAGE_PATTERN = re.compile(
-    r"\b("
-    r"workout|train|training|exercise|lift|lifting|bench|squat|deadlift|press|curl|row|"
-    r"run|running|walk|walking|cardio|routine|rep|reps|set|sets|rpe|"
-    r"tissue|pain|painful|sore|soreness|tight|tightness|injur|rehab|recovery"
-    r")\b",
-    re.IGNORECASE,
-)
-TOOL_REQUIRED_MESSAGE_PATTERN = re.compile(
-    r"\b("
-    r"what did i eat|show|list|query|look up|move|delete|remove|add|edit|update|change|"
-    r"log my weight|weigh|weight|macro target|macro targets|calorie target|protein target|"
-    r"nutrition label|nutrition facts|scan|ocr|save this food|create food|"
-    r"workout|routine|exercise|rep|reps|set|sets|pain|sore|injur|rehab"
-    r")\b",
-    re.IGNORECASE,
-)
-WEIGHT_MESSAGE_PATTERN = re.compile(
-    r"\b(weight|weigh|weighed|lb|lbs|pound|pounds|kg|kgs|kilogram|kilograms)\b",
-    re.IGNORECASE,
-)
-MACRO_TARGET_MESSAGE_PATTERN = re.compile(
-    r"\b(macro target|macro targets|calorie target|protein target|fat target|carb target)\b",
-    re.IGNORECASE,
-)
-NUTRITION_LABEL_MESSAGE_PATTERN = re.compile(
-    r"\b(nutrition label|nutrition facts|scan|ocr|barcode|label)\b",
-    re.IGNORECASE,
-)
-MEAL_LOG_QUERY_PATTERN = re.compile(
-    r"\b(what did i eat|show|list|move|delete|remove|add|edit|update|change)\b",
-    re.IGNORECASE,
-)
-
-
-def _latest_user_message_text(messages: list[dict[str, Any]]) -> str:
-    for message in reversed(messages):
-        if message.get("role") != "user":
-            continue
-        content = message.get("content")
-        if isinstance(content, str) and content.strip():
-            return content.strip()
-    return ""
-
-
-def _is_workout_related_message(text: str) -> bool:
-    if not text:
-        return False
-    if WORKOUT_MESSAGE_PATTERN.search(text):
-        return True
-    # Common shorthand like "3x10" or "430x5x3" usually indicates workout logging.
-    return bool(re.search(r"\b\d+\s*x\s*\d+(?:\s*x\s*\d+)?\b", text, re.IGNORECASE))
-
-
-def _message_likely_requires_tools(messages: list[dict[str, Any]]) -> bool:
-    return bool(TOOL_REQUIRED_MESSAGE_PATTERN.search(_latest_user_message_text(messages)))
-
-
-def _select_chat_tools(messages: list[dict[str, Any]]) -> list[dict]:
-    latest_user_message = _latest_user_message_text(messages)
-    if _is_workout_related_message(latest_user_message):
-        from app.workout_tools import WORKOUT_TOOLS
-
-        return WORKOUT_TOOLS
-    if WEIGHT_MESSAGE_PATTERN.search(latest_user_message):
-        return [CHAT_TOOL_BY_NAME["log_weight"]]
-    if MACRO_TARGET_MESSAGE_PATTERN.search(latest_user_message):
-        return [
-            CHAT_TOOL_BY_NAME["query_macro_targets"],
-            CHAT_TOOL_BY_NAME["set_macro_target"],
-        ]
-    if NUTRITION_LABEL_MESSAGE_PATTERN.search(latest_user_message):
-        return [CHAT_TOOL_BY_NAME["create_food"]]
-    if MEAL_LOG_QUERY_PATTERN.search(latest_user_message):
-        return [
-            CHAT_TOOL_BY_NAME["query_food_log"],
-            CHAT_TOOL_BY_NAME["move_meal_to_date"],
-            CHAT_TOOL_BY_NAME["delete_meal_item"],
-            CHAT_TOOL_BY_NAME["add_item_to_meal"],
-            CHAT_TOOL_BY_NAME["create_meal"],
-            CHAT_TOOL_BY_NAME["delete_meal"],
-        ]
-    return CHAT_TOOLS
+def _select_chat_tools(messages: list[dict]) -> list[dict]:
+    return select_tools(messages)
 
 
 def _is_reasoning_model(model_id: str) -> bool:
@@ -1894,7 +1542,7 @@ async def chat_meal(
                     _chat_provider_key_for_model(active_model) == "gemini"
                     and selected_tools is not None
                     and bool(selected_tools)
-                    and _message_likely_requires_tools(all_messages)
+                    and bool(select_tools(all_messages))
                     and not any(message.get("role") == "tool" for message in all_messages)
                 )
                 if not should_force_tool_retry:

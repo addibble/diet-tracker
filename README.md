@@ -39,9 +39,9 @@ backend/
     config.py            # Pydantic settings (loads .env)
     auth.py              # Cookie-based auth
     macros.py            # 8-macro field definitions and helpers
-    llm.py               # OpenRouter client, chat system prompt, tool dispatch
+    llm.py               # OpenRouter client, chat loop, tool dispatch
     usda.py              # USDA FoodData Central API client
-    workout_tools.py     # 16 LLM chat tools for workout tracking
+    llm_tools/           # Table-driven LLM tool system (22 get/set tools)
     workout_queries.py   # Log-table query helpers (tissue, conditions)
     seed_tissues.py      # 125-tissue musculoskeletal seed data
     macro_targets.py     # Macro target windowing logic
@@ -400,10 +400,12 @@ cd frontend && npm run build
 
 ### Adding a New LLM Tool
 
-1. Define the tool schema in `backend/app/workout_tools.py` (or a new tools file) following the OpenRouter function calling format
-2. Write a handler function that takes `(args: dict, session: Session) -> dict`
-3. Add to the `WORKOUT_TOOL_HANDLERS` dispatch map
-4. The tool is automatically available to the LLM via `_all_chat_tools()` in `llm.py` and dispatched in `parse.py`
+All 22 tools follow the table-driven `get_<table>` / `set_<table>` convention in `backend/app/llm_tools/`. See `AGENTS.md` for the full getter/setter contract specification.
+
+1. Define the tool schema dict and handler function in `llm_tools/nutrition.py` or `llm_tools/workout.py`
+2. Add to the module's `*_TOOL_DEFINITIONS` list and `*_TOOL_HANDLERS` dict
+3. The tool is automatically registered and dispatched — no changes needed in `llm.py` or `parse.py`
+4. Update domain regex patterns in `llm_tools/__init__.py` if the tool covers new vocabulary
 
 ### Adding a New API Route
 

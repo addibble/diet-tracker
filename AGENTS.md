@@ -20,8 +20,13 @@ backend/           # FastAPI application
     config.py      # Pydantic settings
     auth.py        # Cookie-based auth
     macros.py      # Shared macro field definitions and helpers
-    llm.py         # OpenRouter API client for meal parsing
+    llm.py         # OpenRouter API client, chat loop, tool dispatch
     usda.py        # USDA FoodData Central API client
+    llm_tools/     # Table-driven LLM tool system (22 tools)
+      __init__.py  # Tool registries, domain-family selection
+      shared.py    # Fuzzy matching, filters, response builders
+      nutrition.py # 10 tools: foods, recipes, meal_logs, weight_logs, macro_targets
+      workout.py   # 12 tools: exercises, tissues, tissue_conditions, etc.
     routers/       # API route handlers (foods, recipes, meals, daily, parse)
   tests/           # pytest tests
   requirements.txt
@@ -171,6 +176,72 @@ cd backend && source .venv/bin/activate && ruff check app/ tests/
 cd backend && source .venv/bin/activate && pytest -v
 cd frontend && npm ci && npm run build
 ```
+
+## LLM Tool System
+
+The backend exposes 22 tools (11 get/set pairs) to the LLM via OpenRouter function calling. All tools follow a table-driven contract inspired by SQL and JSON:API.
+
+### Tool naming
+
+Every tool is `get_<table>` or `set_<table>`, where `<table>` matches the SQLModel table name (e.g., `get_foods`, `set_meal_logs`, `get_workout_sessions`).
+
+### Getter contract
+
+```json
+{
+  "filters": { "<field>": { "<op>": <value> } },
+  "include": ["<relation>"],
+  "sort": [{ "field": "<col>", "direction": "asc|desc" }],
+  "limit": 25,
+  "offset": 0
+}
+```
+
+Filter operators: `eq`, `in`, `gte`, `lte`, `gt`, `lt`, `contains`, `is_null`, `fuzzy`. Fuzzy matching uses `difflib.SequenceMatcher` post-SQL with a 0.60 threshold.
+
+### Setter contract
+
+```json
+{
+  "changes": [{
+    "operation": "create|update|upsert|delete",
+    "match": { "<field>": { "<op>": <value> } },
+    "set": { "<field>": <value> },
+    "relations": { "<relation>": [...] }
+  }],
+  "dry_run": false
+}
+```
+
+### Response envelopes
+
+- **Getter:** `{ "table", "count", "matches", "filters_applied?", "match_info?", "warnings?" }`
+- **Setter:** `{ "table", "operation", "matched_count", "changed_count", "created_count", "deleted_count", "matches", "warnings?" }`
+- **Error:** `{ "table", "error", "details?" }`
+
+### Domain-family tool selection
+
+`select_tools(messages)` in `llm_tools/__init__.py` inspects the latest user message with regex patterns to route:
+- Workout keywords → 12 workout tools only
+- Nutrition keywords → 10 nutrition tools only
+- Mixed/ambiguous → all 22 tools
+
+### Adding a new tool
+
+1. Define the tool schema dict and handler function in `nutrition.py` or `workout.py`
+2. Add to the module's `*_TOOL_DEFINITIONS` list and `*_TOOL_HANDLERS` dict
+3. The tool is automatically registered in `ALL_TOOL_DEFINITIONS` and `TOOL_HANDLERS`
+4. Update domain regex patterns in `__init__.py` if the new tool covers new vocabulary
+5. The tool executor in `parse.py` dispatches automatically via `TOOL_HANDLERS[name]`
+
+### Shared utilities (`llm_tools/shared.py`)
+
+- `fuzzy_score()` / `fuzzy_best()` — SequenceMatcher-based fuzzy matching
+- `apply_filters()` — SQL WHERE clause builder with fuzzy spec extraction
+- `apply_fuzzy_post_filter()` — post-query fuzzy scoring
+- `resolve_match()` — resolve a setter `match` clause to DB records
+- `getter_response()` / `setter_response()` / `error_response()` — response envelope builders
+- `record_to_dict()` — SQLModel record → plain dict with date serialization
 
 ## Lessons Learned
 
