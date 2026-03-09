@@ -664,6 +664,9 @@ export interface ChatProgressStatusEvent {
   upstream_attempt: number | null;
   upstream_round: number | null;
   stream_line: string | null;
+  text: string | null;
+  tool_args: string | null;
+  tool_result: string | null;
 }
 
 export interface ChatProgressResultEvent {

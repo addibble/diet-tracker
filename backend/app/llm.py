@@ -1524,6 +1524,7 @@ async def _stream_openrouter_chat_completion(
                 stream_error_code: str | int | None = None
                 stream_error_message: str | None = None
                 content_parts: list[str] = []
+                reasoning_parts: list[str] = []
                 tool_calls_by_index: dict[int, dict[str, Any]] = {}
 
                 line_count = 0
@@ -1631,34 +1632,75 @@ async def _stream_openrouter_chat_completion(
 
                     delta = choice.get("delta")
                     if isinstance(delta, dict):
-                        text_delta = _message_content_to_text(delta.get("content"))
+                        # Reasoning / thinking content
+                        reasoning_text = _message_content_to_text(
+                            delta.get("reasoning")
+                        )
+                        if not reasoning_text:
+                            rd = delta.get("reasoning_details")
+                            if isinstance(rd, list):
+                                parts = []
+                                for item in rd:
+                                    if isinstance(item, dict):
+                                        parts.append(
+                                            str(item.get("text") or "")
+                                        )
+                                reasoning_text = "".join(parts)
+                        if reasoning_text:
+                            reasoning_parts.append(reasoning_text)
+                            _emit_chat_status({
+                                "event": "upstream_reasoning_chunk",
+                                "attempt": attempt + 1,
+                                "text": reasoning_text,
+                            })
+
+                        # Content text
+                        text_delta = _message_content_to_text(
+                            delta.get("content")
+                        )
                         if text_delta:
                             content_parts.append(text_delta)
                             _emit_chat_status({
-                                "event": "upstream_text_chunk",
+                                "event": "upstream_content_chunk",
                                 "attempt": attempt + 1,
-                                "chunk_chars": len(text_delta),
+                                "text": text_delta,
                             })
+
+                        # Tool call deltas
                         delta_tc = delta.get("tool_calls")
                         if delta_tc:
                             logger.info(
                                 "Stream tool_call delta (line %d): %s",
-                                line_count, json.dumps(delta_tc, default=str)[:500],
+                                line_count,
+                                json.dumps(delta_tc, default=str)[:500],
                             )
-                        _merge_tool_call_delta(tool_calls_by_index, delta_tc)
-                    # Also check for non-delta "message" in chunk (some providers)
+                        _merge_tool_call_delta(
+                            tool_calls_by_index, delta_tc,
+                        )
+
+                    # Also check non-delta "message" (some providers)
                     chunk_message = choice.get("message")
                     if isinstance(chunk_message, dict):
-                        text_msg = _message_content_to_text(chunk_message.get("content"))
+                        text_msg = _message_content_to_text(
+                            chunk_message.get("content")
+                        )
                         if text_msg:
                             content_parts.append(text_msg)
+                            _emit_chat_status({
+                                "event": "upstream_content_chunk",
+                                "attempt": attempt + 1,
+                                "text": text_msg,
+                            })
                         msg_tc = chunk_message.get("tool_calls")
                         if msg_tc:
                             logger.info(
                                 "Stream message.tool_calls (line %d): %s",
-                                line_count, json.dumps(msg_tc, default=str)[:500],
+                                line_count,
+                                json.dumps(msg_tc, default=str)[:500],
                             )
-                            _merge_tool_call_delta(tool_calls_by_index, msg_tc)
+                            _merge_tool_call_delta(
+                                tool_calls_by_index, msg_tc,
+                            )
 
                     fr = choice.get("finish_reason")
                     if isinstance(fr, str) and fr:
@@ -1926,6 +1968,9 @@ async def chat_meal(
                         "event": "tool_call_started",
                         "round": round_index,
                         "tool_name": func_name,
+                        "tool_args": json.dumps(
+                            func_args, default=str,
+                        )[:2000],
                     })
                     try:
                         result = await tool_executor(func_name, func_args)
@@ -1943,6 +1988,9 @@ async def chat_meal(
                             "event": "tool_call_completed",
                             "round": round_index,
                             "tool_name": func_name,
+                            "tool_result": json.dumps(
+                                result, default=str,
+                            )[:2000],
                         })
                     all_messages.append({
                         "role": "tool",

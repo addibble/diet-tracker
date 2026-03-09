@@ -303,6 +303,145 @@ function saveChatState(messages: MessageBubble[], saved: boolean) {
   sessionStorage.setItem(CHAT_SAVED_KEY, String(saved))
 }
 
+function ProgressPanel({
+  expanded,
+  onToggle,
+  activeTab,
+  onTabChange,
+  elapsedMs,
+  systemLog,
+  thinking,
+  content,
+  toolLog,
+  paneRef,
+  loading,
+}: {
+  expanded: boolean
+  onToggle: () => void
+  activeTab: 'system' | 'thinking' | 'output' | 'tools'
+  onTabChange: (tab: 'system' | 'thinking' | 'output' | 'tools') => void
+  elapsedMs: number
+  systemLog: { time: number; text: string }[]
+  thinking: string
+  content: string
+  toolLog: { time: number; text: string }[]
+  paneRef: React.RefObject<HTMLDivElement | null>
+  loading: boolean
+}) {
+  const tabs: { key: typeof activeTab; label: string; badge?: number | boolean }[] = [
+    { key: 'system', label: 'System', badge: systemLog.length > 0 && systemLog.length },
+    { key: 'thinking', label: 'Thinking', badge: thinking.length > 0 },
+    { key: 'output', label: 'Output', badge: content.length > 0 },
+    { key: 'tools', label: 'Tools', badge: toolLog.length > 0 && toolLog.length },
+  ]
+
+  return (
+    <div className="flex justify-start">
+      <div className="bg-white border border-gray-200 rounded-lg w-full max-w-lg overflow-hidden">
+        {/* Header bar — always visible */}
+        <button
+          type="button"
+          onClick={onToggle}
+          className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-50 text-left"
+        >
+          <span className={`text-[10px] text-gray-400 transition-transform ${expanded ? 'rotate-90' : ''}`}>▶</span>
+          {loading && (
+            <div className="h-3 w-3 rounded-full border-2 border-gray-300 border-t-blue-600 animate-spin shrink-0" />
+          )}
+          <span className="text-xs text-gray-600 truncate flex-1">
+            {loading
+              ? (systemLog.length > 0 ? systemLog[systemLog.length - 1].text : 'Starting...')
+              : 'Request completed'}
+          </span>
+          <span className="text-[10px] text-gray-400 shrink-0">{formatElapsedTime(elapsedMs)}</span>
+        </button>
+
+        {expanded && (
+          <>
+            {/* Progress bar */}
+            {loading && (
+              <div className="px-3 pb-1">
+                <div className="h-1 w-full rounded-full bg-gray-100 overflow-hidden">
+                  <div
+                    className="h-full bg-blue-500 transition-[width] duration-300"
+                    style={{ width: `${Math.min(95, Math.round((elapsedMs / 180000) * 100))}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Tab bar */}
+            <div className="flex border-t border-b border-gray-100 px-1">
+              {tabs.map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => onTabChange(tab.key)}
+                  className={`px-2 py-1 text-[10px] font-medium border-b-2 transition-colors ${
+                    activeTab === tab.key
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-400 hover:text-gray-600'
+                  }`}
+                >
+                  {tab.label}
+                  {typeof tab.badge === 'number' && (
+                    <span className="ml-1 text-[9px] bg-gray-100 text-gray-500 rounded-full px-1">
+                      {tab.badge}
+                    </span>
+                  )}
+                  {tab.badge === true && (
+                    <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-blue-400" />
+                  )}
+                </button>
+              ))}
+            </div>
+
+            {/* Tab content */}
+            <div ref={paneRef} className="max-h-48 overflow-y-auto px-3 py-2">
+              {activeTab === 'system' && (
+                <div className="text-[11px] text-gray-500 font-mono space-y-0.5">
+                  {systemLog.map((entry, i) => (
+                    <p key={i}>
+                      <span className="text-gray-400">{formatElapsedTime(entry.time)}</span>{' '}
+                      {entry.text}
+                    </p>
+                  ))}
+                  {systemLog.length === 0 && <p className="text-gray-400 italic">No events yet</p>}
+                </div>
+              )}
+              {activeTab === 'thinking' && (
+                <div className="text-[11px] text-gray-500 whitespace-pre-wrap break-words">
+                  {thinking || <span className="text-gray-400 italic">No thinking output</span>}
+                </div>
+              )}
+              {activeTab === 'output' && (
+                <div className="text-sm prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5">
+                  {content ? (
+                    <Markdown remarkPlugins={[remarkGfm]}>{content}</Markdown>
+                  ) : (
+                    <p className="text-[11px] text-gray-400 italic">No output yet</p>
+                  )}
+                </div>
+              )}
+              {activeTab === 'tools' && (
+                <div className="text-[11px] text-gray-500 font-mono space-y-1">
+                  {toolLog.map((entry, i) => (
+                    <p key={i} className="break-words">
+                      <span className="text-gray-400">{formatElapsedTime(entry.time)}</span>{' '}
+                      {entry.text}
+                    </p>
+                  ))}
+                  {toolLog.length === 0 && <p className="text-gray-400 italic">No tool calls</p>}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function MealLogPage() {
   const initial = loadChatState()
   const [messages, setMessages] = useState<MessageBubble[]>(initial.messages)
@@ -318,8 +457,20 @@ export default function MealLogPage() {
   const [modelsLoading, setModelsLoading] = useState(true)
   const [saved, setSaved] = useState(initial.saved)
   const [progressElapsedMs, setProgressElapsedMs] = useState(0)
-  const [progressLog, setProgressLog] = useState<{ time: number; text: string }[]>([])
-  const progressLogRef = useRef<HTMLDivElement>(null)
+  const [progressSystemLog, setProgressSystemLog] = useState<{ time: number; text: string }[]>([])
+  const [progressThinking, setProgressThinking] = useState('')
+  const [progressContent, setProgressContent] = useState('')
+  const [progressToolLog, setProgressToolLog] = useState<{ time: number; text: string }[]>([])
+  const [progressExpanded, setProgressExpanded] = useState(true)
+  const [progressActiveTab, setProgressActiveTab] = useState<'system' | 'thinking' | 'output' | 'tools'>('system')
+  const progressPaneRef = useRef<HTMLDivElement>(null)
+  // Keep last progress state for showing in collapsed error bubbles
+  const lastProgressRef = useRef<{
+    systemLog: { time: number; text: string }[];
+    thinking: string;
+    content: string;
+    toolLog: { time: number; text: string }[];
+  }>({ systemLog: [], thinking: '', content: '', toolLog: [] })
   const bottomRef = useRef<HTMLDivElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
@@ -330,8 +481,8 @@ export default function MealLogPage() {
   }, [messages, loading])
 
   useEffect(() => {
-    progressLogRef.current?.scrollTo({ top: progressLogRef.current.scrollHeight, behavior: 'smooth' })
-  }, [progressLog])
+    progressPaneRef.current?.scrollTo({ top: progressPaneRef.current.scrollHeight, behavior: 'smooth' })
+  }, [progressSystemLog, progressThinking, progressContent, progressToolLog])
 
   useEffect(() => {
     saveChatState(messages, saved)
@@ -414,7 +565,12 @@ export default function MealLogPage() {
     setEditingMessageIndex(null)
     setLoading(true)
     setProgressElapsedMs(0)
-    setProgressLog([{ time: 0, text: 'Submitting request to model provider...' }])
+    setProgressSystemLog([{ time: 0, text: 'Submitting request to model provider...' }])
+    setProgressThinking('')
+    setProgressContent('')
+    setProgressToolLog([])
+    setProgressExpanded(true)
+    setProgressActiveTab('system')
 
     try {
       const apiHistory: ChatMessage[] = newMessages.map((m) => ({
@@ -427,21 +583,59 @@ export default function MealLogPage() {
           setProgressElapsedMs(event.elapsed_ms)
           const activityEvent = event.last_activity_event
 
-          // Raw stream lines: skip keepalive comments, show everything else
-          if (activityEvent === 'upstream_raw_line' && event.stream_line) {
-            if (!event.stream_line.startsWith(':')) {
-              const truncated = event.stream_line.length > 120
-                ? event.stream_line.slice(0, 120) + '...'
-                : event.stream_line
-              setProgressLog((prev) => [...prev, { time: event.elapsed_ms, text: `SSE: ${truncated}` }])
-            }
+          // Reasoning/thinking chunks
+          if (activityEvent === 'upstream_reasoning_chunk' && event.text) {
+            setProgressThinking((prev) => prev + event.text)
+            setProgressActiveTab('thinking')
             return
           }
 
-          // Skip keepalive events from cluttering the log
-          if (activityEvent === 'upstream_keepalive_comment') return
+          // Content chunks (streamed output)
+          if (activityEvent === 'upstream_content_chunk' && event.text) {
+            setProgressContent((prev) => prev + event.text)
+            setProgressActiveTab('output')
+            return
+          }
 
-          // Only append a log entry when the activity event changes
+          // Tool call events with details
+          if (activityEvent === 'tool_call_started' && event.active_tool_name) {
+            const argsPreview = event.tool_args
+              ? event.tool_args.length > 300
+                ? event.tool_args.slice(0, 300) + '...'
+                : event.tool_args
+              : ''
+            setProgressToolLog((prev) => [...prev, {
+              time: event.elapsed_ms,
+              text: `→ ${event.active_tool_name}(${argsPreview})`,
+            }])
+            setProgressActiveTab('tools')
+            return
+          }
+          if (activityEvent === 'tool_call_completed' && event.active_tool_name) {
+            const resultPreview = event.tool_result
+              ? event.tool_result.length > 300
+                ? event.tool_result.slice(0, 300) + '...'
+                : event.tool_result
+              : 'ok'
+            setProgressToolLog((prev) => [...prev, {
+              time: event.elapsed_ms,
+              text: `✓ ${event.active_tool_name} → ${resultPreview}`,
+            }])
+            return
+          }
+          if (activityEvent === 'tool_call_failed' && event.active_tool_name) {
+            setProgressToolLog((prev) => [...prev, {
+              time: event.elapsed_ms,
+              text: `✗ ${event.active_tool_name} failed`,
+            }])
+            return
+          }
+
+          // Skip noise
+          if (activityEvent === 'upstream_keepalive_comment') return
+          if (activityEvent === 'upstream_raw_line') return
+
+          // System log: everything else
           if (activityEvent !== prevActivityEvent) {
             prevActivityEvent = activityEvent
             const source = progressSourceLabel(event.activity_source)
@@ -449,7 +643,7 @@ export default function MealLogPage() {
             const roundPrefix = event.upstream_round ? `[R${event.upstream_round}] ` : ''
             const msg = progressMessageForEvent(activityEvent) || activityEvent || 'processing'
             const line = `${roundPrefix}${source}: ${msg}${toolSuffix}`
-            setProgressLog((prev) => [...prev, { time: event.elapsed_ms, text: line }])
+            setProgressSystemLog((prev) => [...prev, { time: event.elapsed_ms, text: line }])
           }
         }
       }
@@ -471,25 +665,29 @@ export default function MealLogPage() {
         editMealId: resp.edit_meal_id ?? undefined,
       }
       setMessages([...newMessages, assistantBubble])
+      setProgressExpanded(false)
       if (resp.saved_meal) {
-        setSaved(true)  // track for session persistence only
+        setSaved(true)
       }
     } catch (err) {
       const errorText = err instanceof Error ? err.message : 'Something went wrong. Please try again.'
-      // Preserve the progress log in the error message for debugging
-      setProgressLog((prevLog) => {
-        const logDump = prevLog.length > 0
-          ? '\n\n<details><summary>Stream log</summary>\n\n```\n'
-            + prevLog.map((e) => `${formatElapsedTime(e.time)} ${e.text}`).join('\n')
-            + '\n```\n</details>'
-          : ''
-        setMessages([...newMessages, {
-          role: 'assistant',
-          content: errorText + logDump,
-        }])
-        return prevLog
-      })
+      setMessages([...newMessages, {
+        role: 'assistant',
+        content: errorText,
+      }])
+      // Keep expanded on error so user can see what happened
     } finally {
+      // Snapshot progress state for the collapsed view
+      lastProgressRef.current = {
+        systemLog: [],  // will be set by state
+        thinking: '',
+        content: '',
+        toolLog: [],
+      }
+      setProgressSystemLog((v) => { lastProgressRef.current.systemLog = v; return v })
+      setProgressThinking((v) => { lastProgressRef.current.thinking = v; return v })
+      setProgressContent((v) => { lastProgressRef.current.content = v; return v })
+      setProgressToolLog((v) => { lastProgressRef.current.toolLog = v; return v })
       setLoading(false)
     }
   }
@@ -509,7 +707,12 @@ export default function MealLogPage() {
     setSaved(false)
     setSpeechError(null)
     setProgressElapsedMs(0)
-    setProgressLog([])
+    setProgressSystemLog([])
+    setProgressThinking('')
+    setProgressContent('')
+    setProgressToolLog([])
+    setProgressExpanded(true)
+    setProgressActiveTab('system')
     sessionStorage.removeItem(CHAT_STORAGE_KEY)
     sessionStorage.removeItem(CHAT_SAVED_KEY)
   }
@@ -694,35 +897,34 @@ export default function MealLogPage() {
           ))}
 
           {loading && (
-            <div className="flex justify-start">
-              <div className="bg-white border border-gray-200 rounded-lg px-4 py-2 w-full max-w-md">
-                <div className="flex items-center gap-2">
-                  <div className="h-3.5 w-3.5 rounded-full border-2 border-gray-300 border-t-blue-600 animate-spin shrink-0" />
-                  <p className="text-sm text-gray-600 truncate">
-                    {progressLog.length > 0 ? progressLog[progressLog.length - 1].text : 'Starting...'}
-                  </p>
-                  <span className="ml-auto text-xs text-gray-400 shrink-0">{formatElapsedTime(progressElapsedMs)}</span>
-                </div>
-                <div className="mt-2 h-1.5 w-full rounded-full bg-gray-100 overflow-hidden">
-                  <div
-                    className="h-full bg-blue-500 transition-[width] duration-300"
-                    style={{ width: `${Math.min(95, Math.round((progressElapsedMs / 180000) * 100))}%` }}
-                  />
-                </div>
-                <div
-                  ref={progressLogRef}
-                  className="mt-2 max-h-32 overflow-y-auto text-[11px] text-gray-500 font-mono space-y-0.5"
-                >
-                  {progressLog.map((entry, i) => (
-                    <p key={i}>
-                      <span className="text-gray-400">{formatElapsedTime(entry.time)}</span>
-                      {' '}
-                      {entry.text}
-                    </p>
-                  ))}
-                </div>
-              </div>
-            </div>
+            <ProgressPanel
+              expanded={progressExpanded}
+              onToggle={() => setProgressExpanded((v) => !v)}
+              activeTab={progressActiveTab}
+              onTabChange={setProgressActiveTab}
+              elapsedMs={progressElapsedMs}
+              systemLog={progressSystemLog}
+              thinking={progressThinking}
+              content={progressContent}
+              toolLog={progressToolLog}
+              paneRef={progressPaneRef}
+              loading
+            />
+          )}
+          {!loading && (progressExpanded || progressThinking || progressToolLog.length > 0) && progressSystemLog.length > 0 && (
+            <ProgressPanel
+              expanded={progressExpanded}
+              onToggle={() => setProgressExpanded((v) => !v)}
+              activeTab={progressActiveTab}
+              onTabChange={setProgressActiveTab}
+              elapsedMs={progressElapsedMs}
+              systemLog={progressSystemLog}
+              thinking={progressThinking}
+              content={progressContent}
+              toolLog={progressToolLog}
+              paneRef={progressPaneRef}
+              loading={false}
+            />
           )}
 
         <div ref={bottomRef} />
