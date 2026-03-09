@@ -818,6 +818,7 @@ Do NOT save the food without user verification first.
 markdown, or XML instead of a tool call.
 - Call the tool name exactly as defined. Never prepend namespaces.
 - Tool arguments must be valid JSON that matches the provided schema.
+- Array fields like "changes" must be actual JSON arrays, not stringified JSON.
 - Prefer one tool call at a time unless a batch tool explicitly expects a list.
 - After tool results are returned, either call the next tool or answer normally.
 
@@ -1620,6 +1621,14 @@ async def chat_meal(
                             "tool_name": func_name,
                         })
                         raise LLMUpstreamCompletionError(detail) from exc
+                    # LLMs sometimes send array fields as JSON strings;
+                    # coerce them back to lists so handlers don't break.
+                    for key, val in func_args.items():
+                        if isinstance(val, str) and val.lstrip().startswith("["):
+                            try:
+                                func_args[key] = json.loads(val)
+                            except json.JSONDecodeError:
+                                pass
                     logger.info("Executing tool: %s(%s)", func_name, func_args)
                     _emit_chat_status({
                         "event": "tool_call_started",
