@@ -544,6 +544,9 @@ export interface WkExerciseHistory {
 export const getExercises = (search?: string) =>
   request<WkExercise[]>(`/exercises${search ? `?search=${encodeURIComponent(search)}` : ''}`);
 
+export const updateExercise = (id: number, data: { name?: string; equipment?: string | null; notes?: string | null; tissues?: { tissue_id: number; role: string; loading_factor: number }[] }) =>
+  request<WkExercise>(`/exercises/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+
 export const getWorkoutSessions = (startDate?: string, endDate?: string, limit?: number) => {
   const params: string[] = [];
   if (startDate) params.push(`start_date=${startDate}`);
