@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func
@@ -89,6 +89,37 @@ def get_tissue_readiness(
                 last_trained_map[t.parent_id] = last_dt
             t = tissue_by_id.get(t.parent_id)
 
+    # Compute 7-day volume per tissue
+    cutoff = now - timedelta(days=7)
+    volume_rows = session.exec(
+        select(
+            WorkoutSet.exercise_id,
+            func.sum(WorkoutSet.reps * WorkoutSet.weight).label("vol"),
+        )
+        .join(WorkoutSession, WorkoutSet.session_id == WorkoutSession.id)
+        .where(WorkoutSession.date >= cutoff.date())
+        .where(WorkoutSet.reps.isnot(None))  # type: ignore[union-attr]
+        .where(WorkoutSet.weight.isnot(None))  # type: ignore[union-attr]
+        .group_by(WorkoutSet.exercise_id)
+    ).all()
+
+    volume_by_exercise: dict[int, float] = {}
+    for row in volume_rows:
+        volume_by_exercise[row[0]] = float(row[1] or 0)
+
+    # Roll up volume to each tissue
+    tissue_volume_7d: dict[int, float] = {}
+    for exercise_id, vol in volume_by_exercise.items():
+        for tissue_id in exercise_tissues.get(exercise_id, []):
+            tissue_volume_7d[tissue_id] = tissue_volume_7d.get(tissue_id, 0.0) + vol
+
+    # Propagate volume up to parents
+    for tissue_id, vol in list(tissue_volume_7d.items()):
+        t = tissue_by_id.get(tissue_id)
+        while t and t.parent_id:
+            tissue_volume_7d[t.parent_id] = tissue_volume_7d.get(t.parent_id, 0.0) + vol
+            t = tissue_by_id.get(t.parent_id)
+
     # Get routine exercises for "exercises_available"
     routine_exercises = session.exec(
         select(RoutineExercise).where(RoutineExercise.active == 1)
@@ -159,6 +190,7 @@ def get_tissue_readiness(
             "effective_recovery_hours": effective_recovery,
             "recovery_pct": round(recovery_pct, 1),
             "ready": ready,
+            "volume_7d": round(tissue_volume_7d.get(t.id, 0.0)),
             "exercises_available": available,
         })
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import {
   getTissueReadiness,
   getRoutine,
@@ -54,6 +54,239 @@ function groupSetsByExercise(sets: WkSession['sets']) {
     map.set(s.exercise_name, list)
   }
   return map
+}
+
+// ── Tissue Status Table ──
+
+type SortKey = 'name' | 'status' | 'last_worked' | 'recovery' | 'volume_7d'
+
+const GROUP_ACCENT: Record<string, { bar: string; header: string; dot: string }> = {
+  upper_body: { bar: 'bg-sky-400',    header: 'border-sky-300 text-sky-700 bg-sky-50',    dot: 'bg-sky-400' },
+  lower_body: { bar: 'bg-violet-400', header: 'border-violet-300 text-violet-700 bg-violet-50', dot: 'bg-violet-400' },
+  core:       { bar: 'bg-amber-400',  header: 'border-amber-300 text-amber-700 bg-amber-50',  dot: 'bg-amber-400' },
+  joints:     { bar: 'bg-slate-400',  header: 'border-slate-300 text-slate-600 bg-slate-50',  dot: 'bg-slate-400' },
+}
+const DEFAULT_ACCENT = { bar: 'bg-gray-300', header: 'border-gray-200 text-gray-600 bg-gray-50', dot: 'bg-gray-400' }
+
+function recoveryBarClass(pct: number, status: string | undefined): string {
+  if (status === 'injured' || status === 'tender') return 'bg-purple-400'
+  if (pct >= 100) return 'bg-emerald-400'
+  if (pct >= 75) return 'bg-yellow-400'
+  return 'bg-red-400'
+}
+
+function statusBadge(condition: WkTissueReadiness['condition']): React.ReactNode {
+  if (!condition || condition.status === 'healthy') return null
+  const cfg: Record<string, string> = {
+    tender:    'bg-amber-100 text-amber-700 border-amber-200',
+    injured:   'bg-red-100 text-red-700 border-red-200',
+    rehabbing: 'bg-purple-100 text-purple-700 border-purple-200',
+  }
+  return (
+    <span className={`inline-block text-[10px] font-medium px-1.5 py-px rounded border leading-tight ${cfg[condition.status] ?? 'bg-gray-100 text-gray-600 border-gray-200'}`}>
+      {condition.status}
+    </span>
+  )
+}
+
+function TissueStatusTable({ readiness }: { readiness: WkTissueReadiness[] }) {
+  const [sortKey, setSortKey] = useState<SortKey>('recovery')
+  const [sortAsc, setSortAsc] = useState(true)
+  const [collapsed, setCollapsed] = useState<Set<number>>(new Set())
+
+  const toggleSort = (key: SortKey) => {
+    if (sortKey === key) setSortAsc((a) => !a)
+    else { setSortKey(key); setSortAsc(key === 'name' || key === 'status') }
+  }
+
+  const toggleCollapse = (id: number) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+
+  // Build structure: top-level groups → all descendant non-group tissues
+  const byId = useMemo(() => new Map(readiness.map((r) => [r.tissue.id, r])), [readiness])
+
+  const topGroups = useMemo(
+    () => readiness.filter((r) => r.tissue.parent_id === null && r.tissue.type === 'tissue_group'),
+    [readiness],
+  )
+
+  function descendants(groupId: number): WkTissueReadiness[] {
+    const result: WkTissueReadiness[] = []
+    for (const r of readiness) {
+      if (r.tissue.type === 'tissue_group') continue
+      // Walk up parent chain
+      let t = r.tissue
+      while (t.parent_id !== null) {
+        if (t.parent_id === groupId) { result.push(r); break }
+        const parent = byId.get(t.parent_id)
+        if (!parent) break
+        t = parent.tissue
+      }
+    }
+    return result
+  }
+
+  function sortRows(rows: WkTissueReadiness[]): WkTissueReadiness[] {
+    return [...rows].sort((a, b) => {
+      let cmp = 0
+      if (sortKey === 'name')       cmp = a.tissue.display_name.localeCompare(b.tissue.display_name)
+      else if (sortKey === 'status')  cmp = (a.condition?.status ?? 'healthy').localeCompare(b.condition?.status ?? 'healthy')
+      else if (sortKey === 'last_worked') cmp = (a.hours_since ?? Infinity) - (b.hours_since ?? Infinity)
+      else if (sortKey === 'recovery')    cmp = a.recovery_pct - b.recovery_pct
+      else if (sortKey === 'volume_7d')   cmp = a.volume_7d - b.volume_7d
+      return sortAsc ? cmp : -cmp
+    })
+  }
+
+  const SortBtn = ({ k, label }: { k: SortKey; label: string }) => (
+    <button
+      onClick={() => toggleSort(k)}
+      className={`flex items-center gap-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] transition-colors select-none ${sortKey === k ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
+    >
+      {label}
+      {sortKey === k && <span className="opacity-60">{sortAsc ? '↑' : '↓'}</span>}
+    </button>
+  )
+
+  const ungrouped = useMemo(() => {
+    const groupedIds = new Set(topGroups.flatMap((g) => descendants(g.tissue.id).map((r) => r.tissue.id)))
+    return readiness.filter(
+      (r) => !groupedIds.has(r.tissue.id) && r.tissue.type !== 'tissue_group' && r.tissue.parent_id === null,
+    )
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readiness, topGroups])
+
+  if (readiness.length === 0) {
+    return (
+      <section className="bg-white border border-gray-200 rounded-2xl p-5">
+        <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">Tissue Status</p>
+        <p className="text-sm text-gray-500 mt-2">No tissue data yet.</p>
+      </section>
+    )
+  }
+
+  return (
+    <section className="bg-white border border-gray-200 rounded-2xl overflow-hidden">
+      {/* Header bar */}
+      <div className="px-5 pt-5 pb-3 border-b border-gray-100">
+        <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">Tissue Status</p>
+        {/* Column headers / sort controls */}
+        <div className="mt-2 grid items-center" style={{ gridTemplateColumns: '1fr 70px 64px 80px 72px' }}>
+          <SortBtn k="name" label="Tissue" />
+          <SortBtn k="status" label="Status" />
+          <SortBtn k="last_worked" label="Last" />
+          <SortBtn k="recovery" label="Recovery" />
+          <div className="text-right"><SortBtn k="volume_7d" label="7d Vol" /></div>
+        </div>
+      </div>
+
+      {/* Groups */}
+      <div className="divide-y divide-gray-50">
+        {topGroups.map((g) => {
+          const accent = GROUP_ACCENT[g.tissue.name] ?? DEFAULT_ACCENT
+          const rows = sortRows(descendants(g.tissue.id))
+          const isCollapsed = collapsed.has(g.tissue.id)
+          const injured = rows.filter((r) => r.condition && r.condition.status !== 'healthy').length
+          return (
+            <div key={g.tissue.id}>
+              {/* Group header */}
+              <button
+                onClick={() => toggleCollapse(g.tissue.id)}
+                className={`w-full px-5 py-2 flex items-center gap-2 border-l-4 ${accent.header}`}
+                style={{ borderLeftColor: undefined }}
+              >
+                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${accent.dot}`} />
+                <span className="text-[11px] font-semibold uppercase tracking-[0.14em]">
+                  {g.tissue.display_name}
+                </span>
+                <span className="text-[10px] opacity-60 ml-1">
+                  {rows.length} tissues
+                  {injured > 0 && <span className="ml-1 text-purple-600">· {injured} flagged</span>}
+                </span>
+                <span className="ml-auto text-[10px] opacity-50">{isCollapsed ? '+' : '−'}</span>
+              </button>
+
+              {/* Tissue rows */}
+              {!isCollapsed && (
+                <div>
+                  {rows.map((r, i) => (
+                    <TissueRow key={r.tissue.id} r={r} striped={i % 2 === 1} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
+
+        {/* Ungrouped */}
+        {ungrouped.length > 0 && (
+          <div>
+            {sortRows(ungrouped).map((r, i) => (
+              <TissueRow key={r.tissue.id} r={r} striped={i % 2 === 1} />
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function TissueRow({
+  r,
+  striped,
+}: {
+  r: WkTissueReadiness
+  striped: boolean
+}) {
+  const barClass = recoveryBarClass(r.recovery_pct, r.condition?.status)
+
+  return (
+    <div
+      className={`grid items-center px-5 py-2 text-xs transition-colors hover:bg-gray-50/80 ${striped ? 'bg-gray-50/40' : ''}`}
+      style={{ gridTemplateColumns: '1fr 70px 64px 80px 72px' }}
+    >
+      {/* Name */}
+      <span className="text-gray-700 font-medium truncate pr-2">
+        {r.tissue.display_name}
+      </span>
+
+      {/* Status */}
+      <span>{statusBadge(r.condition) ?? <span className="text-[10px] text-gray-300">—</span>}</span>
+
+      {/* Last worked */}
+      <span className="text-gray-400 tabular-nums">{hoursLabel(r.hours_since)}</span>
+
+      {/* Recovery bar + % */}
+      <div className="flex items-center gap-1.5">
+        <div className="relative h-1.5 w-10 rounded-full bg-gray-100 overflow-hidden flex-shrink-0">
+          <div
+            className={`absolute inset-y-0 left-0 rounded-full ${barClass} transition-all duration-500`}
+            style={{ width: `${Math.min(100, r.recovery_pct)}%` }}
+          />
+        </div>
+        <span className={`tabular-nums font-medium ${barClass.replace('bg-', 'text-').replace('-400', '-600')}`}>
+          {Math.round(r.recovery_pct)}%
+        </span>
+      </div>
+
+      {/* 7d volume */}
+      <div className="text-right tabular-nums">
+        {r.volume_7d > 0 ? (
+          <span className="text-gray-600 font-medium">
+            {r.volume_7d >= 1000
+              ? `${(r.volume_7d / 1000).toFixed(1)}k`
+              : r.volume_7d.toLocaleString()}
+          </span>
+        ) : (
+          <span className="text-gray-300">—</span>
+        )}
+      </div>
+    </div>
+  )
 }
 
 // ── Tissue Readiness Dashboard ──
@@ -597,6 +830,7 @@ export default function WorkoutPage() {
   return (
     <div className="space-y-4 pb-4 overflow-y-auto h-full">
       <TissueReadinessCard readiness={readiness} />
+      <TissueStatusTable readiness={readiness} />
       <SuggestedWorkoutCard routine={routine} readiness={readiness} />
       <RecentSessionsCard sessions={sessions} />
       <ExerciseProgressCard exercises={exercises} />

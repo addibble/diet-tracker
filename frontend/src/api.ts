@@ -518,6 +518,7 @@ export interface WkTissueReadiness {
   effective_recovery_hours: number;
   recovery_pct: number;
   ready: boolean;
+  volume_7d: number;
   exercises_available: {
     exercise_id: number;
     exercise_name: string;
