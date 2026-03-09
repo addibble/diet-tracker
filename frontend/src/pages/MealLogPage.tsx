@@ -324,7 +324,7 @@ function ProgressPanel({
   systemLog: { time: number; text: string }[]
   thinking: string
   content: string
-  toolLog: { time: number; text: string }[]
+  toolLog: { time: number; text: string; args?: string; result?: string }[]
   paneRef: React.RefObject<HTMLDivElement | null>
   loading: boolean
 }) {
@@ -397,7 +397,7 @@ function ProgressPanel({
             </div>
 
             {/* Tab content */}
-            <div ref={paneRef} className="max-h-48 overflow-y-auto px-3 py-2">
+            <div ref={paneRef} className="max-h-72 overflow-y-auto px-3 py-2">
               {activeTab === 'system' && (
                 <div className="text-[11px] text-gray-500 font-mono space-y-0.5">
                   {systemLog.map((entry, i) => (
@@ -426,10 +426,32 @@ function ProgressPanel({
               {activeTab === 'tools' && (
                 <div className="text-[11px] text-gray-500 font-mono space-y-1">
                   {toolLog.map((entry, i) => (
-                    <p key={i} className="break-words">
-                      <span className="text-gray-400">{formatElapsedTime(entry.time)}</span>{' '}
-                      {entry.text}
-                    </p>
+                    <div key={i}>
+                      <p className="break-words">
+                        <span className="text-gray-400">{formatElapsedTime(entry.time)}</span>{' '}
+                        {entry.text}
+                      </p>
+                      {entry.args && (
+                        <details className="ml-8">
+                          <summary className="text-[10px] text-gray-400 cursor-pointer hover:text-gray-600">
+                            args
+                          </summary>
+                          <pre className="text-[10px] text-gray-500 bg-gray-50 rounded p-1.5 mt-0.5 overflow-x-auto max-h-40 overflow-y-auto whitespace-pre-wrap break-all">
+                            {(() => { try { return JSON.stringify(JSON.parse(entry.args!), null, 2) } catch { return entry.args } })()}
+                          </pre>
+                        </details>
+                      )}
+                      {entry.result && (
+                        <details className="ml-8">
+                          <summary className="text-[10px] text-gray-400 cursor-pointer hover:text-gray-600">
+                            result
+                          </summary>
+                          <pre className="text-[10px] text-gray-500 bg-gray-50 rounded p-1.5 mt-0.5 overflow-x-auto max-h-40 overflow-y-auto whitespace-pre-wrap break-all">
+                            {(() => { try { return JSON.stringify(JSON.parse(entry.result!), null, 2) } catch { return entry.result } })()}
+                          </pre>
+                        </details>
+                      )}
+                    </div>
                   ))}
                   {toolLog.length === 0 && <p className="text-gray-400 italic">No tool calls</p>}
                 </div>
@@ -460,7 +482,7 @@ export default function MealLogPage() {
   const [progressSystemLog, setProgressSystemLog] = useState<{ time: number; text: string }[]>([])
   const [progressThinking, setProgressThinking] = useState('')
   const [progressContent, setProgressContent] = useState('')
-  const [progressToolLog, setProgressToolLog] = useState<{ time: number; text: string }[]>([])
+  const [progressToolLog, setProgressToolLog] = useState<{ time: number; text: string; args?: string; result?: string }[]>([])
   const [progressExpanded, setProgressExpanded] = useState(true)
   const [progressActiveTab, setProgressActiveTab] = useState<'system' | 'thinking' | 'output' | 'tools'>('system')
   const progressPaneRef = useRef<HTMLDivElement>(null)
@@ -599,27 +621,19 @@ export default function MealLogPage() {
 
           // Tool call events with details
           if (activityEvent === 'tool_call_started' && event.active_tool_name) {
-            const argsPreview = event.tool_args
-              ? event.tool_args.length > 300
-                ? event.tool_args.slice(0, 300) + '...'
-                : event.tool_args
-              : ''
             setProgressToolLog((prev) => [...prev, {
               time: event.elapsed_ms,
-              text: `→ ${event.active_tool_name}(${argsPreview})`,
+              text: `→ ${event.active_tool_name}()`,
+              args: event.tool_args || undefined,
             }])
             setProgressActiveTab('tools')
             return
           }
           if (activityEvent === 'tool_call_completed' && event.active_tool_name) {
-            const resultPreview = event.tool_result
-              ? event.tool_result.length > 300
-                ? event.tool_result.slice(0, 300) + '...'
-                : event.tool_result
-              : 'ok'
             setProgressToolLog((prev) => [...prev, {
               time: event.elapsed_ms,
-              text: `✓ ${event.active_tool_name} → ${resultPreview}`,
+              text: `✓ ${event.active_tool_name} → ok`,
+              result: event.tool_result || undefined,
             }])
             return
           }
@@ -665,7 +679,6 @@ export default function MealLogPage() {
         editMealId: resp.edit_meal_id ?? undefined,
       }
       setMessages([...newMessages, assistantBubble])
-      setProgressExpanded(false)
       if (resp.saved_meal) {
         setSaved(true)
       }

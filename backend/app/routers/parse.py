@@ -400,7 +400,15 @@ async def chat_meal_stream_endpoint(
             "round": None,
         }
 
-        def _status_payload(*, stage: str, message: str, now: float | None = None) -> dict:
+        def _status_payload(
+            *,
+            stage: str,
+            message: str,
+            now: float | None = None,
+            text: str | None = None,
+            tool_args: str | None = None,
+            tool_result: str | None = None,
+        ) -> dict:
             snapshot_now = time.monotonic() if now is None else now
             if last_activity_event_monotonic is None:
                 activity_age_ms = None
@@ -429,6 +437,9 @@ async def chat_meal_stream_endpoint(
                 "upstream_cf_ray": latest_upstream["cf_ray"],
                 "upstream_attempt": latest_upstream["attempt"],
                 "upstream_round": latest_upstream["round"],
+                "text": text,
+                "tool_args": tool_args,
+                "tool_result": tool_result,
             }
 
         def _on_chat_status(event: dict):
@@ -464,6 +475,9 @@ async def chat_meal_stream_endpoint(
                 stage="processing",
                 message="Processing your request...",
                 now=now,
+                text=event.get("text"),
+                tool_args=event.get("tool_args"),
+                tool_result=event.get("tool_result"),
             )))
             status_ready.set()
 
