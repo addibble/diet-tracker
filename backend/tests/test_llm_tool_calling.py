@@ -50,7 +50,7 @@ def test_select_chat_tools_uses_workout_tools_for_workout_turn():
 async def test_chat_meal_uses_protocol_correct_tool_messages_for_gemini():
     payloads: list[dict] = []
 
-    async def fake_stream(_client, payload):
+    async def fake_stream(_client, payload, _model_id=None):
         payloads.append(payload)
         if len(payloads) == 1:
             return {
@@ -115,7 +115,7 @@ async def test_chat_meal_emits_local_tool_status_events():
     status_events: list[dict] = []
     call_count = 0
 
-    async def fake_stream(_client, _payload):
+    async def fake_stream(_client, _payload, _model_id=None):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -175,7 +175,7 @@ async def test_chat_meal_emits_local_tool_status_events():
 async def test_chat_meal_retries_gemini_with_forced_tool_choice_after_generation_error():
     payloads: list[dict] = []
 
-    async def fake_stream(_client, payload):
+    async def fake_stream(_client, payload, _model_id=None):
         payloads.append(payload)
         if len(payloads) == 1:
             raise LLMUpstreamCompletionError(

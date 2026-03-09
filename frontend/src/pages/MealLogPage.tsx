@@ -475,10 +475,20 @@ export default function MealLogPage() {
         setSaved(true)  // track for session persistence only
       }
     } catch (err) {
-      setMessages([...newMessages, {
-        role: 'assistant',
-        content: err instanceof Error ? err.message : 'Something went wrong. Please try again.',
-      }])
+      const errorText = err instanceof Error ? err.message : 'Something went wrong. Please try again.'
+      // Preserve the progress log in the error message for debugging
+      setProgressLog((prevLog) => {
+        const logDump = prevLog.length > 0
+          ? '\n\n<details><summary>Stream log</summary>\n\n```\n'
+            + prevLog.map((e) => `${formatElapsedTime(e.time)} ${e.text}`).join('\n')
+            + '\n```\n</details>'
+          : ''
+        setMessages([...newMessages, {
+          role: 'assistant',
+          content: errorText + logDump,
+        }])
+        return prevLog
+      })
     } finally {
       setLoading(false)
     }

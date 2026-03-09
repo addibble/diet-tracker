@@ -31,6 +31,7 @@ OPENROUTER_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 OPENROUTER_CHAT_MAX_TOKENS = 4096
 OPENROUTER_CHAT_MAX_TOKENS_REASONING = 32768
 OPENROUTER_STREAM_IDLE_TIMEOUT_SECONDS = 90
+OPENROUTER_STREAM_IDLE_TIMEOUT_REASONING_SECONDS = 300
 
 CHAT_PROVIDER_LABELS = {
     "anthropic": "Anthropic",
@@ -1424,11 +1425,18 @@ def _finalize_tool_calls(tool_calls_by_index: dict[int, dict[str, Any]]) -> list
 async def _stream_openrouter_chat_completion(
     client: httpx.AsyncClient,
     payload: dict[str, Any],
+    model_id: str | None = None,
 ) -> dict[str, Any]:
     headers = {
         "Authorization": f"Bearer {settings.openrouter_api_key}",
         "Content-Type": "application/json",
     }
+    effective_model = model_id or payload.get("model", "")
+    idle_timeout = (
+        OPENROUTER_STREAM_IDLE_TIMEOUT_REASONING_SECONDS
+        if _is_reasoning_model(str(effective_model))
+        else OPENROUTER_STREAM_IDLE_TIMEOUT_SECONDS
+    )
     stream_payload = {**payload, "stream": True}
     last_error: Exception | None = None
     max_attempts = OPENROUTER_CHAT_MAX_RETRIES + 1
@@ -1524,14 +1532,14 @@ async def _stream_openrouter_chat_completion(
                     try:
                         raw_line = await asyncio.wait_for(
                             line_iter.__anext__(),
-                            timeout=OPENROUTER_STREAM_IDLE_TIMEOUT_SECONDS,
+                            timeout=idle_timeout,
                         )
                     except StopAsyncIteration:
                         break
                     except TimeoutError:
                         logger.error(
                             "Stream idle timeout after %ds (line %d, finish_reason=%s)",
-                            OPENROUTER_STREAM_IDLE_TIMEOUT_SECONDS,
+                            idle_timeout,
                             line_count,
                             finish_reason,
                         )
@@ -1838,7 +1846,7 @@ async def chat_meal(
                 tools=selected_tools,
             )
             try:
-                data = await _stream_openrouter_chat_completion(client, payload)
+                data = await _stream_openrouter_chat_completion(client, payload, active_model)
             except LLMUpstreamCompletionError:
                 should_force_tool_retry = (
                     _chat_provider_key_for_model(active_model) == "gemini"
@@ -1864,7 +1872,9 @@ async def chat_meal(
                     tools=selected_tools,
                     force_tool_choice=True,
                 )
-                data = await _stream_openrouter_chat_completion(client, forced_payload)
+                data = await _stream_openrouter_chat_completion(
+                    client, forced_payload, active_model,
+                )
             completion_id = data.get("id")
             if isinstance(completion_id, str) and completion_id:
                 _emit_chat_status({
