@@ -847,6 +847,53 @@ def _write_meal_items(
     return warnings
 
 
+def _items_fingerprint(records: list[dict]) -> frozenset:
+    """Return a frozenset of (food_id, recipe_id, rounded_grams) for dedup."""
+    return frozenset(
+        (r.get("food_id"), r.get("recipe_id"), round(float(r.get("amount_grams", 0)), 1))
+        for r in records
+    )
+
+
+def _db_items_fingerprint(items: list[MealItem]) -> frozenset:
+    """Return a frozenset of (food_id, recipe_id, rounded_grams) from DB rows."""
+    return frozenset(
+        (i.food_id, i.recipe_id, round(i.amount_grams, 1))
+        for i in items
+    )
+
+
+_DEDUP_WINDOW_SECONDS = 60
+
+
+def _find_recent_duplicate(
+    session: Session,
+    d: date,
+    meal_type: str,
+    new_records: list[dict],
+) -> "MealLog | None":
+    """Return an existing meal if an identical one was created within the dedup window."""
+    from datetime import timedelta
+    cutoff = datetime.now(UTC) - timedelta(seconds=_DEDUP_WINDOW_SECONDS)
+    recent = session.exec(
+        select(MealLog).where(
+            MealLog.date == d,
+            MealLog.meal_type == meal_type,
+            MealLog.created_at >= cutoff,
+        )
+    ).all()
+    if not recent:
+        return None
+    new_fp = _items_fingerprint(new_records)
+    for candidate in recent:
+        existing_items = session.exec(
+            select(MealItem).where(MealItem.meal_log_id == candidate.id)
+        ).all()
+        if _db_items_fingerprint(existing_items) == new_fp:
+            return candidate
+    return None
+
+
 def handle_set_meal_logs(args: dict, session: Session) -> dict:
     results = []
     created = deleted = changed = 0
@@ -861,9 +908,21 @@ def handle_set_meal_logs(args: dict, session: Session) -> dict:
 
         if op == "create":
             d = parse_date_val(set_fields.get("date", str(date.today())))
+            mt = set_fields.get("meal_type", "snack")
+            new_records = (relations.get("items") or {}).get("records", [])
+
+            # Dedup: return an existing identical meal created within the last minute
+            dup = _find_recent_duplicate(session, d, mt, new_records)
+            if dup:
+                results.append(_build_meal_dict(dup, session))
+                all_warnings.append(
+                    f"Duplicate meal detected (id={dup.id}); returning existing record."
+                )
+                continue
+
             meal = MealLog(
                 date=d,
-                meal_type=set_fields.get("meal_type", "snack"),
+                meal_type=mt,
                 notes=set_fields.get("notes"),
             )
             session.add(meal)
@@ -871,7 +930,7 @@ def handle_set_meal_logs(args: dict, session: Session) -> dict:
             if relations.get("items"):
                 w = _write_meal_items(
                     meal,
-                    relations["items"].get("records", []),
+                    new_records,
                     session,
                     mode=relations["items"].get("mode", "replace"),
                 )
