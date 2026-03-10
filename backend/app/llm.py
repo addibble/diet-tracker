@@ -1189,10 +1189,8 @@ async def _stream_openrouter_chat_completion(
                 line_iter = resp.aiter_lines().__aiter__()
                 while True:
                     try:
-                        raw_line = await asyncio.wait_for(
-                            line_iter.__anext__(),
-                            timeout=idle_timeout,
-                        )
+                        async with asyncio.timeout(idle_timeout):
+                            raw_line = await line_iter.__anext__()
                     except StopAsyncIteration:
                         break
                     except TimeoutError:
