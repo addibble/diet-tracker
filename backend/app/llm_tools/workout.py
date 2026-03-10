@@ -956,7 +956,7 @@ SET_TISSUES_DEF = {
     "function": {
         "name": "set_tissues",
         "description": (
-            "Create or update tissue definitions."
+            "Create, update, or delete tissue definitions."
         ),
         "parameters": {
             "type": "object",
@@ -970,12 +970,13 @@ SET_TISSUES_DEF = {
                         "properties": {
                             "operation": {
                                 "type": "string",
-                                "enum": ["create", "update"],
+                                "enum": ["create", "update", "delete"],
                             },
                             "match": {
                                 "type": "object",
                                 "description": (
-                                    "name({eq,fuzzy}) for update."
+                                    "id({eq}) or name({eq,fuzzy}) "
+                                    "for update/delete."
                                 ),
                             },
                             "set": {
@@ -1088,9 +1089,38 @@ def handle_get_tissues(args: dict, session: Session) -> dict:
     )
 
 
+def _resolve_tissue_from_match(
+    match_spec: dict, session: Session
+) -> Tissue | None:
+    """Resolve a tissue from a match spec supporting id or name."""
+    # id match: { id: { eq: 27 } } or { id: 27 }
+    id_spec = match_spec.get("id")
+    if id_spec is not None:
+        if isinstance(id_spec, dict):
+            id_val = id_spec.get("eq")
+        else:
+            id_val = id_spec
+        if id_val is not None:
+            return session.exec(
+                select(Tissue).where(Tissue.id == id_val)
+            ).first()
+
+    # name match: { name: { eq: "..." } } or { name: { fuzzy: "..." } }
+    name_val = None
+    name_spec = match_spec.get("name")
+    if isinstance(name_spec, dict):
+        name_val = name_spec.get("eq") or name_spec.get("fuzzy")
+    elif isinstance(name_spec, str):
+        name_val = name_spec
+    if name_val:
+        return _find_tissue_by_name(name_val, session)
+
+    return None
+
+
 def handle_set_tissues(args: dict, session: Session) -> dict:
     results = []
-    created = changed = 0
+    created = changed = deleted = 0
 
     for change in args.get("changes", []):
         op = change["operation"]
@@ -1115,42 +1145,47 @@ def handle_set_tissues(args: dict, session: Session) -> dict:
             results.append(record_to_dict(tissue))
             created += 1
 
-        elif op == "update":
+        elif op in ("update", "delete"):
             match_spec = change.get("match")
             if not match_spec:
                 return error_response(
-                    "tissues", "match required for update"
+                    "tissues", "match required for update/delete"
                 )
-            name_val = None
-            if isinstance(match_spec.get("name"), dict):
-                name_val = (
-                    match_spec["name"].get("fuzzy")
-                    or match_spec["name"].get("eq")
-                )
-            elif isinstance(match_spec.get("name"), str):
-                name_val = match_spec["name"]
-            if not name_val:
-                return error_response(
-                    "tissues", "name required in match"
-                )
-            tissue = _find_tissue_by_name(name_val, session)
+            tissue = _resolve_tissue_from_match(match_spec, session)
             if not tissue:
                 return error_response(
-                    "tissues", f"Tissue '{name_val}' not found"
+                    "tissues",
+                    f"Tissue not found for match: {match_spec}",
                 )
-            # Update in-place
-            if "display_name" in set_fields:
-                tissue.display_name = set_fields["display_name"]
-            if "type" in set_fields:
-                tissue.type = set_fields["type"]
-            if "recovery_hours" in set_fields:
-                tissue.recovery_hours = set_fields["recovery_hours"]
-            if "notes" in set_fields:
-                tissue.notes = set_fields["notes"]
-            session.add(tissue)
-            session.flush()
-            results.append(record_to_dict(tissue))
-            changed += 1
+
+            if op == "delete":
+                snapshot = record_to_dict(tissue)
+                for et in session.exec(
+                    select(ExerciseTissue).where(
+                        ExerciseTissue.tissue_id == tissue.id
+                    )
+                ).all():
+                    session.delete(et)
+                session.delete(tissue)
+                session.flush()
+                results.append(snapshot)
+                deleted += 1
+            else:
+                # Update in-place
+                if "name" in set_fields:
+                    tissue.name = set_fields["name"]
+                if "display_name" in set_fields:
+                    tissue.display_name = set_fields["display_name"]
+                if "type" in set_fields:
+                    tissue.type = set_fields["type"]
+                if "recovery_hours" in set_fields:
+                    tissue.recovery_hours = set_fields["recovery_hours"]
+                if "notes" in set_fields:
+                    tissue.notes = set_fields["notes"]
+                session.add(tissue)
+                session.flush()
+                results.append(record_to_dict(tissue))
+                changed += 1
 
     session.commit()
     return setter_response(
@@ -1160,6 +1195,7 @@ def handle_set_tissues(args: dict, session: Session) -> dict:
         matched_count=len(results),
         created_count=created,
         changed_count=changed,
+        deleted_count=deleted,
     )
 
 
