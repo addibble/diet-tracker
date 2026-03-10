@@ -1368,18 +1368,16 @@ async def _stream_openrouter_chat_completion(
                             "attempt": attempt + 1,
                             "finish_reason": finish_reason,
                         })
+                        # Shorten idle timeout — [DONE] should arrive within
+                        # seconds after finish_reason.  Avoids breaking early
+                        # and leaving [DONE] unread, which causes httpx's
+                        # aclose() to drain with no timeout and hang.
+                        idle_timeout = min(idle_timeout, 10.0)
                     native_fr = choice.get("native_finish_reason")
                     if not isinstance(native_fr, str) or not native_fr:
                         native_fr = chunk.get("native_finish_reason")
                     if isinstance(native_fr, str) and native_fr:
                         native_finish_reason = native_fr
-
-                    if finish_reason is not None:
-                        logger.info(
-                            "Breaking stream loop after finish_reason=%s (line %d)",
-                            finish_reason, line_count,
-                        )
-                        break
 
                 if finish_reason is None:
                     # Stream exhausted without finish_reason or [DONE]
