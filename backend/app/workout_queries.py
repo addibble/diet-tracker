@@ -1,8 +1,9 @@
-"""Helper functions for log-table queries (tissue, exercise_tissue, tissue_condition)."""
+"""Helper functions for querying workout-related tables."""
 
 from datetime import UTC, datetime, time
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import func
 from sqlmodel import Session, col, select
 
 from app.config import settings
@@ -30,45 +31,17 @@ def session_trained_at(ws: WorkoutSession) -> datetime:
 
 
 def get_current_tissues(session: Session) -> list[Tissue]:
-    """Get current tissue definitions (latest row per name)."""
-    # Subquery: max updated_at per name
-    from sqlalchemy import func
-
-    sub = (
-        select(Tissue.name, func.max(Tissue.updated_at).label("max_updated"))
-        .group_by(Tissue.name)
-        .subquery()
-    )
-    stmt = (
-        select(Tissue)
-        .join(sub, (Tissue.name == sub.c.name) & (Tissue.updated_at == sub.c.max_updated))
-    )
-    return list(session.exec(stmt).all())
+    """Get all tissue definitions."""
+    return list(session.exec(select(Tissue).order_by(Tissue.name)).all())
 
 
 def get_current_exercise_tissues(
     session: Session, exercise_id: int
 ) -> list[ExerciseTissue]:
-    """Get current tissue mappings for an exercise (latest per exercise+tissue pair)."""
-    from sqlalchemy import func
-
-    sub = (
-        select(
-            ExerciseTissue.exercise_id,
-            ExerciseTissue.tissue_id,
-            func.max(ExerciseTissue.updated_at).label("max_updated"),
-        )
-        .where(ExerciseTissue.exercise_id == exercise_id)
-        .group_by(ExerciseTissue.exercise_id, ExerciseTissue.tissue_id)
-        .subquery()
-    )
-    stmt = select(ExerciseTissue).join(
-        sub,
-        (ExerciseTissue.exercise_id == sub.c.exercise_id)
-        & (ExerciseTissue.tissue_id == sub.c.tissue_id)
-        & (ExerciseTissue.updated_at == sub.c.max_updated),
-    )
-    return list(session.exec(stmt).all())
+    """Get tissue mappings for an exercise."""
+    return list(session.exec(
+        select(ExerciseTissue).where(ExerciseTissue.exercise_id == exercise_id)
+    ).all())
 
 
 def get_current_tissue_condition(
@@ -86,8 +59,6 @@ def get_current_tissue_condition(
 
 def get_all_current_conditions(session: Session) -> list[TissueCondition]:
     """Get current condition for all tissues that have condition records."""
-    from sqlalchemy import func
-
     sub = (
         select(
             TissueCondition.tissue_id,
@@ -102,5 +73,3 @@ def get_all_current_conditions(session: Session) -> list[TissueCondition]:
         & (TissueCondition.updated_at == sub.c.max_updated),
     )
     return list(session.exec(stmt).all())
-
-

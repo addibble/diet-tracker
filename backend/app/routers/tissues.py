@@ -113,24 +113,17 @@ def update_tissue(
     tissue = session.get(Tissue, tissue_id)
     if not tissue:
         raise HTTPException(status_code=404, detail="Tissue not found")
-    # Append a new log row with updated values
-    new_tissue = Tissue(
-        name=tissue.name,
-        display_name=tissue.display_name,
-        type=tissue.type,
-        recovery_hours=(
-            data.recovery_hours if data.recovery_hours is not None
-            else tissue.recovery_hours
-        ),
-        notes=data.notes if data.notes is not None else tissue.notes,
-    )
-    session.add(new_tissue)
+    if data.recovery_hours is not None:
+        tissue.recovery_hours = data.recovery_hours
+    if data.notes is not None:
+        tissue.notes = data.notes
+    session.add(tissue)
     session.commit()
-    session.refresh(new_tissue)
+    session.refresh(tissue)
     return {
-        "id": new_tissue.id,
-        "name": new_tissue.name,
-        "recovery_hours": new_tissue.recovery_hours,
+        "id": tissue.id,
+        "name": tissue.name,
+        "recovery_hours": tissue.recovery_hours,
     }
 
 

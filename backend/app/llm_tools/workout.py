@@ -95,13 +95,20 @@ def _set_exercise_tissues(
     tissue_records: list[dict],
     session: Session,
 ) -> list[str]:
-    """Append a tissue-mapping snapshot for an exercise.
+    """Replace tissue mappings for an exercise.
 
-    All rows are written with the same timestamp so the snapshot query
-    can select them as a batch.
+    Deletes existing mappings and creates new ones.
     """
     warnings: list[str] = []
-    now = utcnow()
+    # Delete existing mappings
+    old = session.exec(
+        select(ExerciseTissue).where(
+            ExerciseTissue.exercise_id == exercise.id
+        )
+    ).all()
+    for et in old:
+        session.delete(et)
+    session.flush()
     for tm in tissue_records:
         tissue_id = tm.get("tissue_id")
         tissue_name = tm.get("name")
@@ -119,7 +126,6 @@ def _set_exercise_tissues(
             tissue_id=tissue.id,
             role=tm.get("role", "primary"),
             loading_factor=tm.get("loading_factor", 1.0),
-            updated_at=now,
         ))
     return warnings
 
@@ -196,23 +202,9 @@ def _compute_tissue_readiness(session: Session) -> list[dict]:
         c.tissue_id: c for c in get_all_current_conditions(session)
     }
 
-    # Current exercise-tissue mappings
-    et_sub = (
-        select(
-            ExerciseTissue.exercise_id,
-            ExerciseTissue.tissue_id,
-            func.max(ExerciseTissue.updated_at).label("max_updated"),
-        )
-        .group_by(ExerciseTissue.exercise_id, ExerciseTissue.tissue_id)
-        .subquery()
-    )
+    # Exercise-tissue mappings
     current_ets = session.exec(
-        select(ExerciseTissue).join(
-            et_sub,
-            (ExerciseTissue.exercise_id == et_sub.c.exercise_id)
-            & (ExerciseTissue.tissue_id == et_sub.c.tissue_id)
-            & (ExerciseTissue.updated_at == et_sub.c.max_updated),
-        )
+        select(ExerciseTissue)
     ).all()
 
     exercise_tissues: dict[int, list[int]] = {}
@@ -820,9 +812,7 @@ SET_TISSUES_DEF = {
     "function": {
         "name": "set_tissues",
         "description": (
-            "Create or update tissue definitions. Tissues are "
-            "append-only: updates append a new row for the "
-            "logical tissue."
+            "Create or update tissue definitions."
         ),
         "parameters": {
             "type": "object",
@@ -1004,21 +994,18 @@ def handle_set_tissues(args: dict, session: Session) -> dict:
                 return error_response(
                     "tissues", f"Tissue '{name_val}' not found"
                 )
-            # Append new log row
-            new_tissue = Tissue(
-                name=tissue.name,
-                display_name=set_fields.get(
-                    "display_name", tissue.display_name
-                ),
-                type=set_fields.get("type", tissue.type),
-                recovery_hours=set_fields.get(
-                    "recovery_hours", tissue.recovery_hours
-                ),
-                notes=set_fields.get("notes", tissue.notes),
-            )
-            session.add(new_tissue)
+            # Update in-place
+            if "display_name" in set_fields:
+                tissue.display_name = set_fields["display_name"]
+            if "type" in set_fields:
+                tissue.type = set_fields["type"]
+            if "recovery_hours" in set_fields:
+                tissue.recovery_hours = set_fields["recovery_hours"]
+            if "notes" in set_fields:
+                tissue.notes = set_fields["notes"]
+            session.add(tissue)
             session.flush()
-            results.append(record_to_dict(new_tissue))
+            results.append(record_to_dict(tissue))
             changed += 1
 
     session.commit()

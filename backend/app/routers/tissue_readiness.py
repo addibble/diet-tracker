@@ -34,24 +34,8 @@ def get_tissue_readiness(
     # Build map: tissue_id → last trained datetime
     last_trained_map: dict[int, datetime] = {}
 
-    # Get all exercise_tissue mappings (current)
-    et_sub = (
-        select(
-            ExerciseTissue.exercise_id,
-            ExerciseTissue.tissue_id,
-            func.max(ExerciseTissue.updated_at).label("max_updated"),
-        )
-        .group_by(ExerciseTissue.exercise_id, ExerciseTissue.tissue_id)
-        .subquery()
-    )
-    current_ets = session.exec(
-        select(ExerciseTissue).join(
-            et_sub,
-            (ExerciseTissue.exercise_id == et_sub.c.exercise_id)
-            & (ExerciseTissue.tissue_id == et_sub.c.tissue_id)
-            & (ExerciseTissue.updated_at == et_sub.c.max_updated),
-        )
-    ).all()
+    # Get all exercise_tissue mappings
+    current_ets = session.exec(select(ExerciseTissue)).all()
 
     # Map exercise_id → list of tissue_ids
     exercise_tissues: dict[int, list[int]] = {}

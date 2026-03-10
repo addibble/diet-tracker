@@ -130,6 +130,13 @@ def update_exercise(
     session.add(exercise)
     session.commit()
     if data.tissues is not None:
+        # Delete existing mappings and replace
+        old = session.exec(
+            select(ExerciseTissue).where(ExerciseTissue.exercise_id == exercise_id)
+        ).all()
+        for et in old:
+            session.delete(et)
+        session.flush()
         for t in data.tissues:
             session.add(ExerciseTissue(
                 exercise_id=exercise.id,

@@ -1,5 +1,6 @@
 from datetime import UTC, date, datetime
 
+from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -102,10 +103,9 @@ class Exercise(SQLModel, table=True):
 
 
 class Tissue(SQLModel, table=True):
-    """LOG TABLE: rows are never updated, only appended. Query latest per name."""
     __tablename__ = "tissues"
     id: int | None = Field(default=None, primary_key=True)
-    name: str = Field(index=True)
+    name: str = Field(unique=True, index=True)
     display_name: str
     type: str = "muscle"  # "muscle", "tendon", "joint"
     recovery_hours: float = 48.0
@@ -114,8 +114,10 @@ class Tissue(SQLModel, table=True):
 
 
 class ExerciseTissue(SQLModel, table=True):
-    """LOG TABLE: append-only. Query latest per (exercise_id, tissue_id)."""
     __tablename__ = "exercise_tissues"
+    __table_args__ = (
+        UniqueConstraint("exercise_id", "tissue_id"),
+    )
     id: int | None = Field(default=None, primary_key=True)
     exercise_id: int = Field(foreign_key="exercises.id")
     tissue_id: int = Field(foreign_key="tissues.id")

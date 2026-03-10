@@ -20,7 +20,7 @@ def create_db_and_tables():
 
 
 def _migrate_add_columns():
-    """Add new columns to existing tables (no Alembic)."""
+    """Add new columns and clean up legacy data (no Alembic)."""
     insp = inspect(engine)
     if "foods" in insp.get_table_names():
         cols = {c["name"] for c in insp.get_columns("foods")}
@@ -28,6 +28,31 @@ def _migrate_add_columns():
             with engine.connect() as conn:
                 conn.execute(text("ALTER TABLE foods ADD COLUMN brand TEXT"))
                 conn.commit()
+
+    # Clean up legacy tissue groups and deduplicate
+    if "tissues" in insp.get_table_names():
+        with engine.connect() as conn:
+            # Delete exercise_tissue rows pointing to group tissues
+            conn.execute(text(
+                "DELETE FROM exercise_tissues WHERE tissue_id IN "
+                "(SELECT id FROM tissues WHERE type IN ('tissue_group', 'muscle_group'))"
+            ))
+            # Delete group tissues
+            conn.execute(text(
+                "DELETE FROM tissues WHERE type IN ('tissue_group', 'muscle_group')"
+            ))
+            # Deduplicate tissues: keep latest row per name, delete older duplicates
+            conn.execute(text(
+                "DELETE FROM tissues WHERE id NOT IN "
+                "(SELECT MAX(id) FROM tissues GROUP BY name)"
+            ))
+            # Deduplicate exercise_tissues: keep latest row per (exercise_id, tissue_id)
+            conn.execute(text(
+                "DELETE FROM exercise_tissues WHERE id NOT IN "
+                "(SELECT MAX(id) FROM exercise_tissues "
+                "GROUP BY exercise_id, tissue_id)"
+            ))
+            conn.commit()
 
 
 def _seed_data():
