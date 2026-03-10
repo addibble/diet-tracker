@@ -57,10 +57,11 @@ def _migrate_add_columns():
 
 def _seed_data():
     """Seed reference data after table creation."""
-    from app.seed_tissues import seed_tissues
+    from app.seed_tissues import seed_hip_machine_tissues, seed_tissues
 
     with Session(engine) as session:
         seed_tissues(session)
+        seed_hip_machine_tissues(session)
 
 
 def get_session() -> Generator[Session, None, None]:
