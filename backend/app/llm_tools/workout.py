@@ -621,12 +621,30 @@ def handle_set_exercises(args: dict, session: Session) -> dict:
 
         elif op in ("update", "upsert"):
             from .shared import resolve_match
+            # If no explicit match spec but set contains id, promote it to
+            # match so callers can write {set: {id: 21, ...}} naturally.
+            effective_match = match_spec
+            if not effective_match and "id" in set_fields:
+                effective_match = {"id": {"eq": set_fields["id"]}}
             recs, _, err = resolve_match(
-                session, Exercise, match_spec,
+                session, Exercise, effective_match,
                 fuzzy_fields=["name"],
             )
             if not recs and op == "upsert":
+                # When the intended match was by id, never silently create a
+                # new exercise — return an error so the caller can investigate.
+                if effective_match and "id" in effective_match:
+                    return error_response(
+                        "exercises",
+                        f"Exercise not found for id match {effective_match['id']}; "
+                        "cannot upsert by id",
+                    )
                 name = set_fields.get("name", "").strip()
+                if not name:
+                    return error_response(
+                        "exercises",
+                        "upsert requires name in set when no match is found",
+                    )
                 exercise = Exercise(
                     name=name,
                     equipment=set_fields.get("equipment"),

@@ -2,7 +2,7 @@
 
 from sqlmodel import Session, select
 
-from app.models import Tissue
+from app.models import Exercise, ExerciseTissue, Tissue
 
 # Flat tissue list: {name: {type, recovery_hours, display_name?}}
 # display_name is auto-generated from name if not provided.
@@ -155,4 +155,63 @@ def seed_tissues(session: Session) -> None:
             notes=info.get("notes"),
         )
         session.add(tissue)
+    session.commit()
+
+
+# Tissue mappings for exercises that the LLM tool previously failed to set.
+# Leaned-back setup reduces TFL/Sartorius contribution on Hip Abduction Machine.
+_HIP_MACHINE_MAPPINGS: dict[str, list[dict]] = {
+    "Hip Adduction Machine": [
+        {"name": "adductor_magnus",  "role": "primary",    "loading_factor": 1.0},
+        {"name": "adductor_longus",  "role": "primary",    "loading_factor": 1.0},
+        {"name": "adductor_brevis",  "role": "primary",    "loading_factor": 0.9},
+        {"name": "gracilis",         "role": "secondary",  "loading_factor": 0.5},
+        {"name": "pectineus",        "role": "secondary",  "loading_factor": 0.5},
+        {"name": "hip_joint",        "role": "stabilizer", "loading_factor": 0.7},
+        {"name": "pelvic_floor",     "role": "stabilizer", "loading_factor": 0.4},
+    ],
+    "Hip Abduction Machine": [
+        {"name": "gluteus_medius",       "role": "primary",    "loading_factor": 1.0},
+        {"name": "gluteus_minimus",      "role": "primary",    "loading_factor": 0.9},
+        {"name": "tensor_fasciae_latae", "role": "secondary",  "loading_factor": 0.4},
+        {"name": "sartorius",            "role": "secondary",  "loading_factor": 0.3},
+        {"name": "hip_joint",            "role": "stabilizer", "loading_factor": 0.7},
+        {"name": "pelvic_floor",         "role": "stabilizer", "loading_factor": 0.4},
+    ],
+}
+
+
+def seed_hip_machine_tissues(session: Session) -> None:
+    """Apply tissue mappings for Hip Abduction/Adduction Machine exercises.
+
+    Skips any exercise that already has mappings so user edits are preserved.
+    Safe to call on every startup.
+    """
+    for exercise_name, tissue_specs in _HIP_MACHINE_MAPPINGS.items():
+        exercise = session.exec(
+            select(Exercise).where(Exercise.name == exercise_name)
+        ).first()
+        if not exercise:
+            continue  # exercise not yet in this environment
+
+        has_mappings = session.exec(
+            select(ExerciseTissue).where(
+                ExerciseTissue.exercise_id == exercise.id
+            ).limit(1)
+        ).first()
+        if has_mappings:
+            continue  # already mapped; don't overwrite user changes
+
+        for spec in tissue_specs:
+            tissue = session.exec(
+                select(Tissue).where(Tissue.name == spec["name"])
+            ).first()
+            if not tissue:
+                continue
+            session.add(ExerciseTissue(
+                exercise_id=exercise.id,
+                tissue_id=tissue.id,
+                role=spec["role"],
+                loading_factor=spec["loading_factor"],
+            ))
     session.commit()
