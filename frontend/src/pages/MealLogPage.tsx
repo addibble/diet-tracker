@@ -485,6 +485,11 @@ export default function MealLogPage() {
   const [progressToolLog, setProgressToolLog] = useState<{ time: number; text: string; args?: string; result?: string }[]>([])
   const [progressExpanded, setProgressExpanded] = useState(true)
   const [progressActiveTab, setProgressActiveTab] = useState<'system' | 'thinking' | 'output' | 'tools'>('system')
+  const userSelectedTabRef = useRef(false)
+  const handleTabChange = (tab: 'system' | 'thinking' | 'output' | 'tools') => {
+    userSelectedTabRef.current = true
+    setProgressActiveTab(tab)
+  }
   const progressPaneRef = useRef<HTMLDivElement>(null)
   // Keep last progress state for showing in collapsed error bubbles
   const lastProgressRef = useRef<{
@@ -593,6 +598,7 @@ export default function MealLogPage() {
     setProgressToolLog([])
     setProgressExpanded(true)
     setProgressActiveTab('system')
+    userSelectedTabRef.current = false
 
     try {
       const apiHistory: ChatMessage[] = newMessages.map((m) => ({
@@ -608,14 +614,14 @@ export default function MealLogPage() {
           // Reasoning/thinking chunks
           if (activityEvent === 'upstream_reasoning_chunk' && event.text) {
             setProgressThinking((prev) => prev + event.text)
-            setProgressActiveTab('thinking')
+            if (!userSelectedTabRef.current) setProgressActiveTab('thinking')
             return
           }
 
           // Content chunks (streamed output)
           if (activityEvent === 'upstream_content_chunk' && event.text) {
             setProgressContent((prev) => prev + event.text)
-            setProgressActiveTab('output')
+            if (!userSelectedTabRef.current) setProgressActiveTab('output')
             return
           }
 
@@ -626,7 +632,7 @@ export default function MealLogPage() {
               text: `→ ${event.active_tool_name}()`,
               args: event.tool_args || undefined,
             }])
-            setProgressActiveTab('tools')
+            if (!userSelectedTabRef.current) setProgressActiveTab('tools')
             return
           }
           if (activityEvent === 'tool_call_completed' && event.active_tool_name) {
@@ -914,7 +920,7 @@ export default function MealLogPage() {
               expanded={progressExpanded}
               onToggle={() => setProgressExpanded((v) => !v)}
               activeTab={progressActiveTab}
-              onTabChange={setProgressActiveTab}
+              onTabChange={handleTabChange}
               elapsedMs={progressElapsedMs}
               systemLog={progressSystemLog}
               thinking={progressThinking}
@@ -929,7 +935,7 @@ export default function MealLogPage() {
               expanded={progressExpanded}
               onToggle={() => setProgressExpanded((v) => !v)}
               activeTab={progressActiveTab}
-              onTabChange={setProgressActiveTab}
+              onTabChange={handleTabChange}
               elapsedMs={progressElapsedMs}
               systemLog={progressSystemLog}
               thinking={progressThinking}

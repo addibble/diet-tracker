@@ -1084,9 +1084,12 @@ GET_MACRO_TARGETS_DEF = {
     "function": {
         "name": "get_macro_targets",
         "description": (
-            "Get macro target records. Filter by day range. "
-            "Targets apply from their day until the next target day. "
-            "Use day({eq}) to get the active target for a specific day."
+            "Get macro target records. This is a log table — each row records "
+            "the targets effective from that day onward. The currently active "
+            "targets are the row with the greatest day that is <= today. "
+            "To find current targets, query without filters (or with day({lte}) "
+            "set to today) and take the last record, or use day({eq}) with "
+            "today's date to retrieve the active target directly."
         ),
         "parameters": {
             "type": "object",
