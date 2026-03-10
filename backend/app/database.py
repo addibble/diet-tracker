@@ -29,6 +29,20 @@ def _migrate_add_columns():
                 conn.execute(text("ALTER TABLE foods ADD COLUMN brand TEXT"))
                 conn.commit()
 
+    # Remove tissue groups and clean up references
+    if "tissues" in insp.get_table_names():
+        with engine.connect() as conn:
+            # Delete exercise_tissue rows pointing to group tissues
+            conn.execute(text(
+                "DELETE FROM exercise_tissues WHERE tissue_id IN "
+                "(SELECT id FROM tissues WHERE type IN ('tissue_group', 'muscle_group'))"
+            ))
+            # Delete group tissues themselves
+            conn.execute(text(
+                "DELETE FROM tissues WHERE type IN ('tissue_group', 'muscle_group')"
+            ))
+            conn.commit()
+
 
 def _seed_data():
     """Seed reference data after table creation."""
