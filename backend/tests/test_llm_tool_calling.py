@@ -99,7 +99,10 @@ async def test_chat_meal_uses_protocol_correct_tool_messages_for_gemini():
         assert args["changes"][0]["set"]["weight_lb"] == 180.4
         return {"table": "weight_logs", "operation": "create", "created_count": 1}
 
-    with patch("app.llm._stream_openrouter_chat_completion", side_effect=fake_stream):
+    with (
+        patch("app.llm._stream_openrouter_chat_completion", side_effect=fake_stream),
+        patch("app.llm.settings.openrouter_api_key", "fake-key"),
+    ):
         result = await chat_meal(
             [{"role": "user", "content": "Log my weight as 180.4 pounds"}],
             known_foods=[],
@@ -169,15 +172,18 @@ async def test_chat_meal_emits_local_tool_status_events():
         assert name == "set_weight_logs"
         return {"table": "weight_logs", "operation": "create", "created_count": 1}
 
-    with patch("app.llm._stream_openrouter_chat_completion", side_effect=fake_stream):
-        with chat_status_callback(status_events.append):
-            result = await chat_meal(
-                [{"role": "user", "content": "Log my weight as 180.4 pounds"}],
-                known_foods=[],
-                known_recipes=[],
-                tool_executor=fake_tool_executor,
-                model="google/gemini-2.5-flash",
-            )
+    with (
+        patch("app.llm._stream_openrouter_chat_completion", side_effect=fake_stream),
+        patch("app.llm.settings.openrouter_api_key", "fake-key"),
+        chat_status_callback(status_events.append),
+    ):
+        result = await chat_meal(
+            [{"role": "user", "content": "Log my weight as 180.4 pounds"}],
+            known_foods=[],
+            known_recipes=[],
+            tool_executor=fake_tool_executor,
+            model="google/gemini-2.5-flash",
+        )
 
     assert result == "Logged your weight at 180.4 lb."
     event_names = [event["event"] for event in status_events]
@@ -237,7 +243,10 @@ async def test_chat_meal_retries_gemini_with_forced_tool_choice_after_generation
         assert name == "set_weight_logs"
         return {"table": "weight_logs", "operation": "create", "created_count": 1}
 
-    with patch("app.llm._stream_openrouter_chat_completion", side_effect=fake_stream):
+    with (
+        patch("app.llm._stream_openrouter_chat_completion", side_effect=fake_stream),
+        patch("app.llm.settings.openrouter_api_key", "fake-key"),
+    ):
         result = await chat_meal(
             [{"role": "user", "content": "Log my weight as 180.4 pounds"}],
             known_foods=[],
