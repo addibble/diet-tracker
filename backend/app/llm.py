@@ -4,7 +4,6 @@ import asyncio
 import base64
 import json
 import logging
-import re
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
@@ -21,10 +20,7 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 MODEL = "anthropic/claude-haiku-4.5"
 VISION_MODEL = "anthropic/claude-haiku-4.5"
-CHAT_MODEL_MAX_INPUT_COST_PER_MILLION = 1000.0
-CHAT_MODEL_MAX_OUTPUT_COST_PER_MILLION = 1000.0
 CHAT_MODEL_CACHE_TTL_SECONDS = 600.0
-CHAT_MODEL_RECENCY_WINDOW_SECONDS = 400 * 24 * 60 * 60
 OPENROUTER_CHAT_MAX_RETRIES = 2
 OPENROUTER_RETRY_BASE_DELAY_SECONDS = 0.8
 OPENROUTER_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -33,42 +29,30 @@ OPENROUTER_CHAT_MAX_TOKENS_REASONING = 50000
 OPENROUTER_STREAM_IDLE_TIMEOUT_SECONDS = 90
 OPENROUTER_STREAM_IDLE_TIMEOUT_REASONING_SECONDS = 300
 
+CHAT_ALLOWED_MODELS = [
+    "anthropic/claude-haiku-4.5",
+    "anthropic/claude-sonnet-4.6",
+    "anthropic/claude-opus-4.6",
+    "openai/gpt-5.4",
+    "openai/gpt-5.4-pro",
+    "google/gemini-3.1-flash-lite-preview",
+    "google/gemini-3.1-pro-preview",
+    "qwen/qwen3.5-35b-a3b",
+    "qwen/qwen3.5-397b-a17b",
+    "qwen/qwen3.5-flash-02-23",
+    "x-ai/grok-4",
+    "x-ai/grok-4.1-fast",
+    "deepseek/deepseek-v3.2-speciale",
+    "deepseek/deepseek-v3.2",
+]
+
 CHAT_PROVIDER_LABELS = {
     "anthropic": "Anthropic",
     "openai": "OpenAI",
-    "gemini": "Gemini",
+    "google": "Google",
     "qwen": "Qwen",
-}
-
-CHAT_PROVIDER_ORDER = {
-    "anthropic": 0,
-    "openai": 1,
-    "gemini": 2,
-    "qwen": 3,
-}
-
-CHAT_TIER_ORDER = {
-    "low": 0,
-    "medium": 1,
-    "high_reasoning": 2,
-}
-
-CHAT_TIER_LABELS = {
-    "low": "Low",
-    "medium": "Medium",
-    "high_reasoning": "High reasoning",
-}
-
-CHAT_EXCLUDED_MODEL_TOKENS = {
-    "codex",
-    "coder",
-    "coding",
-    "image",
-    "story",
-    "storytelling",
-    "gemma",
-    "nvidia",
-    "free",
+    "x-ai": "xAI",
+    "deepseek": "DeepSeek",
 }
 
 _CHAT_MODEL_CACHE: dict[str, Any] = {
@@ -228,25 +212,10 @@ def _normalize_nutrition_label_payload(payload: dict[str, Any]) -> dict[str, Any
 
 
 def _chat_provider_key_for_model(model_id: str) -> str | None:
-    lower = model_id.lower()
-    if lower.startswith("anthropic/"):
-        return "anthropic"
-    if lower.startswith("openai/"):
-        return "openai"
-    if lower.startswith("google/") or "gemini" in lower:
-        return "gemini"
-    if lower.startswith("qwen/") or "/qwen" in lower or "qwen" in lower:
-        return "qwen"
+    prefix = model_id.split("/")[0].lower() if "/" in model_id else None
+    if prefix and prefix in CHAT_PROVIDER_LABELS:
+        return prefix
     return None
-
-
-def _model_contains_excluded_token(model_id: str, model_name: str) -> bool:
-    text = f"{model_id} {model_name}".lower()
-    tokens = set(re.split(r"[^a-z0-9]+", text))
-    for token in CHAT_EXCLUDED_MODEL_TOKENS:
-        if token in tokens:
-            return True
-    return False
 
 
 def _cost_per_million(value: Any) -> float | None:
@@ -255,9 +224,6 @@ def _cost_per_million(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
 
-
-def _model_total_cost_per_million(model: dict[str, Any]) -> float:
-    return float(model["input_cost_per_million"]) + float(model["output_cost_per_million"])
 
 
 def _model_created_timestamp(value: Any) -> int:
@@ -279,28 +245,6 @@ def _model_headers() -> dict[str, str]:
     return headers
 
 
-def _string_list(values: Any) -> set[str]:
-    if not isinstance(values, list):
-        return set()
-    parsed: set[str] = set()
-    for value in values:
-        if not isinstance(value, str):
-            continue
-        parsed.add(value.lower().strip())
-    return parsed
-
-
-def _model_modalities(raw_model: dict[str, Any]) -> tuple[set[str], set[str]]:
-    architecture = raw_model.get("architecture")
-    if not isinstance(architecture, dict):
-        return set(), set()
-    input_modalities = _string_list(architecture.get("input_modalities"))
-    output_modalities = _string_list(architecture.get("output_modalities"))
-    return input_modalities, output_modalities
-
-
-def _model_supported_parameters(raw_model: dict[str, Any]) -> set[str]:
-    return _string_list(raw_model.get("supported_parameters"))
 
 
 def _normalize_chat_model(raw_model: dict[str, Any]) -> dict[str, Any] | None:
@@ -313,31 +257,13 @@ def _normalize_chat_model(raw_model: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
     model_name = str(raw_model.get("name") or model_id)
-    if _model_contains_excluded_token(model_id, model_name):
-        return None
-
-    input_modalities, output_modalities = _model_modalities(raw_model)
-    if "text" not in input_modalities:
-        return None
-    if output_modalities != {"text"}:
-        return None
-
-    supported_parameters = _model_supported_parameters(raw_model)
-    if "tools" not in supported_parameters or "tool_choice" not in supported_parameters:
-        return None
 
     pricing = raw_model.get("pricing")
-    if not isinstance(pricing, dict):
-        return None
-
-    input_cost = _cost_per_million(pricing.get("prompt"))
-    output_cost = _cost_per_million(pricing.get("completion"))
-    if input_cost is None or output_cost is None:
-        return None
-    if input_cost > CHAT_MODEL_MAX_INPUT_COST_PER_MILLION:
-        return None
-    if output_cost > CHAT_MODEL_MAX_OUTPUT_COST_PER_MILLION:
-        return None
+    input_cost = 0.0
+    output_cost = 0.0
+    if isinstance(pricing, dict):
+        input_cost = _cost_per_million(pricing.get("prompt")) or 0.0
+        output_cost = _cost_per_million(pricing.get("completion")) or 0.0
 
     return {
         "id": model_id,
@@ -346,182 +272,24 @@ def _normalize_chat_model(raw_model: dict[str, Any]) -> dict[str, Any] | None:
         "input_cost_per_million": round(input_cost, 4),
         "output_cost_per_million": round(output_cost, 4),
         "created": _model_created_timestamp(raw_model.get("created")),
-        "supports_reasoning": (
-            "reasoning" in supported_parameters or "reasoning_effort" in supported_parameters
-        ),
-        "_provider_key": provider_key,
     }
 
 
-def _choose_tier_models(provider_models: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    if not provider_models:
-        return []
-
-    sorted_by_cost = sorted(
-        provider_models,
-        key=lambda model: (
-            _model_total_cost_per_million(model),
-            -int(model["created"]),
-            str(model["id"]).lower(),
-        ),
-    )
-
-    low = sorted_by_cost[0]
-    selected_ids = {str(low["id"])}
-
-    reasoning_pool = [model for model in provider_models if bool(model["supports_reasoning"])]
-    high_pool = reasoning_pool or provider_models
-    high = next(
-        (
-            model
-            for model in sorted(
-                high_pool,
-                key=lambda candidate: (
-                    _model_total_cost_per_million(candidate),
-                    int(candidate["created"]),
-                    str(candidate["id"]).lower(),
-                ),
-                reverse=True,
-            )
-            if str(model["id"]) not in selected_ids
-        ),
-        None,
-    )
-    if high is not None:
-        selected_ids.add(str(high["id"]))
-
-    median_cost = _model_total_cost_per_million(
-        sorted_by_cost[len(sorted_by_cost) // 2],
-    )
-    medium = next(
-        (
-            model
-            for model in sorted(
-                provider_models,
-                key=lambda candidate: (
-                    abs(_model_total_cost_per_million(candidate) - median_cost),
-                    -int(candidate["created"]),
-                    str(candidate["id"]).lower(),
-                ),
-            )
-            if str(model["id"]) not in selected_ids
-        ),
-        None,
-    )
-    if medium is not None:
-        selected_ids.add(str(medium["id"]))
-
-    if high is None:
-        high = next(
-            (
-                model
-                for model in sorted(
-                    provider_models,
-                    key=lambda candidate: (
-                        int(candidate["created"]),
-                        _model_total_cost_per_million(candidate),
-                        str(candidate["id"]).lower(),
-                    ),
-                    reverse=True,
-                )
-                if str(model["id"]) not in selected_ids
-            ),
-            None,
-        )
-        if high is not None:
-            selected_ids.add(str(high["id"]))
-
-    if medium is None:
-        medium = next(
-            (
-                model
-                for model in sorted(
-                    provider_models,
-                    key=lambda candidate: (
-                        int(candidate["created"]),
-                        _model_total_cost_per_million(candidate),
-                        str(candidate["id"]).lower(),
-                    ),
-                    reverse=True,
-                )
-                if str(model["id"]) not in selected_ids
-            ),
-            None,
-        )
-
-    tier_pairs = [
-        ("low", low),
-        ("medium", medium),
-        ("high_reasoning", high),
-    ]
-    selected_models: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    for tier_key, model in tier_pairs:
-        if model is None:
-            continue
-        model_id = str(model["id"])
-        if model_id in seen_ids:
-            continue
-        seen_ids.add(model_id)
-        selected_models.append({
-            **model,
-            "tier": tier_key,
-            "tier_label": CHAT_TIER_LABELS[tier_key],
-        })
-    return selected_models
-
-
 def _filter_chat_models(raw_models: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    candidate_models: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
+    allowed_set = set(CHAT_ALLOWED_MODELS)
+    by_id: dict[str, dict[str, Any]] = {}
     for raw_model in raw_models:
         if not isinstance(raw_model, dict):
             continue
-        model = _normalize_chat_model(raw_model)
-        if model is None:
+        model_id = str(raw_model.get("id") or "").strip()
+        if model_id not in allowed_set:
             continue
-        model_id = str(model["id"])
-        if model_id in seen_ids:
-            continue
-        seen_ids.add(model_id)
-        candidate_models.append(model)
+        normalized = _normalize_chat_model(raw_model)
+        if normalized is not None:
+            by_id[model_id] = normalized
 
-    latest_created_by_provider: dict[str, int] = {}
-    for model in candidate_models:
-        provider_key = str(model["_provider_key"])
-        created = int(model["created"])
-        latest_created_by_provider[provider_key] = max(
-            latest_created_by_provider.get(provider_key, 0),
-            created,
-        )
-
-    recent_by_provider: dict[str, list[dict[str, Any]]] = {key: [] for key in CHAT_PROVIDER_ORDER}
-    for model in candidate_models:
-        provider_key = str(model["_provider_key"])
-        latest_created = int(latest_created_by_provider.get(provider_key, 0))
-        cutoff = latest_created - CHAT_MODEL_RECENCY_WINDOW_SECONDS
-        if int(model["created"]) >= cutoff:
-            recent_by_provider[provider_key].append(model)
-
-    tiered_models: list[dict[str, Any]] = []
-    for provider_key in CHAT_PROVIDER_ORDER:
-        provider_models = recent_by_provider.get(provider_key) or []
-        if not provider_models:
-            continue
-        tiered_models.extend(_choose_tier_models(provider_models))
-
-    tiered_models.sort(
-        key=lambda model: (
-            CHAT_PROVIDER_ORDER[str(model["_provider_key"])],
-            CHAT_TIER_ORDER[str(model["tier"])],
-            -int(model["created"]),
-            str(model["name"]).lower(),
-        ),
-    )
-    for model in tiered_models:
-        model.pop("_provider_key", None)
-        model.pop("supports_reasoning", None)
-    return tiered_models
+    # Return in the same order as CHAT_ALLOWED_MODELS
+    return [by_id[mid] for mid in CHAT_ALLOWED_MODELS if mid in by_id]
 
 
 async def get_chat_models(force_refresh: bool = False) -> list[dict[str, Any]]:
@@ -968,7 +736,7 @@ def _chat_max_tokens_for_model(model_id: str) -> int:
 
 def _chat_temperature_for_model(model_id: str) -> float:
     # Gemini 3 docs recommend leaving temperature at the model default (1.0).
-    if _chat_provider_key_for_model(model_id) == "gemini":
+    if _chat_provider_key_for_model(model_id) == "google":
         return 1.0
     return 0.3
 
@@ -1527,7 +1295,9 @@ async def chat_meal(
     ]
 
     max_rounds = 10
-    async with httpx.AsyncClient(timeout=None) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=30.0, read=300.0, write=30.0, pool=30.0),
+    ) as client:
         for _round in range(max_rounds):
             round_index = _round + 1
             selected_tools = _select_chat_tools(all_messages) if tool_executor else None
@@ -1545,7 +1315,7 @@ async def chat_meal(
                 data = await _stream_openrouter_chat_completion(client, payload, active_model)
             except LLMUpstreamCompletionError:
                 should_force_tool_retry = (
-                    _chat_provider_key_for_model(active_model) == "gemini"
+                    _chat_provider_key_for_model(active_model) == "google"
                     and selected_tools is not None
                     and bool(selected_tools)
                     and bool(select_tools(all_messages))
