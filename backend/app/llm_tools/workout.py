@@ -1313,9 +1313,9 @@ SET_WORKOUT_SESSIONS_DEF = {
         "name": "set_workout_sessions",
         "description": (
             "Create, update, or delete workout sessions. "
-            "Log sets through the sets relation (mode=replace). "
-            "Updating rep_completion is done by replacing sets "
-            "with updated fields."
+            "Add sets via the sets relation: use mode=append to add sets "
+            "to an existing session, mode=replace to overwrite all sets. "
+            "To update rep_completion, replace sets with updated fields."
         ),
         "parameters": {
             "type": "object",
@@ -1337,7 +1337,12 @@ SET_WORKOUT_SESSIONS_DEF = {
                             },
                             "match": {
                                 "type": "object",
-                                "description": "id({eq}), date({eq}).",
+                                "description": (
+                                    "Required for update/delete. "
+                                    "Filter by id or date using {eq} operator. "
+                                    'Example: {"id": {"eq": 98}} or '
+                                    '{"date": {"eq": "2026-03-10"}}.'
+                                ),
                             },
                             "set": {
                                 "type": "object",
