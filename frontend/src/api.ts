@@ -713,6 +713,7 @@ export const chatMealWithProgress = async (
   meal_type?: string,
   notes?: string,
   model?: string,
+  signal?: AbortSignal,
 ): Promise<ChatResponse> => {
   const payload = buildChatPayload(messages, date, meal_type, notes, model)
   const res = await fetch(`${BASE}/meals/chat/stream`, {
@@ -720,6 +721,7 @@ export const chatMealWithProgress = async (
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    signal,
   })
 
   const errorDetail = await readErrorDetail(res)

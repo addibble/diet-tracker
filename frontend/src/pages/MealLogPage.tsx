@@ -315,6 +315,7 @@ function ProgressPanel({
   toolLog,
   paneRef,
   loading,
+  onCancel,
 }: {
   expanded: boolean
   onToggle: () => void
@@ -327,7 +328,32 @@ function ProgressPanel({
   toolLog: { time: number; text: string; args?: string; result?: string }[]
   paneRef: React.RefObject<HTMLDivElement | null>
   loading: boolean
+  onCancel?: () => void
 }) {
+  const hasContent = thinking || content || toolLog.length > 0
+
+  const handleCopy = () => {
+    const parts: string[] = []
+    if (thinking) parts.push(`## Thinking\n\n${thinking}`)
+    if (content) parts.push(`## Output\n\n${content}`)
+    if (toolLog.length > 0) {
+      const toolLines = toolLog.map((entry) => {
+        let line = `${formatElapsedTime(entry.time)} ${entry.text}`
+        if (entry.args) {
+          try { line += `\nargs: ${JSON.stringify(JSON.parse(entry.args), null, 2)}` }
+          catch { line += `\nargs: ${entry.args}` }
+        }
+        if (entry.result) {
+          try { line += `\nresult: ${JSON.stringify(JSON.parse(entry.result), null, 2)}` }
+          catch { line += `\nresult: ${entry.result}` }
+        }
+        return line
+      })
+      parts.push(`## Tools\n\n${toolLines.join('\n\n')}`)
+    }
+    navigator.clipboard.writeText(parts.join('\n\n---\n\n')).catch(() => {})
+  }
+
   const tabs: { key: typeof activeTab; label: string; badge?: number | boolean }[] = [
     { key: 'system', label: 'System', badge: systemLog.length > 0 && systemLog.length },
     { key: 'thinking', label: 'Thinking', badge: thinking.length > 0 },
@@ -339,22 +365,43 @@ function ProgressPanel({
     <div className="flex justify-start">
       <div className="bg-white border border-gray-200 rounded-lg w-full max-w-lg overflow-hidden">
         {/* Header bar — always visible */}
-        <button
-          type="button"
-          onClick={onToggle}
-          className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-50 text-left"
-        >
-          <span className={`text-[10px] text-gray-400 transition-transform ${expanded ? 'rotate-90' : ''}`}>▶</span>
-          {loading && (
-            <div className="h-3 w-3 rounded-full border-2 border-gray-300 border-t-blue-600 animate-spin shrink-0" />
+        <div className="flex items-center gap-1 px-2 py-1.5">
+          <button
+            type="button"
+            onClick={onToggle}
+            className="flex items-center gap-2 flex-1 min-w-0 hover:bg-gray-50 rounded px-1 py-0.5 text-left"
+          >
+            <span className={`text-[10px] text-gray-400 transition-transform ${expanded ? 'rotate-90' : ''}`}>▶</span>
+            {loading && (
+              <div className="h-3 w-3 rounded-full border-2 border-gray-300 border-t-blue-600 animate-spin shrink-0" />
+            )}
+            <span className="text-xs text-gray-600 truncate flex-1">
+              {loading
+                ? (systemLog.length > 0 ? systemLog[systemLog.length - 1].text : 'Starting...')
+                : 'Request completed'}
+            </span>
+            <span className="text-[10px] text-gray-400 shrink-0">{formatElapsedTime(elapsedMs)}</span>
+          </button>
+          {hasContent && (
+            <button
+              type="button"
+              onClick={handleCopy}
+              title="Copy to clipboard"
+              className="shrink-0 px-1.5 py-0.5 text-[10px] text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded"
+            >
+              copy
+            </button>
           )}
-          <span className="text-xs text-gray-600 truncate flex-1">
-            {loading
-              ? (systemLog.length > 0 ? systemLog[systemLog.length - 1].text : 'Starting...')
-              : 'Request completed'}
-          </span>
-          <span className="text-[10px] text-gray-400 shrink-0">{formatElapsedTime(elapsedMs)}</span>
-        </button>
+          {loading && onCancel && (
+            <button
+              type="button"
+              onClick={onCancel}
+              className="shrink-0 px-2 py-0.5 text-[10px] font-medium text-red-500 hover:text-red-700 hover:bg-red-50 rounded border border-red-200"
+            >
+              Cancel
+            </button>
+          )}
+        </div>
 
         {expanded && (
           <>
@@ -491,6 +538,7 @@ export default function MealLogPage() {
     setProgressActiveTab(tab)
   }
   const progressPaneRef = useRef<HTMLDivElement>(null)
+  const abortControllerRef = useRef<AbortController | null>(null)
   // Keep last progress state for showing in collapsed error bubbles
   const lastProgressRef = useRef<{
     systemLog: { time: number; text: string }[];
@@ -600,6 +648,9 @@ export default function MealLogPage() {
     setProgressActiveTab('system')
     userSelectedTabRef.current = false
 
+    const abortController = new AbortController()
+    abortControllerRef.current = abortController
+
     try {
       const apiHistory: ChatMessage[] = newMessages.map((m) => ({
         role: m.role,
@@ -675,6 +726,7 @@ export default function MealLogPage() {
         undefined,
         undefined,
         selectedModel || undefined,
+        abortController.signal,
       )
 
       const assistantBubble: MessageBubble = {
@@ -689,6 +741,11 @@ export default function MealLogPage() {
         setSaved(true)
       }
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        // User cancelled — restore the user's message so they can retry or edit
+        setMessages(newMessages)
+        return
+      }
       const errorText = err instanceof Error ? err.message : 'Something went wrong. Please try again.'
       setMessages([...newMessages, {
         role: 'assistant',
@@ -711,11 +768,8 @@ export default function MealLogPage() {
     }
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
-    }
+  const handleCancel = () => {
+    abortControllerRef.current?.abort()
   }
 
   const handleClearChat = () => {
@@ -928,6 +982,7 @@ export default function MealLogPage() {
               toolLog={progressToolLog}
               paneRef={progressPaneRef}
               loading
+              onCancel={handleCancel}
             />
           )}
           {!loading && (progressExpanded || progressThinking || progressToolLog.length > 0) && progressSystemLog.length > 0 && (
@@ -1021,12 +1076,17 @@ export default function MealLogPage() {
                 <path d="M9 20.5h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
               </svg>
             </button>
-            <input
+            <textarea
               value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
+              onChange={(e) => {
+                setInput(e.target.value)
+                e.target.style.height = 'auto'
+                e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`
+              }}
               placeholder="Describe what you ate..."
-              className="flex-1 px-3 py-2.5 border border-gray-300 rounded-md text-sm disabled:bg-gray-50"
+              className="flex-1 px-3 py-2.5 border border-gray-300 rounded-md text-sm disabled:bg-gray-50 resize-none overflow-y-auto"
+              rows={1}
+              style={{ height: '2.5rem' }}
               disabled={loading || importingImage}
             />
             <button
