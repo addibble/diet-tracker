@@ -46,6 +46,7 @@ def _build_exercise_response(exercise: Exercise, session: Session) -> dict:
         if not tissue:
             continue
         tissues.append({
+            "exercise_tissue_id": m.id,
             "tissue_id": m.tissue_id,
             "tissue_name": tissue.name,
             "tissue_display_name": tissue.display_name,

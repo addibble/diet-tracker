@@ -12,7 +12,7 @@ import {
 type View = 'tissues' | 'exercises'
 
 interface TissueWithExercises extends WkTissue {
-  exercises: { exercise_id: number; exercise_name: string; role: string; loading_factor: number }[]
+  exercises: { exercise_tissue_id: number; exercise_id: number; exercise_name: string; role: string; loading_factor: number }[]
 }
 
 // ── Style Constants ──
@@ -183,7 +183,8 @@ function TissueView({
                 {t.exercises.map((ex) => {
                   const fullExercise = exercises.find((e) => e.id === ex.exercise_id)
                   return (
-                    <span key={ex.exercise_id} className="inline-flex items-center gap-1 text-[11px]">
+                    <span key={ex.exercise_tissue_id} className="inline-flex items-center gap-1 text-[11px]">
+                      <span className="text-[9px] font-mono text-gray-300">et:{ex.exercise_tissue_id}</span>
                       <span className="text-gray-600">{ex.exercise_name}</span>
                       <span className={`px-1 py-px rounded text-[9px] font-medium ${ROLE_COLORS[ex.role] ?? ROLE_COLORS.stabilizer}`}>
                         {ex.role}
@@ -249,7 +250,8 @@ function ExerciseView({ exercises, onSave }: { exercises: WkExercise[]; onSave: 
             {ex.tissues.length > 0 ? (
               <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
                 {ex.tissues.map((t) => (
-                  <span key={t.tissue_id} className="inline-flex items-center gap-1 text-[11px]">
+                  <span key={t.exercise_tissue_id} className="inline-flex items-center gap-1 text-[11px]">
+                    <span className="text-[9px] font-mono text-gray-300">et:{t.exercise_tissue_id}</span>
                     <span className="text-gray-600">{t.tissue_display_name}</span>
                     <span className="text-[10px] font-mono text-gray-400">({t.tissue_name})</span>
                     <span className={`text-[10px] px-1.5 py-px rounded font-medium ${TYPE_BADGE[t.tissue_type] ?? 'bg-gray-100 text-gray-600'}`}>
@@ -310,6 +312,7 @@ export default function TissueAdminPage() {
           for (const m of ex.tissues) {
             if (m.tissue_id === t.id) {
               exs.push({
+                exercise_tissue_id: m.exercise_tissue_id,
                 exercise_id: ex.id,
                 exercise_name: ex.name,
                 role: m.role,

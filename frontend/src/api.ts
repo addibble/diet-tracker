@@ -446,6 +446,7 @@ export interface WkExercise {
 }
 
 export interface WkExerciseTissueMapping {
+  exercise_tissue_id: number;
   tissue_id: number;
   tissue_name: string;
   tissue_display_name: string;
