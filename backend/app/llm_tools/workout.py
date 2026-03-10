@@ -1549,6 +1549,8 @@ def handle_set_workout_sessions(
         op = change["operation"]
         set_fields = change.get("set", {})
         match_spec = change.get("match")
+        if not match_spec and "id" in change:
+            match_spec = {"id": {"eq": change["id"]}}
         relations = change.get("relations", {})
 
         if op == "create":
