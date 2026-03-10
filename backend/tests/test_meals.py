@@ -108,3 +108,93 @@ def test_list_meals_by_date(client):
     resp = client.get("/api/meals?date=2026-03-01")
     assert resp.status_code == 200
     assert len(resp.json()) == 1
+
+
+# ---------------------------------------------------------------------------
+# Deduplication tests
+# ---------------------------------------------------------------------------
+
+def test_llm_tool_dedup_same_meal_twice(session):
+    """handle_set_meal_logs called twice with identical args returns the same meal."""
+    from sqlmodel import select
+    from app.llm_tools.nutrition import handle_set_meal_logs
+    from app.models import Food, MealLog
+
+    food = Food(
+        name="Oats", serving_size_grams=100,
+        calories_per_serving=389, fat_per_serving=6.9,
+        carbs_per_serving=66, protein_per_serving=17,
+    )
+    session.add(food)
+    session.commit()
+    session.refresh(food)
+
+    args = {
+        "changes": [{
+            "operation": "create",
+            "set": {"date": "2026-03-01", "meal_type": "breakfast"},
+            "relations": {
+                "items": {
+                    "mode": "replace",
+                    "records": [{"food_id": food.id, "amount_grams": 80}],
+                }
+            },
+        }]
+    }
+
+    r1 = handle_set_meal_logs(args, session)
+    r2 = handle_set_meal_logs(args, session)
+
+    # Both responses should point to the same meal
+    assert r1["matches"][0]["id"] == r2["matches"][0]["id"]
+
+    # Only one MealLog row should exist
+    meals = session.exec(select(MealLog)).all()
+    assert len(meals) == 1
+
+    # The dedup warning should be present in the second response
+    assert any("Duplicate meal detected" in w for w in r2.get("warnings", []))
+
+
+def test_llm_tool_dedup_different_items_not_deduped(session):
+    """Two create calls with different items are NOT collapsed into one."""
+    from sqlmodel import select
+    from app.llm_tools.nutrition import handle_set_meal_logs
+    from app.models import Food, MealLog
+
+    food = Food(
+        name="Banana", serving_size_grams=100,
+        calories_per_serving=89, fat_per_serving=0.3,
+        carbs_per_serving=23, protein_per_serving=1.1,
+    )
+    session.add(food)
+    session.commit()
+    session.refresh(food)
+
+    base = {"date": "2026-03-01", "meal_type": "snack"}
+    args_a = {"changes": [{"operation": "create", "set": base, "relations": {
+        "items": {"mode": "replace", "records": [{"food_id": food.id, "amount_grams": 100}]},
+    }}]}
+    args_b = {"changes": [{"operation": "create", "set": base, "relations": {
+        "items": {"mode": "replace", "records": [{"food_id": food.id, "amount_grams": 150}]},
+    }}]}
+
+    r1 = handle_set_meal_logs(args_a, session)
+    r2 = handle_set_meal_logs(args_b, session)
+
+    assert r1["matches"][0]["id"] != r2["matches"][0]["id"]
+
+    meals = session.exec(select(MealLog)).all()
+    assert len(meals) == 2
+
+
+def test_tool_state_suppresses_confirm_save():
+    """_ToolState.meal_saved_via_tools prevents the <CONFIRM/> auto-save path."""
+    from app.routers.parse import _ToolState
+
+    state = _ToolState()
+    assert not state.meal_saved_via_tools
+
+    # Simulate the executor setting the flag
+    state.meal_saved_via_tools = True
+    assert state.meal_saved_via_tools

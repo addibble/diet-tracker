@@ -288,6 +288,9 @@ class _ToolState:
     """Tracks whether any tool call mutated the database."""
     def __init__(self) -> None:
         self.data_changed = False
+        # True if the LLM already created a meal log via the set_meal_logs tool.
+        # Used to suppress the <CONFIRM/> auto-save so we don't double-write.
+        self.meal_saved_via_tools = False
 
 
 def _make_tool_executor(
@@ -310,6 +313,13 @@ def _make_tool_executor(
         # Any setter marks data as changed
         if name.startswith("set_"):
             state.data_changed = True
+
+        # Track meal creation via tools to prevent duplicate saves
+        if name == "set_meal_logs":
+            for change in args.get("changes", []):
+                if change.get("operation") == "create":
+                    state.meal_saved_via_tools = True
+                    break
 
         return result
 
@@ -640,9 +650,10 @@ async def chat_meal_endpoint(
     # Check for <CONFIRM/>
     confirmed = bool(re.search(r"<CONFIRM\s*/>", raw_response))
 
-    # Auto-save if confirmed and we have valid items
+    # Auto-save if confirmed and we have valid items.
+    # Skip if the LLM already created the meal via set_meal_logs to avoid duplicates.
     saved_meal = None
-    if confirmed and proposed_items:
+    if confirmed and proposed_items and not tool_state.meal_saved_via_tools:
         saveable = [
             i for i in proposed_items
             if i.get("food_id") is not None or i.get("recipe_id") is not None
