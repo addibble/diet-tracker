@@ -43,13 +43,11 @@ def _build_exercise_response(exercise: Exercise, session: Session) -> dict:
     tissues = []
     for m in mappings:
         tissue = session.get(Tissue, m.tissue_id)
-        if not tissue:
-            continue
         tissues.append({
             "tissue_id": m.tissue_id,
-            "tissue_name": tissue.name,
-            "tissue_display_name": tissue.display_name,
-            "tissue_type": tissue.type,
+            "tissue_name": tissue.name if tissue else "unknown",
+            "tissue_display_name": tissue.display_name if tissue else "unknown",
+            "tissue_type": tissue.type if tissue else "muscle",
             "role": m.role,
             "loading_factor": m.loading_factor,
         })
