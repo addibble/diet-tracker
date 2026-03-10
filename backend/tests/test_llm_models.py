@@ -1,4 +1,4 @@
-from app.llm import CHAT_ALLOWED_MODELS, _filter_chat_models
+from app.llm import _filter_chat_models
 
 
 def _raw_model(
