@@ -71,22 +71,120 @@ def _get_or_create_exercise(
     return exercise
 
 
+# Common anatomy synonyms — maps alternate names to canonical DB names.
+# Both keys and values should be lowercase.
+_TISSUE_SYNONYMS: dict[str, str] = {
+    # peroneal ↔ fibularis
+    "peroneus longus": "fibularis_longus",
+    "peroneus brevis": "fibularis_brevis",
+    "peroneal longus": "fibularis_longus",
+    "peroneal brevis": "fibularis_brevis",
+    "peroneals": "fibularis_longus",
+    # shoulder
+    "glenohumeral joint": "shoulder_joint",
+    # spine shortcuts
+    "cervical spine joint": "cervical_spine",
+    "thoracic spine joint": "thoracic_spine",
+    "lumbar spine joint": "lumbar_spine",
+    # pec aliases
+    "upper pec": "pec_clavicular_head",
+    "upper pecs": "pec_clavicular_head",
+    "lower pec": "pec_sternal_head",
+    "lower pecs": "pec_sternal_head",
+    # abs shorthand
+    "abs": "rectus_abdominis",
+    # quad components
+    "vastus medialis oblique": "vastus_medialis",
+    "vmo": "vastus_medialis",
+    # common alternate names
+    "lats": "latissimus_dorsi",
+    "traps": "trapezius",
+    "rhomboids": "rhomboid_major",
+    "hip flexors": "iliopsoas",
+    "hip flexor": "iliopsoas",
+    "calves": "gastrocnemius",
+    "calf": "gastrocnemius",
+}
+
+
+def _normalize_tissue_input(name: str) -> str:
+    """Normalize a tissue name for comparison: lowercase, strip,
+    collapse whitespace, replace spaces with underscores."""
+    return "_".join(name.lower().strip().split())
+
+
 def _find_tissue_by_name(
     name: str, session: Session
 ) -> Tissue | None:
+    """Resolve a tissue by name, display_name, synonym, or fuzzy match.
+
+    Lookup order:
+    1. Exact match on name
+    2. Exact match on display_name (case-insensitive)
+    3. Normalized match on name (spaces→underscores, lowercase)
+    4. Synonym lookup
+    5. Fuzzy match on both name and display_name
+    """
+    if not name:
+        return None
+
+    # 1. Exact match on name field
     tissue = session.exec(
         select(Tissue).where(Tissue.name == name)
     ).first()
     if tissue:
         return tissue
+
+    # 2. Case-insensitive match on display_name
     tissues = get_current_tissues(session)
-    names = [t.name for t in tissues]
-    matches = difflib.get_close_matches(name, names, n=1, cutoff=0.6)
+    name_lower = name.lower().strip()
+    for t in tissues:
+        if t.display_name and t.display_name.lower() == name_lower:
+            return t
+
+    # 3. Normalized name match (handles "Lumbar Spine" → "lumbar_spine")
+    normalized = _normalize_tissue_input(name)
+    for t in tissues:
+        if t.name == normalized:
+            return t
+
+    # 4. Synonym lookup
+    synonym_target = _TISSUE_SYNONYMS.get(name_lower)
+    if not synonym_target:
+        synonym_target = _TISSUE_SYNONYMS.get(normalized)
+    if synonym_target:
+        for t in tissues:
+            if t.name == synonym_target:
+                return t
+
+    # 5. Fuzzy match against both name and display_name
+    candidates: dict[str, Tissue] = {}
+    for t in tissues:
+        candidates[t.name] = t
+        if t.display_name:
+            candidates[t.display_name.lower()] = t
+
+    matches = difflib.get_close_matches(
+        name_lower, candidates.keys(), n=1, cutoff=0.6
+    )
     if matches:
-        return session.exec(
-            select(Tissue).where(Tissue.name == matches[0])
-        ).first()
+        return candidates[matches[0]]
+
     return None
+
+
+def _suggest_tissue_matches(
+    name: str, session: Session, n: int = 3
+) -> list[str]:
+    """Return close tissue name suggestions for an unresolved name."""
+    tissues = get_current_tissues(session)
+    candidates = []
+    for t in tissues:
+        candidates.append(t.name)
+        if t.display_name:
+            candidates.append(t.display_name)
+    name_lower = name.lower().strip()
+    return difflib.get_close_matches(name_lower, candidates, n=n, cutoff=0.4)
 
 
 def _set_exercise_tissues(
@@ -118,7 +216,15 @@ def _set_exercise_tissues(
             tissue = _find_tissue_by_name(tissue_name, session)
         if not tissue:
             label = tissue_name or tissue_id
-            warnings.append(f"Tissue '{label}' not found, skipped")
+            suggestions = (
+                _suggest_tissue_matches(tissue_name, session)
+                if tissue_name else []
+            )
+            hint = (
+                f" — did you mean: {', '.join(suggestions)}?"
+                if suggestions else ""
+            )
+            warnings.append(f"Tissue '{label}' not found, skipped{hint}")
             continue
         session.add(ExerciseTissue(
             exercise_id=exercise.id,
@@ -327,7 +433,15 @@ SET_EXERCISES_DEF = {
             "Create, update, upsert, merge, or delete exercises. "
             "Manage tissue mappings through current_tissues relation "
             "with mode=append_snapshot. Use merge operation to "
-            "combine two exercises."
+            "combine two exercises.\n"
+            "IMPORTANT: For update/upsert/delete, provide match criteria "
+            "inside a 'match' object, e.g.:\n"
+            '  {"operation":"update","match":{"id":{"eq":46}},'
+            '"relations":{"current_tissues":{"mode":"append_snapshot",'
+            '"records":[...]}}}\n'
+            "Match supports: id({eq}), name({eq,fuzzy}). "
+            "Do NOT put id at the top level or use 'where' — "
+            "use 'match'."
         ),
         "parameters": {
             "type": "object",
@@ -387,9 +501,16 @@ SET_EXERCISES_DEF = {
                                                     "properties": {
                                                         "tissue_id": {
                                                             "type": "integer",
+                                                            "description": "Exact tissue ID. Optional if name is provided.",
                                                         },
                                                         "name": {
                                                             "type": "string",
+                                                            "description": (
+                                                                "Tissue name — matches against name, display_name, "
+                                                                "common synonyms, and fuzzy. Preferred over tissue_id. "
+                                                                "Examples: 'Biceps Brachii', 'biceps_brachii', 'Lats', "
+                                                                "'Peroneus Longus' (→ fibularis_longus)."
+                                                            ),
                                                         },
                                                         "role": {
                                                             "type": "string",
@@ -590,7 +711,12 @@ def handle_set_exercises(args: dict, session: Session) -> dict:
     for change in args.get("changes", []):
         op = change["operation"]
         set_fields = change.get("set", {})
-        match_spec = change.get("match")
+        # Accept "where" as alias for "match", plus top-level id/name
+        match_spec = change.get("match") or change.get("where")
+        if not match_spec and "id" in change and change["id"] is not None:
+            match_spec = {"id": {"eq": change["id"]}}
+        if not match_spec and "name" in change and op != "create":
+            match_spec = {"name": {"fuzzy": change["name"]}}
         relations = change.get("relations", {})
 
         if op == "create":
@@ -623,6 +749,7 @@ def handle_set_exercises(args: dict, session: Session) -> dict:
             from .shared import resolve_match
             # If no explicit match spec but set contains id, promote it to
             # match so callers can write {set: {id: 21, ...}} naturally.
+            # Also promote id from set fields if still no match
             effective_match = match_spec
             if not effective_match and "id" in set_fields:
                 effective_match = {"id": {"eq": set_fields["id"]}}
