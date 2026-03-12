@@ -91,8 +91,10 @@ SET_FOODS_DEF = {
         "description": (
             "Create, update, or delete food records. "
             "Set name, brand, serving_size_grams, and 8 macro "
-            "values per serving (calories, fat, saturated_fat, "
-            "cholesterol, sodium, carbs, fiber, protein)."
+            "values per serving (calories_per_serving, fat_per_serving, "
+            "saturated_fat_per_serving, cholesterol_per_serving, "
+            "sodium_per_serving, carbs_per_serving, fiber_per_serving, "
+            "protein_per_serving)."
         ),
         "parameters": {
             "type": "object",
@@ -186,13 +188,33 @@ _FOOD_SETTABLE = {
     *SERVING_FIELDS,
 }
 
+# Short aliases the LLM may send instead of the full _per_serving names.
+_MACRO_ALIASES = {
+    "calories": "calories_per_serving",
+    "fat": "fat_per_serving",
+    "saturated_fat": "saturated_fat_per_serving",
+    "cholesterol": "cholesterol_per_serving",
+    "sodium": "sodium_per_serving",
+    "carbs": "carbs_per_serving",
+    "fiber": "fiber_per_serving",
+    "protein": "protein_per_serving",
+}
+
+
+def _normalize_food_fields(set_fields: dict) -> dict:
+    """Expand short macro aliases to their full _per_serving column names."""
+    out = {}
+    for k, v in set_fields.items():
+        out[_MACRO_ALIASES.get(k, k)] = v
+    return out
+
 
 def handle_set_foods(args: dict, session: Session) -> dict:
     results = []
     created = deleted = changed = 0
     for change in args.get("changes", []):
         op = change["operation"]
-        set_fields = change.get("set", {})
+        set_fields = _normalize_food_fields(change.get("set", {}))
         match_spec = change.get("match")
 
         if op == "create":

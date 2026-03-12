@@ -204,3 +204,33 @@ def test_import_food_label_handles_llm_validation_error(client):
 
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Could not parse nutrition label"
+
+
+def test_set_foods_short_macro_aliases(session):
+    """LLM may send 'calories' instead of 'calories_per_serving'; both must work."""
+    from app.llm_tools.nutrition import handle_set_foods
+
+    result = handle_set_foods({
+        "changes": [{
+            "operation": "create",
+            "set": {
+                "name": "Alias Food",
+                "serving_size_grams": 567,
+                "calories": 583,
+                "fat": 22.4,
+                "saturated_fat": 12.3,
+                "cholesterol": 114.8,
+                "sodium": 1440,
+                "carbs": 37.4,
+                "fiber": 6.8,
+                "protein": 67.7,
+            },
+        }],
+    }, session)
+
+    assert result["created_count"] == 1
+    food = result["matches"][0]
+    assert food["calories_per_serving"] == 583
+    assert food["fat_per_serving"] == 22.4
+    assert food["protein_per_serving"] == 67.7
+    assert food["sodium_per_serving"] == 1440
