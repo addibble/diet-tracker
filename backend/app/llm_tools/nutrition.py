@@ -24,6 +24,7 @@ from .shared import (
     apply_filters,
     apply_fuzzy_post_filter,
     apply_sort,
+    coerce_match_spec,
     error_response,
     getter_response,
     parse_date_val,
@@ -215,7 +216,7 @@ def handle_set_foods(args: dict, session: Session) -> dict:
     for change in args.get("changes", []):
         op = change["operation"]
         set_fields = _normalize_food_fields(change.get("set", {}))
-        match_spec = change.get("match")
+        match_spec = coerce_match_spec(change, op=op)
 
         if op == "create":
             name = set_fields.get("name")
@@ -503,7 +504,7 @@ def handle_set_recipes(args: dict, session: Session) -> dict:
     for change in args.get("changes", []):
         op = change["operation"]
         set_fields = change.get("set", {})
-        match_spec = change.get("match")
+        match_spec = coerce_match_spec(change, op=op)
         relations = change.get("relations", {})
 
         if op == "create":
@@ -925,7 +926,7 @@ def handle_set_meal_logs(args: dict, session: Session) -> dict:
     for change in args.get("changes", []):
         op = change["operation"]
         set_fields = change.get("set", {})
-        match_spec = change.get("match")
+        match_spec = coerce_match_spec(change, op=op)
         relations = change.get("relations", {})
 
         if op == "create":
@@ -1135,7 +1136,7 @@ def handle_set_weight_logs(args: dict, session: Session) -> dict:
             created += 1
 
         elif op == "delete":
-            match_spec = change.get("match")
+            match_spec = coerce_match_spec(change, op=op)
             from .shared import resolve_match
             recs, _, err = resolve_match(session, WeightLog, match_spec)
             if not recs:
@@ -1283,7 +1284,7 @@ def handle_set_macro_targets(args: dict, session: Session) -> dict:
     for change in args.get("changes", []):
         op = change["operation"]
         set_fields = change.get("set", {})
-        match_spec = change.get("match")
+        match_spec = coerce_match_spec(change, op=op)
 
         day_raw = set_fields.get("day") or (
             match_spec.get("day", {}).get("eq") if match_spec else None

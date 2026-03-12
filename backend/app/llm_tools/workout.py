@@ -33,6 +33,7 @@ from .shared import (
     apply_filters,
     apply_fuzzy_post_filter,
     apply_sort,
+    coerce_match_spec,
     error_response,
     fuzzy_score,
     getter_response,
@@ -711,12 +712,7 @@ def handle_set_exercises(args: dict, session: Session) -> dict:
     for change in args.get("changes", []):
         op = change["operation"]
         set_fields = change.get("set", {})
-        # Accept "where" as alias for "match", plus top-level id/name
-        match_spec = change.get("match") or change.get("where")
-        if not match_spec and "id" in change and change["id"] is not None:
-            match_spec = {"id": {"eq": change["id"]}}
-        if not match_spec and "name" in change and op != "create":
-            match_spec = {"name": {"fuzzy": change["name"]}}
+        match_spec = coerce_match_spec(change, op=op)
         relations = change.get("relations", {})
 
         if op == "create":
@@ -1146,7 +1142,7 @@ def handle_set_tissues(args: dict, session: Session) -> dict:
             created += 1
 
         elif op in ("update", "delete"):
-            match_spec = change.get("match")
+            match_spec = coerce_match_spec(change, op=op)
             if not match_spec:
                 return error_response(
                     "tissues", "match required for update/delete"
@@ -1716,9 +1712,7 @@ def handle_set_workout_sessions(
     for change in args.get("changes", []):
         op = change["operation"]
         set_fields = change.get("set", {})
-        match_spec = change.get("match")
-        if not match_spec and "id" in change:
-            match_spec = {"id": {"eq": change["id"]}}
+        match_spec = coerce_match_spec(change, op=op)
         relations = change.get("relations", {})
 
         if op == "create":
@@ -1995,7 +1989,7 @@ def handle_set_routine_exercises(
     for change in args.get("changes", []):
         op = change["operation"]
         set_fields = change.get("set", {})
-        match_spec = change.get("match")
+        match_spec = coerce_match_spec(change, op=op)
 
         if op == "create":
             ex_name = set_fields.get("exercise_name", "")
@@ -2226,7 +2220,7 @@ def handle_set_workouts(args: dict, session: Session) -> dict:
     for change in args.get("changes", []):
         op = change["operation"]
         set_fields = change.get("set", {})
-        match_spec = change.get("match")
+        match_spec = coerce_match_spec(change, op=op)
 
         if op in ("create", "upsert"):
             sync_key = set_fields.get("sync_key")

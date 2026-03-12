@@ -206,6 +206,31 @@ def test_import_food_label_handles_llm_validation_error(client):
     assert resp.json()["detail"] == "Could not parse nutrition label"
 
 
+def test_set_foods_bare_id_update(session):
+    """LLM may send 'id': N directly on the change instead of inside 'match'."""
+    from app.llm_tools.nutrition import handle_set_foods
+    from app.models import Food
+
+    food = Food(name="Plain Food", serving_size_grams=100,
+                calories_per_serving=100, fat_per_serving=0,
+                carbs_per_serving=0, protein_per_serving=10)
+    session.add(food)
+    session.commit()
+    session.refresh(food)
+
+    result = handle_set_foods({
+        "changes": [{
+            "operation": "update",
+            "id": food.id,          # bare id, no nested match
+            "set": {"calories_per_serving": 200},
+        }],
+    }, session)
+
+    assert result.get("error") is None
+    assert result["changed_count"] == 1
+    assert result["matches"][0]["calories_per_serving"] == 200
+
+
 def test_set_foods_short_macro_aliases(session):
     """LLM may send 'calories' instead of 'calories_per_serving'; both must work."""
     from app.llm_tools.nutrition import handle_set_foods

@@ -165,6 +165,27 @@ def apply_sort(stmt, model_class, sort_spec: list[dict] | None):
 # ── Resolve a match spec to records ──────────────────────────────────
 
 
+def coerce_match_spec(change: dict, *, op: str = "") -> "dict | None":
+    """Return the match spec from a setter change dict.
+
+    Normalises several forms the LLM may use instead of the canonical
+    ``"match": {...}`` sub-object:
+
+    * ``"where": {...}``  — accepted as an alias for ``"match"``
+    * ``"id": N``         — promoted to ``{"id": {"eq": N}}``
+    * ``"name": "..."``   — promoted to ``{"name": {"fuzzy": ...}}``
+                            (only for non-create operations)
+    """
+    match_spec = change.get("match") or change.get("where")
+    if match_spec is not None:
+        return match_spec
+    if change.get("id") is not None:
+        return {"id": {"eq": change["id"]}}
+    if change.get("name") is not None and op != "create":
+        return {"name": {"fuzzy": change["name"]}}
+    return None
+
+
 def resolve_match(
     session: Session,
     model_class,
