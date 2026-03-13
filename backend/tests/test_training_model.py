@@ -119,9 +119,16 @@ def test_training_model_summary_and_history_include_exclusion_windows(client, se
 
     assert payload["overview"]["tracked_tissues"] >= 2
     assert payload["overview"]["excluded_windows"][0]["start_date"] == "2025-12-16"
+    assert payload["exercises"] == []
     tendon_row = next(row for row in payload["tissues"] if row["tissue"]["id"] == tendon.id)
     assert tendon_row["current_capacity"] > 0
     assert tendon_row["learned_recovery_days"] > 0
+
+    summary_with_exercises = client.get(
+        "/api/training-model/summary?as_of=2026-01-12&include_exercises=true"
+    )
+    assert summary_with_exercises.status_code == 200
+    assert summary_with_exercises.json()["exercises"]
 
     history = client.get(f"/api/training-model/tissues/{quad.id}/history?days=30&as_of=2026-01-12")
     assert history.status_code == 200

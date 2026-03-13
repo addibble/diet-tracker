@@ -701,8 +701,13 @@ export const getExerciseHistory = (id: number, limit?: number) =>
 export const getTissues = () =>
   request<WkTissue[]>('/tissues');
 
-export const getTrainingModelSummary = (asOf?: string) =>
-  request<TrainingModelSummary>(`/training-model/summary${asOf ? `?as_of=${asOf}` : ''}`);
+export const getTrainingModelSummary = (asOf?: string, includeExercises = false) => {
+  const query = new URLSearchParams();
+  if (asOf) query.set('as_of', asOf);
+  if (includeExercises) query.set('include_exercises', 'true');
+  const suffix = query.size ? `?${query.toString()}` : '';
+  return request<TrainingModelSummary>(`/training-model/summary${suffix}`);
+};
 
 export const getTrainingModelExercises = (
   params?: {

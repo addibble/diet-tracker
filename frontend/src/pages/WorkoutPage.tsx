@@ -534,8 +534,14 @@ function ExerciseRiskBoard({
     ...exercises.filter((item) => activeRoutineIds.has(item.id)),
     ...exercises.filter((item) => !activeRoutineIds.has(item.id)),
   ]
-  const avoid = routineFirst.filter((item) => item.recommendation === 'avoid').slice(0, 6)
-  const caution = routineFirst.filter((item) => item.recommendation === 'caution').slice(0, 6)
+  const avoid = [...routineFirst]
+    .filter((item) => item.recommendation === 'avoid')
+    .sort((a, b) => b.weighted_risk_7d - a.weighted_risk_7d)
+    .slice(0, 6)
+  const caution = [...routineFirst]
+    .filter((item) => item.recommendation === 'caution')
+    .sort((a, b) => b.weighted_risk_7d - a.weighted_risk_7d)
+    .slice(0, 6)
   const good = [...routineFirst]
     .filter((item) => item.recommendation === 'good')
     .sort((a, b) => b.suitability_score - a.suitability_score)
@@ -614,16 +620,6 @@ function ExerciseColumn({
                   </span>
                 ))}
               </div>
-            )}
-            {item.blocked_tissues.length > 0 && (
-              <p className="mt-2 text-[11px] text-gray-600">
-                Avoid for: {item.blocked_tissues.join(', ')}
-              </p>
-            )}
-            {item.favored_tissues.length > 0 && (
-              <p className="mt-1 text-[11px] text-gray-500">
-                Good for: {item.favored_tissues.join(', ')}
-              </p>
             )}
           </div>
         ))}
@@ -977,7 +973,11 @@ export default function WorkoutPage() {
         setRoutine(rt)
         setSessions(s)
         setExercises(ex)
-        const ranked = await getTrainingModelExercises({ sortBy: 'risk_7d', direction: 'desc', limit: 60 })
+        const ranked = await getTrainingModelExercises({
+          sortBy: 'suitability',
+          direction: 'desc',
+          limit: 200,
+        })
         setTrainingExercises(ranked)
       } catch {
         // reset

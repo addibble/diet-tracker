@@ -37,10 +37,11 @@ class RecoveryLogCreate(BaseModel):
 @router.get("/summary")
 def get_summary(
     as_of: datetime.date | None = Query(default=None),
+    include_exercises: bool = Query(default=False),
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    return build_training_model_summary(session, as_of=as_of)
+    return build_training_model_summary(session, as_of=as_of, include_exercises=include_exercises)
 
 
 @router.get("/exercises")

@@ -62,6 +62,7 @@ def build_training_model_summary(
     session: Session,
     *,
     as_of: date | None = None,
+    include_exercises: bool = False,
 ) -> dict:
     context = _build_context(session, as_of=as_of)
     tissues = []
@@ -94,7 +95,15 @@ def build_training_model_summary(
         )
     tissues.sort(key=lambda item: (item["risk_7d"], item["risk_14d"]), reverse=True)
 
-    exercise_insights = build_exercise_risk_ranking(session, as_of=as_of)
+    exercise_insights = (
+        build_exercise_risk_ranking(
+            session,
+            as_of=as_of,
+            context=context,
+        )
+        if include_exercises
+        else []
+    )
 
     at_risk = [t for t in tissues if t["risk_7d"] >= 60]
     recovering = [t for t in tissues if t["normalized_load"] < 0.8 and t["recovery_estimate"] >= 0.75]
@@ -121,8 +130,9 @@ def build_exercise_risk_ranking(
     sort_by: str = "risk_7d",
     descending: bool = True,
     limit: int | None = None,
+    context: dict | None = None,
 ) -> list[dict]:
-    context = _build_context(session, as_of=as_of)
+    context = context or _build_context(session, as_of=as_of)
     tissue_current = {
         tissue_id: states[-1]
         for tissue_id, states in context["states_by_tissue"].items()
@@ -137,6 +147,7 @@ def build_exercise_risk_ranking(
         normalized_numerator = 0.0
         recovering_bonus = 0.0
         max_tissue_risk = 0
+        significant_max_tissue_risk = 0
         blocked_tissues: list[str] = []
         favored_tissues: list[str] = []
         for mapping in context["exercise_mappings"].get(exercise.id, []):
@@ -147,12 +158,15 @@ def build_exercise_risk_ranking(
             tissue_risk_7d = state.risk_7d if state else 0
             tissue_risk_14d = state.risk_14d if state else 0
             tissue_norm = state.normalized_load if state else 0.0
+            is_significant_mapping = routing >= 0.5
             if state and state.recovery_state >= 0.75 and tissue_risk_14d < 45:
                 recovering_bonus += routing
                 favored_tissues.append(tissue.display_name)
-            if tissue_risk_7d >= 60:
+            if is_significant_mapping and tissue_risk_7d >= 60:
                 blocked_tissues.append(tissue.display_name)
             max_tissue_risk = max(max_tissue_risk, tissue_risk_7d)
+            if is_significant_mapping:
+                significant_max_tissue_risk = max(significant_max_tissue_risk, tissue_risk_7d)
             risk_numerator += routing * tissue_risk_7d
             risk14_numerator += routing * tissue_risk_14d
             normalized_numerator += routing * tissue_norm
@@ -182,11 +196,15 @@ def build_exercise_risk_ranking(
             0.0,
             100.0,
         )
-        recommendation = _recommend_exercise(weighted_risk_7d, max_tissue_risk, blocked_tissues)
+        recommendation = _recommend_exercise(
+            weighted_risk_7d,
+            significant_max_tissue_risk,
+            blocked_tissues,
+        )
         recommendation_reason, recommendation_details = _build_recommendation_reason(
             recommendation=recommendation,
             weighted_risk_7d=weighted_risk_7d,
-            max_tissue_risk=max_tissue_risk,
+            max_tissue_risk=significant_max_tissue_risk,
             blocked_tissues=blocked_tissues,
             favored_tissues=favored_tissues,
             weighted_normalized_load=weighted_normalized_load,
@@ -979,9 +997,7 @@ def _build_recommendation_reason(
     elif max_tissue_risk >= 55:
         details.append(f"some tissues are elevated ({max_tissue_risk}% max)")
 
-    if blocked_tissues:
-        details.append(f"loads {', '.join(blocked_tissues[:3])}")
-    elif weighted_normalized_load >= 1.0:
+    if not blocked_tissues and weighted_normalized_load >= 1.0:
         details.append(f"normalized demand {weighted_normalized_load:.2f}x capacity")
 
     if favored_tissues:
