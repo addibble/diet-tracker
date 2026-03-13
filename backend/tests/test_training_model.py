@@ -11,6 +11,7 @@ from app.models import (
     WorkoutSession,
     WorkoutSet,
 )
+from app.seed_tissues import seed_exercise_tissue_model_defaults
 
 
 def _seed_leg_press_fixture(session):
@@ -239,3 +240,34 @@ def test_training_model_exercise_risk_ranking_query(client, session):
     )
     assert avoid_only.status_code == 200
     assert all(row["recommendation"] == "avoid" for row in avoid_only.json())
+
+
+def test_seed_exercise_tissue_model_defaults_repairs_legacy_defaulted_factors(session):
+    muscle = Tissue(name="test_secondary_muscle", display_name="Test Secondary Muscle", type="muscle")
+    session.add(muscle)
+    session.commit()
+
+    exercise = Exercise(name="Legacy Factor Exercise")
+    session.add(exercise)
+    session.commit()
+
+    mapping = ExerciseTissue(
+        exercise_id=exercise.id,
+        tissue_id=muscle.id,
+        role="secondary",
+        loading_factor=0.7,
+        routing_factor=1.0,
+        fatigue_factor=1.0,
+        joint_strain_factor=1.0,
+        tendon_strain_factor=1.0,
+    )
+    session.add(mapping)
+    session.commit()
+
+    seed_exercise_tissue_model_defaults(session)
+    session.refresh(mapping)
+
+    assert mapping.routing_factor == 0.455
+    assert mapping.fatigue_factor == 0.4095
+    assert mapping.joint_strain_factor == 0.455
+    assert mapping.tendon_strain_factor == 0.455

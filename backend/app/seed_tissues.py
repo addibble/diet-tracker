@@ -229,24 +229,21 @@ def seed_exercise_tissue_model_defaults(session: Session) -> None:
     """Backfill newer exercise-tissue factors from legacy loading factors."""
     mappings = session.exec(select(ExerciseTissue)).all()
     for mapping in mappings:
-        base = mapping.loading_factor or 1.0
-        role_scale = {"primary": 1.0, "secondary": 0.65, "stabilizer": 0.35}.get(
-            mapping.role,
-            0.5,
-        )
-        default = max(0.05, round(base * role_scale, 4))
-        if not mapping.routing_factor:
-            mapping.routing_factor = default
-        if not mapping.fatigue_factor:
-            mapping.fatigue_factor = max(0.05, round(default * 0.9, 4))
-        if not mapping.joint_strain_factor:
-            mapping.joint_strain_factor = (
-                max(0.05, round(default * 1.25, 4)) if _is_joint_tissue(session, mapping.tissue_id) else default
-            )
-        if not mapping.tendon_strain_factor:
-            mapping.tendon_strain_factor = (
-                max(0.05, round(default * 1.15, 4)) if _is_tendon_tissue(session, mapping.tissue_id) else default
-            )
+        defaults = _exercise_tissue_factor_defaults(session, mapping)
+        if _should_backfill_model_factors(session, mapping):
+            mapping.routing_factor = defaults["routing_factor"]
+            mapping.fatigue_factor = defaults["fatigue_factor"]
+            mapping.joint_strain_factor = defaults["joint_strain_factor"]
+            mapping.tendon_strain_factor = defaults["tendon_strain_factor"]
+        else:
+            if not mapping.routing_factor:
+                mapping.routing_factor = defaults["routing_factor"]
+            if not mapping.fatigue_factor:
+                mapping.fatigue_factor = defaults["fatigue_factor"]
+            if not mapping.joint_strain_factor:
+                mapping.joint_strain_factor = defaults["joint_strain_factor"]
+            if not mapping.tendon_strain_factor:
+                mapping.tendon_strain_factor = defaults["tendon_strain_factor"]
         session.add(mapping)
     session.commit()
 
@@ -320,3 +317,36 @@ def _is_tendon_tissue(session: Session, tissue_id: int) -> bool:
 def _is_joint_tissue(session: Session, tissue_id: int) -> bool:
     tissue = session.get(Tissue, tissue_id)
     return bool(tissue and tissue.type == "joint")
+
+
+def _exercise_tissue_factor_defaults(session: Session, mapping: ExerciseTissue) -> dict[str, float]:
+    base = mapping.loading_factor or 1.0
+    role_scale = {"primary": 1.0, "secondary": 0.65, "stabilizer": 0.35}.get(
+        mapping.role,
+        0.5,
+    )
+    routing = max(0.05, round(base * role_scale, 4))
+    return {
+        "routing_factor": routing,
+        "fatigue_factor": max(0.05, round(routing * 0.9, 4)),
+        "joint_strain_factor": (
+            max(0.05, round(routing * 1.25, 4)) if _is_joint_tissue(session, mapping.tissue_id) else routing
+        ),
+        "tendon_strain_factor": (
+            max(0.05, round(routing * 1.15, 4)) if _is_tendon_tissue(session, mapping.tissue_id) else routing
+        ),
+    }
+
+
+def _should_backfill_model_factors(session: Session, mapping: ExerciseTissue) -> bool:
+    if (
+        mapping.routing_factor == 1.0
+        and mapping.fatigue_factor == 1.0
+        and mapping.joint_strain_factor == 1.0
+        and mapping.tendon_strain_factor == 1.0
+    ):
+        if mapping.loading_factor != 1.0 or mapping.role != "primary":
+            return True
+        if _is_joint_tissue(session, mapping.tissue_id) or _is_tendon_tissue(session, mapping.tissue_id):
+            return True
+    return False

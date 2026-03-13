@@ -154,7 +154,8 @@ def build_exercise_risk_ranking(
             tissue = context["tissue_by_id"][mapping.tissue_id]
             state = tissue_current.get(mapping.tissue_id)
             stats = context["exercise_tissue_stats"].get((exercise.id, mapping.tissue_id), {})
-            routing = mapping.routing_factor or mapping.loading_factor or 0.0
+            factors = _mapping_factors(mapping, tissue.type)
+            routing = factors["routing"]
             tissue_risk_7d = state.risk_7d if state else 0
             tissue_risk_14d = state.risk_14d if state else 0
             tissue_norm = state.normalized_load if state else 0.0
@@ -314,6 +315,7 @@ def _build_context(session: Session, *, as_of: date | None) -> dict:
         session,
         exercise_by_id,
         exercise_mappings,
+        tissue_by_id,
         as_of=as_of,
         excluded_days=excluded_days,
     )
@@ -381,6 +383,7 @@ def _collect_daily_exposure(
     session: Session,
     exercise_by_id: dict[int, Exercise],
     exercise_mappings: dict[int, list[ExerciseTissue]],
+    tissue_by_id: dict[int, Tissue],
     *,
     as_of: date | None,
     excluded_days: set[date],
@@ -459,19 +462,21 @@ def _collect_daily_exposure(
                 }
             )
             for mapping in exercise_mappings.get(workout_set.exercise_id, []):
+                tissue = tissue_by_id.get(mapping.tissue_id)
+                factors = _mapping_factors(mapping, tissue.type if tissue else None)
                 record = exposures_by_tissue[mapping.tissue_id].setdefault(
                     workout_session.date,
                     ExposureRecord(date=workout_session.date),
                 )
-                routing_factor = mapping.routing_factor or mapping.loading_factor or 1.0
+                routing_factor = factors["routing"]
                 record.raw_load += effective_load * routing_factor
-                record.fatigue_load += effective_load * (mapping.fatigue_factor or routing_factor)
+                record.fatigue_load += effective_load * factors["fatigue"]
                 if exercise_by_id[workout_set.exercise_id].load_input_mode == "timed":
                     record.strain_load += effective_load * 0.5
                 else:
                     record.strain_load += effective_load * max(
-                        mapping.joint_strain_factor or 0.0,
-                        mapping.tendon_strain_factor or 0.0,
+                        factors["joint_strain"],
+                        factors["tendon_strain"],
                     )
                 record.failures += failure_flag
                 record.exercise_loads[workout_set.exercise_id] = (
@@ -499,11 +504,15 @@ def _compute_tissue_states(
     current_capacity = baseline_capacity
     acute_fatigue = 0.0
     chronic_load = 0.0
-    rolling_raw: dict[date, float] = {day: exposure_by_date.get(day, ExposureRecord(day)).raw_load for day in all_dates}
+    raw_series = [exposure_by_date.get(day, ExposureRecord(day)).raw_load for day in all_dates]
+    prefix_raw = _build_prefix_sums(raw_series)
+    recent7_series = [_window_average_from_prefix(prefix_raw, index, 7) for index in range(len(all_dates))]
+    recent28_series = [_window_average_from_prefix(prefix_raw, index, 28) for index in range(len(all_dates))]
     event_dates = {item[0]: max(item[1], 1) for item in condition_events}
     event_coeffs_7 = _learn_event_coefficients(
         all_dates,
-        rolling_raw,
+        recent7_series,
+        recent28_series,
         baseline_capacity,
         collapse_dates,
         event_dates,
@@ -511,14 +520,16 @@ def _compute_tissue_states(
     )
     event_coeffs_14 = _learn_event_coefficients(
         all_dates,
-        rolling_raw,
+        recent7_series,
+        recent28_series,
         baseline_capacity,
         collapse_dates,
         event_dates,
         horizon_days=14,
     )
     states: list[TissueState] = []
-    for current_date in all_dates:
+    prior_collapse_loads: list[float] = []
+    for index, current_date in enumerate(all_dates):
         record = exposure_by_date.get(current_date, ExposureRecord(current_date))
         raw_load = record.raw_load
         normalized_load = raw_load / max(current_capacity, 1.0)
@@ -534,17 +545,14 @@ def _compute_tissue_states(
                 normalized_load,
                 recovery_state,
             )
-        recent_7 = _window_average(rolling_raw, all_dates, current_date, 7)
-        recent_28 = _window_average(rolling_raw, all_dates, current_date, 28)
+        recent_7 = recent7_series[index]
+        recent_28 = recent28_series[index]
         ramp_ratio = recent_7 / max(recent_28 / 4.0, baseline_capacity * 0.15, 1.0)
         condition_severity = event_dates.get(current_date, 0)
         prior_event_signal = _prior_event_similarity(
             recent_7 / max(baseline_capacity, 1.0),
             baseline_capacity,
-            rolling_raw,
-            collapse_dates,
-            all_dates,
-            current_date,
+            prior_collapse_loads,
         )
         risk_7d, contributors_7d = _score_risk(
             normalized_load=recent_7 / max(current_capacity, 1.0),
@@ -581,6 +589,8 @@ def _compute_tissue_states(
                 contributors=_merge_contributors(contributors_7d, contributors_14d),
             )
         )
+        if current_date in collapse_dates:
+            prior_collapse_loads.append(recent_7)
     return states
 
 
@@ -688,13 +698,14 @@ def _learn_recovery_days(
     excluded_days: set[date],
     seed: float,
 ) -> float:
-    exposures = {day: exposure_by_date.get(day, ExposureRecord(day)).raw_load for day in all_dates}
+    exposures = [exposure_by_date.get(day, ExposureRecord(day)).raw_load for day in all_dates]
+    prefix = _build_prefix_sums(exposures)
     rebound_days: list[int] = []
     for index, current_date in enumerate(all_dates):
         if current_date in excluded_days or index < 7 or index + 21 >= len(all_dates):
             continue
-        prev_avg = _window_average(exposures, all_dates, current_date - timedelta(days=1), 7)
-        next_avg = _window_average(exposures, all_dates, current_date + timedelta(days=7), 7)
+        prev_avg = _window_average_from_prefix(prefix, index - 1, 7)
+        next_avg = _window_average_from_prefix(prefix, index + 7, 7)
         if prev_avg <= 0:
             continue
         if not (prev_avg * 0.35 <= next_avg <= prev_avg * 0.8):
@@ -703,7 +714,7 @@ def _learn_recovery_days(
             rebound_date = all_dates[rebound_index]
             if rebound_date in excluded_days:
                 continue
-            rebound_avg = _window_average(exposures, all_dates, rebound_date, 5)
+            rebound_avg = _window_average_from_prefix(prefix, rebound_index, 5)
             if rebound_avg >= prev_avg * 0.8:
                 rebound_days.append((rebound_date - current_date).days)
                 break
@@ -722,25 +733,16 @@ def _detect_collapse_dates(
     threshold: float,
 ) -> set[date]:
     del tissue_id
-    exposures = {day: exposure_by_date.get(day, ExposureRecord(day)).raw_load for day in all_dates}
+    exposures = [exposure_by_date.get(day, ExposureRecord(day)).raw_load for day in all_dates]
+    prefix = _build_prefix_sums(exposures)
     collapse_dates: set[date] = set()
     for index, current_date in enumerate(all_dates):
         history_days = min(7, index)
         future_days = min(7, len(all_dates) - index - 1)
         if current_date in excluded_days or history_days < 4 or future_days < 3:
             continue
-        baseline = _window_average(
-            exposures,
-            all_dates,
-            current_date - timedelta(days=1),
-            history_days,
-        )
-        future = _window_average(
-            exposures,
-            all_dates,
-            current_date + timedelta(days=future_days),
-            future_days,
-        )
+        baseline = _window_average_from_prefix(prefix, index - 1, history_days)
+        future = _window_average_from_prefix(prefix, index + future_days, future_days)
         if baseline <= 0:
             continue
         if future <= baseline * max(0.05, 1.0 - threshold):
@@ -750,7 +752,8 @@ def _detect_collapse_dates(
 
 def _learn_event_coefficients(
     all_dates: list[date],
-    raw_exposures: dict[date, float],
+    recent7_series: list[float],
+    recent28_series: list[float],
     baseline_capacity: float,
     collapse_dates: set[date],
     event_dates: dict[date, int],
@@ -760,15 +763,15 @@ def _learn_event_coefficients(
     event_samples = defaultdict(list)
     nonevent_samples = defaultdict(list)
     collapse_or_notes = set(collapse_dates) | set(event_dates.keys())
-    for current_date in all_dates:
+    prior_event_signal = 0.0
+    for index, current_date in enumerate(all_dates):
         features = _feature_snapshot(
-            current_date,
-            raw_exposures,
-            all_dates,
             baseline_capacity,
+            recent_7=recent7_series[index],
+            recent_28=recent28_series[index],
             failures=0,
             condition_severity=event_dates.get(current_date, 0),
-            prior_event_signal=0.0,
+            prior_event_signal=prior_event_signal,
         )
         event = any(
             current_date < candidate <= current_date + timedelta(days=horizon_days)
@@ -777,6 +780,10 @@ def _learn_event_coefficients(
         target = event_samples if event else nonevent_samples
         for name, value in features.items():
             target[name].append(value)
+        if current_date in collapse_or_notes:
+            prior_event_signal = max(prior_event_signal, 0.35)
+        else:
+            prior_event_signal *= 0.98
     coefficients: dict[str, float] = {}
     for name in ("normalized_load", "acute_ratio", "ramp_ratio", "condition", "prior"):
         event_mean = _mean(event_samples[name]) if event_samples[name] else 1.0
@@ -786,17 +793,14 @@ def _learn_event_coefficients(
 
 
 def _feature_snapshot(
-    current_date: date,
-    raw_exposures: dict[date, float],
-    all_dates: list[date],
     baseline_capacity: float,
     *,
+    recent_7: float,
+    recent_28: float,
     failures: int,
     condition_severity: int,
     prior_event_signal: float,
 ) -> dict[str, float]:
-    recent_7 = _window_average(raw_exposures, all_dates, current_date, 7)
-    recent_28 = _window_average(raw_exposures, all_dates, current_date, 28)
     acute_ratio = recent_7 / max(baseline_capacity, 1.0)
     ramp_ratio = recent_7 / max(recent_28 / 4.0, baseline_capacity * 0.15, 1.0)
     return {
@@ -859,20 +863,12 @@ def _score_risk(
 def _prior_event_similarity(
     current_normalized_load: float,
     baseline_capacity: float,
-    raw_exposures: dict[date, float],
-    collapse_dates: set[date],
-    all_dates: list[date],
-    current_date: date,
+    prior_collapse_loads: list[float],
 ) -> float:
-    del baseline_capacity
-    prior_loads = []
-    for collapse_date in collapse_dates:
-        if collapse_date >= current_date:
-            continue
-        prior_loads.append(_window_average(raw_exposures, all_dates, collapse_date, 7))
-    if not prior_loads:
+    if not prior_collapse_loads:
         return 0.0
-    closest = min(abs(current_normalized_load - (load / max(_mean(prior_loads), 1.0))) for load in prior_loads)
+    target = _mean(prior_collapse_loads) / max(baseline_capacity, 1.0)
+    closest = abs(current_normalized_load - target)
     return round(_clamp(1.0 - closest, 0.0, 1.0), 3)
 
 
@@ -899,6 +895,66 @@ def _window_average(
     if not values:
         return 0.0
     return _mean(values)
+
+
+def _build_prefix_sums(values: list[float]) -> list[float]:
+    prefix = [0.0]
+    running = 0.0
+    for value in values:
+        running += value
+        prefix.append(running)
+    return prefix
+
+
+def _window_average_from_prefix(prefix: list[float], end_index: int, window_days: int) -> float:
+    if end_index < 0:
+        return 0.0
+    last = min(end_index + 1, len(prefix) - 1)
+    first = max(0, last - window_days)
+    count = last - first
+    if count <= 0:
+        return 0.0
+    return (prefix[last] - prefix[first]) / count
+
+
+def _mapping_factors(mapping: ExerciseTissue, tissue_type: str | None) -> dict[str, float]:
+    defaults = _mapping_default_factors(mapping, tissue_type)
+    if _looks_like_legacy_defaulted_mapping(mapping, tissue_type):
+        return defaults
+    return {
+        "routing": mapping.routing_factor or defaults["routing"],
+        "fatigue": mapping.fatigue_factor or defaults["fatigue"],
+        "joint_strain": mapping.joint_strain_factor or defaults["joint_strain"],
+        "tendon_strain": mapping.tendon_strain_factor or defaults["tendon_strain"],
+    }
+
+
+def _mapping_default_factors(mapping: ExerciseTissue, tissue_type: str | None) -> dict[str, float]:
+    base = mapping.loading_factor or 1.0
+    role_scale = {"primary": 1.0, "secondary": 0.65, "stabilizer": 0.35}.get(mapping.role, 0.5)
+    routing = max(0.05, round(base * role_scale, 4))
+    fatigue = max(0.05, round(routing * 0.9, 4))
+    joint_strain = max(0.05, round(routing * 1.25, 4)) if tissue_type == "joint" else routing
+    tendon_strain = max(0.05, round(routing * 1.15, 4)) if tissue_type == "tendon" else routing
+    return {
+        "routing": routing,
+        "fatigue": fatigue,
+        "joint_strain": joint_strain,
+        "tendon_strain": tendon_strain,
+    }
+
+
+def _looks_like_legacy_defaulted_mapping(mapping: ExerciseTissue, tissue_type: str | None) -> bool:
+    if not (
+        mapping.routing_factor == 1.0
+        and mapping.fatigue_factor == 1.0
+        and mapping.joint_strain_factor == 1.0
+        and mapping.tendon_strain_factor == 1.0
+    ):
+        return False
+    if mapping.loading_factor != 1.0 or mapping.role != "primary":
+        return True
+    return tissue_type in {"joint", "tendon"}
 
 
 def _build_exercise_stats(

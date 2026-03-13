@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import {
-  getTrainingModelExercises,
   getTrainingModelSummary,
   getRoutine,
   getWorkoutSessions,
@@ -964,7 +963,7 @@ export default function WorkoutPage() {
       setLoading(true)
       try {
         const [tm, rt, s, ex] = await Promise.all([
-          getTrainingModelSummary(),
+          getTrainingModelSummary(undefined, true),
           getRoutine(),
           getWorkoutSessions(undefined, undefined, 10),
           getExercises(),
@@ -973,11 +972,7 @@ export default function WorkoutPage() {
         setRoutine(rt)
         setSessions(s)
         setExercises(ex)
-        const ranked = await getTrainingModelExercises({
-          sortBy: 'suitability',
-          direction: 'desc',
-          limit: 200,
-        })
+        const ranked = [...tm.exercises].sort((a, b) => b.suitability_score - a.suitability_score)
         setTrainingExercises(ranked)
       } catch {
         // reset

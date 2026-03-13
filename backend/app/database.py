@@ -10,6 +10,8 @@ engine = create_engine(settings.database_url, echo=False)
 
 
 def create_db_and_tables():
+    import app.models  # noqa: F401
+
     # Ensure the directory for the SQLite file exists
     if settings.database_url.startswith("sqlite"):
         db_path = settings.database_url.split("///")[-1]
