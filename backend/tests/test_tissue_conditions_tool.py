@@ -3,8 +3,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.llm_tools.workout import handle_set_tissue_conditions
-from app.models import Tissue
+from app.llm_tools.workout import handle_get_tissue_conditions, handle_set_tissue_conditions
+from app.models import Tissue, TissueCondition
 
 
 @pytest.fixture()
@@ -148,3 +148,112 @@ def test_set_tissue_conditions_invalid_created_at_returns_error(tissue, session)
 
     assert result.get("error") is not None
     assert "created_at" in result["error"].lower() or "invalid" in result["error"].lower()
+
+
+def _create_condition(tissue, session, **kwargs):
+    """Helper: create a tissue condition record and return its id."""
+    result = handle_set_tissue_conditions(
+        {
+            "changes": [
+                {
+                    "operation": "create",
+                    "set": {
+                        "tissue_name": tissue.display_name,
+                        "status": kwargs.get("status", "injured"),
+                        "severity": kwargs.get("severity", 2),
+                        **{k: v for k, v in kwargs.items() if k not in ("status", "severity")},
+                    },
+                }
+            ]
+        },
+        session,
+    )
+    return result["matches"][0]["id"]
+
+
+def test_update_tissue_condition_status(tissue, session):
+    record_id = _create_condition(tissue, session, status="injured", severity=3)
+
+    result = handle_set_tissue_conditions(
+        {
+            "changes": [
+                {
+                    "operation": "update",
+                    "set": {"id": record_id, "status": "rehabbing", "severity": 2},
+                }
+            ]
+        },
+        session,
+    )
+
+    assert result.get("error") is None
+    assert result["changed_count"] == 1
+    assert result["matches"][0]["status"] == "rehabbing"
+    assert result["matches"][0]["severity"] == 2
+
+
+def test_update_tissue_condition_created_at(tissue, session):
+    record_id = _create_condition(tissue, session)
+
+    result = handle_set_tissue_conditions(
+        {
+            "changes": [
+                {
+                    "operation": "update",
+                    "set": {"id": record_id, "created_at": "2026-02-05"},
+                }
+            ]
+        },
+        session,
+    )
+
+    assert result.get("error") is None
+    updated_at = datetime.fromisoformat(result["matches"][0]["created_at"])
+    assert updated_at.year == 2026
+    assert updated_at.month == 2
+    assert updated_at.day == 5
+
+
+def test_update_tissue_condition_missing_id_returns_error(tissue, session):
+    result = handle_set_tissue_conditions(
+        {
+            "changes": [
+                {
+                    "operation": "update",
+                    "set": {"status": "rehabbing", "severity": 1},
+                }
+            ]
+        },
+        session,
+    )
+
+    assert result.get("error") is not None
+
+
+def test_update_tissue_condition_nonexistent_id_returns_error(tissue, session):
+    result = handle_set_tissue_conditions(
+        {
+            "changes": [
+                {
+                    "operation": "update",
+                    "set": {"id": 99999, "status": "rehabbing"},
+                }
+            ]
+        },
+        session,
+    )
+
+    assert result.get("error") is not None
+
+
+def test_get_tissue_conditions_includes_id(tissue, session):
+    _create_condition(tissue, session)
+
+    result = handle_get_tissue_conditions(
+        {"filters": {"tissue_name": tissue.display_name}, "include": ["history"]},
+        session,
+    )
+
+    assert result["count"] >= 1
+    assert "id" in result["matches"][0]
+    assert isinstance(result["matches"][0]["id"], int)

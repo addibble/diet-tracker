@@ -1272,11 +1272,10 @@ SET_TISSUE_CONDITIONS_DEF = {
     "function": {
         "name": "set_tissue_conditions",
         "description": (
-            "Log a tissue condition. Append-only: always creates "
-            "a new record. Use when the user reports pain, "
-            "tenderness, injury, or recovery status. "
-            "To backdate a record, pass created_at (ISO 8601 date "
-            "or datetime, e.g. '2026-02-05')."
+            "Log or correct a tissue condition. Use operation='create' "
+            "to append a new record (pass created_at to backdate, "
+            "e.g. '2026-02-05'). Use operation='update' with set.id "
+            "to correct an existing record's fields in-place."
         ),
         "parameters": {
             "type": "object",
@@ -1290,7 +1289,12 @@ SET_TISSUE_CONDITIONS_DEF = {
                         "properties": {
                             "operation": {
                                 "type": "string",
-                                "enum": ["create"],
+                                "enum": ["create", "update"],
+                                "description": (
+                                    "'create' appends a new record. "
+                                    "'update' corrects an existing "
+                                    "record in-place (requires set.id)."
+                                ),
                             },
                             "set": {
                                 "type": "object",
@@ -1300,6 +1304,13 @@ SET_TISSUE_CONDITIONS_DEF = {
                                     "severity",
                                 ],
                                 "properties": {
+                                    "id": {
+                                        "type": "integer",
+                                        "description": (
+                                            "Record id — required for "
+                                            "operation='update'."
+                                        ),
+                                    },
                                     "tissue_name": {
                                         "type": "string",
                                     },
@@ -1410,6 +1421,7 @@ def handle_get_tissue_conditions(
     conditions = list(session.exec(stmt).all())
     results = [
         {
+            "id": c.id,
             "tissue_name": tissue.name,
             "tissue_id": tissue.id,
             "status": c.status,
@@ -1429,68 +1441,130 @@ def handle_get_tissue_conditions(
     )
 
 
+def _parse_condition_timestamp(
+    value: str, field_name: str
+) -> datetime | dict:
+    """Parse an ISO 8601 date/datetime string into a UTC datetime.
+    Returns an error_response dict on failure."""
+    try:
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt
+    except ValueError:
+        return error_response(
+            "tissue_conditions",
+            f"Invalid {field_name} value: '{value}'. "
+            "Use ISO 8601 format, e.g. '2026-02-05' or "
+            "'2026-02-05T12:00:00'.",
+        )
+
+
 def handle_set_tissue_conditions(
     args: dict, session: Session
 ) -> dict:
     results = []
     created = 0
+    updated = 0
     for change in args.get("changes", []):
+        operation = change.get("operation", "create")
         set_fields = change.get("set", {})
-        # Resolve tissue
-        tissue = None
-        if set_fields.get("tissue_id"):
-            tissue = session.get(Tissue, set_fields["tissue_id"])
-        elif set_fields.get("tissue_name"):
-            tissue = _find_tissue_by_name(
-                set_fields["tissue_name"], session
-            )
-        if not tissue:
-            return error_response(
-                "tissue_conditions",
-                f"Tissue '{set_fields.get('tissue_name', '')}' not found",
-            )
-        recorded_at_str = set_fields.get("created_at")
-        if recorded_at_str:
-            try:
-                recorded_at = datetime.fromisoformat(recorded_at_str)
-                if recorded_at.tzinfo is None:
-                    recorded_at = recorded_at.replace(tzinfo=UTC)
-            except ValueError:
+
+        if operation == "update":
+            record_id = set_fields.get("id")
+            if not record_id:
                 return error_response(
                     "tissue_conditions",
-                    f"Invalid recorded_at value: '{recorded_at_str}'. "
-                    "Use ISO 8601 format, e.g. '2026-02-05' or "
-                    "'2026-02-05T12:00:00'.",
+                    "operation='update' requires set.id.",
                 )
-        else:
-            recorded_at = datetime.now(UTC)
-        condition = TissueCondition(
-            tissue_id=tissue.id,
-            status=set_fields["status"],
-            severity=set_fields.get("severity", 0),
-            max_loading_factor=set_fields.get("max_loading_factor"),
-            recovery_hours_override=set_fields.get(
-                "recovery_hours_override"
-            ),
-            rehab_protocol=set_fields.get("rehab_protocol"),
-            notes=set_fields.get("notes"),
-            updated_at=recorded_at,
-        )
-        session.add(condition)
-        session.flush()
-        results.append({
-            "tissue_name": tissue.name,
-            "status": condition.status,
-            "severity": condition.severity,
-            "created_at": condition.updated_at.isoformat(),
-        })
-        created += 1
+            condition = session.get(TissueCondition, record_id)
+            if not condition:
+                return error_response(
+                    "tissue_conditions",
+                    f"No tissue_condition record with id={record_id}.",
+                )
+            tissue = session.get(Tissue, condition.tissue_id)
+            if "status" in set_fields:
+                condition.status = set_fields["status"]
+            if "severity" in set_fields:
+                condition.severity = set_fields["severity"]
+            if "max_loading_factor" in set_fields:
+                condition.max_loading_factor = set_fields["max_loading_factor"]
+            if "recovery_hours_override" in set_fields:
+                condition.recovery_hours_override = set_fields["recovery_hours_override"]
+            if "rehab_protocol" in set_fields:
+                condition.rehab_protocol = set_fields["rehab_protocol"]
+            if "notes" in set_fields:
+                condition.notes = set_fields["notes"]
+            if "created_at" in set_fields:
+                parsed = _parse_condition_timestamp(
+                    set_fields["created_at"], "created_at"
+                )
+                if isinstance(parsed, dict):
+                    return parsed
+                condition.updated_at = parsed
+            session.add(condition)
+            session.flush()
+            results.append({
+                "id": condition.id,
+                "tissue_name": tissue.name if tissue else f"id:{condition.tissue_id}",
+                "status": condition.status,
+                "severity": condition.severity,
+                "created_at": condition.updated_at.isoformat(),
+            })
+            updated += 1
+
+        else:  # create
+            tissue = None
+            if set_fields.get("tissue_id"):
+                tissue = session.get(Tissue, set_fields["tissue_id"])
+            elif set_fields.get("tissue_name"):
+                tissue = _find_tissue_by_name(
+                    set_fields["tissue_name"], session
+                )
+            if not tissue:
+                return error_response(
+                    "tissue_conditions",
+                    f"Tissue '{set_fields.get('tissue_name', '')}' not found",
+                )
+            recorded_at_str = set_fields.get("created_at")
+            if recorded_at_str:
+                recorded_at = _parse_condition_timestamp(
+                    recorded_at_str, "created_at"
+                )
+                if isinstance(recorded_at, dict):
+                    return recorded_at
+            else:
+                recorded_at = datetime.now(UTC)
+            condition = TissueCondition(
+                tissue_id=tissue.id,
+                status=set_fields["status"],
+                severity=set_fields.get("severity", 0),
+                max_loading_factor=set_fields.get("max_loading_factor"),
+                recovery_hours_override=set_fields.get(
+                    "recovery_hours_override"
+                ),
+                rehab_protocol=set_fields.get("rehab_protocol"),
+                notes=set_fields.get("notes"),
+                updated_at=recorded_at,
+            )
+            session.add(condition)
+            session.flush()
+            results.append({
+                "id": condition.id,
+                "tissue_name": tissue.name,
+                "status": condition.status,
+                "severity": condition.severity,
+                "created_at": condition.updated_at.isoformat(),
+            })
+            created += 1
 
     session.commit()
     return setter_response(
         "tissue_conditions", "create", results,
-        matched_count=created,
+        matched_count=created + updated,
         created_count=created,
+        changed_count=updated,
     )
 
 
