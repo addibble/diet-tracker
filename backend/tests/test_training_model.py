@@ -271,3 +271,72 @@ def test_seed_exercise_tissue_model_defaults_repairs_legacy_defaulted_factors(se
     assert mapping.fatigue_factor == 0.4095
     assert mapping.joint_strain_factor == 0.455
     assert mapping.tendon_strain_factor == 0.455
+
+
+def test_training_model_respects_active_tissue_condition_in_exercise_ranking(client, session):
+    supraspinatus = Tissue(
+        name="supraspinatus",
+        display_name="Supraspinatus",
+        type="muscle",
+        recovery_hours=72.0,
+    )
+    quad = Tissue(
+        name="vastus_medialis",
+        display_name="Vastus Medialis",
+        type="muscle",
+        recovery_hours=72.0,
+    )
+    shoulder_press = Exercise(name="Shoulder Press")
+    leg_extension = Exercise(name="Leg Extension")
+    session.add(supraspinatus)
+    session.add(quad)
+    session.add(shoulder_press)
+    session.add(leg_extension)
+    session.commit()
+
+    session.add(
+        ExerciseTissue(
+            exercise_id=shoulder_press.id,
+            tissue_id=supraspinatus.id,
+            role="primary",
+            loading_factor=0.8,
+            routing_factor=0.8,
+            fatigue_factor=0.72,
+            joint_strain_factor=0.8,
+            tendon_strain_factor=0.8,
+        )
+    )
+    session.add(
+        ExerciseTissue(
+            exercise_id=leg_extension.id,
+            tissue_id=quad.id,
+            role="primary",
+            loading_factor=0.8,
+            routing_factor=0.8,
+            fatigue_factor=0.72,
+            joint_strain_factor=0.8,
+            tendon_strain_factor=0.8,
+        )
+    )
+    session.add(
+        TissueCondition(
+            tissue_id=supraspinatus.id,
+            status="injured",
+            severity=3,
+            max_loading_factor=0.2,
+            notes="Shoulder tendon pain",
+            updated_at=datetime(2026, 3, 10, 12, 0, tzinfo=UTC),
+        )
+    )
+    session.commit()
+
+    response = client.get("/api/training-model/exercises?as_of=2026-03-13&sort_by=suitability&direction=desc")
+    assert response.status_code == 200
+    rows = {row["name"]: row for row in response.json()}
+
+    press = rows["Shoulder Press"]
+    leg = rows["Leg Extension"]
+
+    assert press["recommendation"] == "avoid"
+    assert "Supraspinatus" in press["blocked_tissues"]
+    assert leg["recommendation"] == "good"

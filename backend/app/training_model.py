@@ -156,14 +156,27 @@ def build_exercise_risk_ranking(
             stats = context["exercise_tissue_stats"].get((exercise.id, mapping.tissue_id), {})
             factors = _mapping_factors(mapping, tissue.type)
             routing = factors["routing"]
-            tissue_risk_7d = state.risk_7d if state else 0
-            tissue_risk_14d = state.risk_14d if state else 0
+            current_condition = context["conditions"].get(mapping.tissue_id)
+            condition_status = current_condition["status"] if current_condition else None
+            condition_floor_7d = _condition_risk_floor(condition_status, horizon_days=7)
+            condition_floor_14d = _condition_risk_floor(condition_status, horizon_days=14)
+            tissue_risk_7d = max(state.risk_7d if state else 0, condition_floor_7d)
+            tissue_risk_14d = max(state.risk_14d if state else 0, condition_floor_14d)
             tissue_norm = state.normalized_load if state else 0.0
             is_significant_mapping = routing >= 0.5
             if state and state.recovery_state >= 0.75 and tissue_risk_14d < 45:
                 recovering_bonus += routing
                 favored_tissues.append(tissue.display_name)
-            if is_significant_mapping and tissue_risk_7d >= 60:
+            exceeds_condition_loading_limit = bool(
+                current_condition
+                and current_condition.get("max_loading_factor") is not None
+                and (mapping.loading_factor or routing) > current_condition["max_loading_factor"]
+            )
+            if is_significant_mapping and (
+                tissue_risk_7d >= 60
+                or condition_status in {"injured", "tender"}
+                or exceeds_condition_loading_limit
+            ):
                 blocked_tissues.append(tissue.display_name)
             max_tissue_risk = max(max_tissue_risk, tissue_risk_7d)
             if is_significant_mapping:
@@ -310,7 +323,7 @@ def _build_context(session: Session, *, as_of: date | None) -> dict:
             select(TissueCondition).order_by(col(TissueCondition.updated_at).asc())
         ).all()
     )
-    condition_events, current_conditions = _load_condition_events(condition_rows)
+    condition_events, current_conditions = _load_condition_events(condition_rows, as_of=as_of)
     all_dates, exposures_by_tissue, sets_by_date = _collect_daily_exposure(
         session,
         exercise_by_id,
@@ -529,7 +542,17 @@ def _compute_tissue_states(
     )
     states: list[TissueState] = []
     prior_collapse_loads: list[float] = []
+    active_condition_status = "healthy"
+    active_condition_severity = 0
+    next_condition_index = 0
     for index, current_date in enumerate(all_dates):
+        while next_condition_index < len(condition_events):
+            event_date, severity, status = condition_events[next_condition_index]
+            if event_date > current_date:
+                break
+            active_condition_status = status
+            active_condition_severity = severity
+            next_condition_index += 1
         record = exposure_by_date.get(current_date, ExposureRecord(current_date))
         raw_load = record.raw_load
         normalized_load = raw_load / max(current_capacity, 1.0)
@@ -548,7 +571,10 @@ def _compute_tissue_states(
         recent_7 = recent7_series[index]
         recent_28 = recent28_series[index]
         ramp_ratio = recent_7 / max(recent_28 / 4.0, baseline_capacity * 0.15, 1.0)
-        condition_severity = event_dates.get(current_date, 0)
+        condition_severity = _condition_feature_severity(
+            active_condition_status,
+            active_condition_severity,
+        )
         prior_event_signal = _prior_event_similarity(
             recent_7 / max(baseline_capacity, 1.0),
             baseline_capacity,
@@ -571,6 +597,18 @@ def _compute_tissue_states(
             condition_severity=condition_severity,
             prior_event_signal=prior_event_signal,
             learned_coefficients=event_coeffs_14,
+        )
+        risk_7d, contributors_7d = _apply_condition_floor(
+            risk=risk_7d,
+            contributors=contributors_7d,
+            status=active_condition_status,
+            horizon_days=7,
+        )
+        risk_14d, contributors_14d = _apply_condition_floor(
+            risk=risk_14d,
+            contributors=contributors_14d,
+            status=active_condition_status,
+            horizon_days=14,
         )
         states.append(
             TissueState(
@@ -607,17 +645,23 @@ def _load_configs(session: Session, tissues: list[Tissue]) -> dict[int, TissueMo
 
 def _load_condition_events(
     rows: list[TissueCondition],
+    *,
+    as_of: date | None = None,
 ) -> tuple[dict[int, list[tuple[date, int, str]]], dict[int, dict]]:
     events: dict[int, list[tuple[date, int, str]]] = defaultdict(list)
     current: dict[int, dict] = {}
     for row in rows:
         event_date = row.updated_at.date()
+        if as_of and event_date > as_of:
+            continue
         events[row.tissue_id].append((event_date, row.severity, row.status))
         current[row.tissue_id] = {
             "status": row.status,
             "severity": row.severity,
             "notes": row.notes,
             "updated_at": row.updated_at.isoformat(),
+            "max_loading_factor": row.max_loading_factor,
+            "recovery_hours_override": row.recovery_hours_override,
         }
     return events, current
 
@@ -870,6 +914,42 @@ def _prior_event_similarity(
     target = _mean(prior_collapse_loads) / max(baseline_capacity, 1.0)
     closest = abs(current_normalized_load - target)
     return round(_clamp(1.0 - closest, 0.0, 1.0), 3)
+
+
+def _condition_feature_severity(status: str, severity: int) -> int:
+    if status == "injured":
+        return max(severity, 4)
+    if status == "tender":
+        return max(severity, 2)
+    if status == "rehabbing":
+        return max(severity, 1)
+    return 0
+
+
+def _condition_risk_floor(status: str | None, *, horizon_days: int) -> int:
+    if status == "injured":
+        return 95 if horizon_days <= 7 else 90
+    if status == "tender":
+        return 78 if horizon_days <= 7 else 68
+    if status == "rehabbing":
+        return 58 if horizon_days <= 7 else 48
+    return 0
+
+
+def _apply_condition_floor(
+    *,
+    risk: int,
+    contributors: list[str],
+    status: str,
+    horizon_days: int,
+) -> tuple[int, list[str]]:
+    floor = _condition_risk_floor(status, horizon_days=horizon_days)
+    if not floor:
+        return risk, contributors
+    labels = contributors
+    if "active tissue condition" not in labels:
+        labels = ["active tissue condition", *contributors]
+    return max(risk, floor), labels[:3]
 
 
 def _update_capacity_state(

@@ -124,6 +124,30 @@ Purpose:
 - future calibration path for subjective recovery
 - not yet heavily used in v1 scoring
 
+### `tissue_conditions`
+
+Append-only condition log:
+
+- `status = healthy | tender | injured | rehabbing`
+- `severity`
+- `max_loading_factor`
+- `recovery_hours_override`
+- `rehab_protocol`
+- `notes`
+
+Purpose:
+
+- stores the user's explicit tissue-state judgment
+- acts both as historical event evidence and as an active current constraint
+- allows the user to cap allowed direct tissue loading through `max_loading_factor`
+
+Important interpretation:
+
+- a condition row is not just a one-day note
+- the latest non-future condition remains active until a later condition row changes it, typically back to `healthy`
+
+This matters because a current `injured` or `rehabbing` tissue should continue affecting recommendations even on days with little new load.
+
 ### `training_exclusion_windows`
 
 Fields:
@@ -151,6 +175,7 @@ Preparation rules:
 - empty placeholder sessions are ignored
 - duplicate same-day set signatures are deduplicated
 - future weight logs are ignored
+- future tissue-condition rows are ignored when `as_of` is provided
 - exclusion windows are expanded into explicit excluded calendar days
 
 The result is:
@@ -158,6 +183,7 @@ The result is:
 - a normalized history window
 - daily tissue exposure records
 - per-tissue condition events
+- current active per-tissue conditions as of the modeling date
 - per-exercise to per-tissue event statistics
 
 ## Effective Load
@@ -249,6 +275,40 @@ Interpretation:
 
 This is the key step that makes the exercise-to-tissue graph numerically interpretable instead of just heuristic.
 
+## Factor Repair And Legacy Safety
+
+The model now has to deal with a migration hazard from older databases.
+
+When the newer factor columns were first added to `exercise_tissues`, SQLite defaulted them to `1.0`. On legacy rows that is usually wrong:
+
+- secondaries should not behave like primaries
+- stabilizers should not behave like primaries
+- joint and tendon strain factors should not all be flat `1.0`
+
+If left uncorrected, that makes every mapped tissue look fully loaded, which causes:
+
+- risk inflation
+- recommendation collapse into all `avoid`
+- meaningless weighted-risk math
+
+The current implementation handles this in two places:
+
+1. Startup backfill repairs legacy rows from `loading_factor` and `role`.
+2. Runtime defensively detects the legacy-default pattern and derives sane factors even if the DB has not been repaired yet.
+
+Derived defaults:
+
+- `routing_factor = loading_factor * role_scale`
+- `fatigue_factor = routing_factor * 0.9`
+- `joint_strain_factor = routing_factor`, except joints get `routing_factor * 1.25`
+- `tendon_strain_factor = routing_factor`, except tendons get `routing_factor * 1.15`
+
+Role scales:
+
+- `primary = 1.0`
+- `secondary = 0.65`
+- `stabilizer = 0.35`
+
 ## Learned Recovery
 
 Recovery is inferred from overload, deload, and rebound behavior in `_learn_recovery_days()`.
@@ -299,6 +359,12 @@ For each tissue and day, `_compute_tissue_states()` tracks:
 - `collapse_flag`
 - `failure_count`
 - `contributors`
+
+The state model also tracks the currently active tissue-condition state while walking forward through time:
+
+- latest condition row at or before the current date becomes active
+- active condition persists until superseded by a later condition row
+- a later `healthy` row clears the active penalty state
 
 ### Fatigue and chronic load
 
@@ -365,6 +431,27 @@ Interpretation:
 
 This is one of the strongest risk signals in the current model.
 
+### Active tissue conditions
+
+Active `tender / injured / rehabbing` state is not treated as a one-day spike. It persists forward and affects risk in two ways:
+
+1. It contributes a condition feature into the learned risk score.
+2. It imposes a minimum risk floor even if recent load is low.
+
+Current risk floors:
+
+- `injured`
+  - `risk_7d >= 95`
+  - `risk_14d >= 90`
+- `tender`
+  - `risk_7d >= 78`
+  - `risk_14d >= 68`
+- `rehabbing`
+  - `risk_7d >= 58`
+  - `risk_14d >= 48`
+
+This prevents the model from declaring a currently injured tissue "safe" just because volume recently dropped.
+
 ## Risk Learning
 
 The model predicts:
@@ -385,6 +472,11 @@ For each date:
 
 - if a collapse or condition note occurs within the next horizon, that date is treated as an event sample
 - otherwise it is a non-event sample
+
+Active condition persistence and event labeling are different ideas:
+
+- event labeling uses the date a note appears
+- current-state risk uses the latest active condition carried forward through time
 
 ### Learned coefficients
 
@@ -464,6 +556,8 @@ Current output fields:
 - `favored_tissues`
 - detailed per-tissue subrows
 
+The exercise ranking uses both modeled tissue state and the latest current tissue condition.
+
 ### Weighted risk
 
 Exercise risk is computed by weighting tissue risk by routing factor:
@@ -477,6 +571,8 @@ Equivalent calculations are used for:
 
 - 14-day risk
 - normalized load
+
+However, current tissue-condition floors can raise a tissue's effective risk before the exercise aggregation step. This is how a current injury note can dominate recommendation quality even without high recent training load.
 
 ### Suitability score
 
@@ -510,6 +606,27 @@ Current recommendation thresholds:
 - `good`
   - otherwise
 
+### Current-condition blocking
+
+Current conditions can block an exercise even when the rolling load model alone would not.
+
+Blocking logic currently considers:
+
+- significant mapped tissue with elevated current risk
+- active `injured` or `tender` status on a significant mapped tissue
+- condition `max_loading_factor` exceeded by the exercise's direct `loading_factor`
+
+Important detail:
+
+- `max_loading_factor` is compared against the direct exercise-to-tissue `loading_factor`, not the role-scaled `routing_factor`
+
+That choice matters because `routing_factor` is reduced for secondaries and stabilizers, but the user's rehab cap is intended to constrain direct tissue loading on the original mapping scale.
+
+Examples:
+
+- if a tendon is `rehabbing` with `max_loading_factor = 0.4`, then an exercise mapped at `loading_factor = 0.6` can be blocked even if its role-scaled routing factor is lower
+- if the same exercise only has a very light indirect mapping below the rehab cap, it may remain in `caution` or `good`
+
 ### Recommendation reason
 
 The backend also emits explicit reason strings so the frontend and LLM do not have to reconstruct them:
@@ -517,7 +634,13 @@ The backend also emits explicit reason strings so the frontend and LLM do not ha
 - examples:
   - `Avoid because it directly loads Lumbar Spine, External Oblique while current tissue risk is elevated.`
   - `Use caution because recent tissue risk is elevated and this exercise still leans on Hip Joint.`
-  - `Good candidate because its main tissues are recovering well and current weighted risk is low.`
+- `Good candidate because its main tissues are recovering well and current weighted risk is low.`
+
+Those explanations are intentionally generated from backend-owned signals, not frontend heuristics, so the same condition-aware reasoning is shared by:
+
+- API responses
+- workout-page recommendations
+- LLM tool output
 
 `recommendation_details` contains shorter fragments such as:
 
@@ -617,6 +740,8 @@ Within those bands, exercises are ordered by suitability and then by routine sor
 
 That means the page does not just describe tissue risk; it changes how the planned session is presented.
 
+The page now fetches exercise recommendations through the summary payload in a single model request rather than triggering separate summary and exercise-ranking recomputations. This reduces redundant server CPU on page load.
+
 ## LLM Integration
 
 The workout tool surface exposes model-aware exercise rows through `get_exercises(... include=["training_risk"])`.
@@ -643,6 +768,12 @@ Known limitations:
 - no personalized subjective recovery learning yet
 - risk percentages are heuristic similarity scores, not calibrated injury probabilities
 - exercise routing quality still depends heavily on mapping quality
+
+Condition-specific limitations still remain:
+
+- if a user marks only a tendon and not the nearby muscle, exercises that mostly load the muscle but only lightly map to the tendon may still rank too optimistically
+- if an exercise-to-tissue mapping understates cuff or stabilizer involvement, condition-aware blocking can still underfire
+- `max_loading_factor` is only as good as the exercise mapping quality behind it
 
 The current system is best interpreted as:
 
@@ -671,4 +802,3 @@ High-value follow-up work:
 4. Add a session-construction helper that selects today's best routine subset automatically.
 5. Calibrate risk scores against a larger history so thresholds become less heuristic.
 6. Add hypertrophy-oriented secondary objectives after the strength-and-trouble foundation is stable.
-
