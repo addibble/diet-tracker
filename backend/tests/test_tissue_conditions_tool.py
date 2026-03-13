@@ -36,8 +36,8 @@ def test_set_tissue_conditions_defaults_to_now(tissue, session):
     after = datetime.now(UTC)
 
     assert result["created_count"] == 1
-    recorded_at = datetime.fromisoformat(result["matches"][0]["recorded_at"])
-    assert before <= recorded_at <= after
+    created_at = datetime.fromisoformat(result["matches"][0]["created_at"])
+    assert before <= created_at <= after
 
 
 def test_set_tissue_conditions_backdates_with_date_string(tissue, session):
@@ -50,7 +50,7 @@ def test_set_tissue_conditions_backdates_with_date_string(tissue, session):
                         "tissue_name": "Supraspinatus Tendon",
                         "status": "injured",
                         "severity": 3,
-                        "recorded_at": "2026-02-05",
+                        "created_at": "2026-02-05",
                     },
                 }
             ]
@@ -59,10 +59,10 @@ def test_set_tissue_conditions_backdates_with_date_string(tissue, session):
     )
 
     assert result["created_count"] == 1
-    recorded_at = datetime.fromisoformat(result["matches"][0]["recorded_at"])
-    assert recorded_at.year == 2026
-    assert recorded_at.month == 2
-    assert recorded_at.day == 5
+    created_at = datetime.fromisoformat(result["matches"][0]["created_at"])
+    assert created_at.year == 2026
+    assert created_at.month == 2
+    assert created_at.day == 5
 
 
 def test_set_tissue_conditions_backdates_with_datetime_string(tissue, session):
@@ -75,7 +75,7 @@ def test_set_tissue_conditions_backdates_with_datetime_string(tissue, session):
                         "tissue_name": "Supraspinatus Tendon",
                         "status": "rehabbing",
                         "severity": 2,
-                        "recorded_at": "2026-03-01T09:30:00",
+                        "created_at": "2026-03-01T09:30:00",
                     },
                 }
             ]
@@ -84,12 +84,12 @@ def test_set_tissue_conditions_backdates_with_datetime_string(tissue, session):
     )
 
     assert result["created_count"] == 1
-    recorded_at = datetime.fromisoformat(result["matches"][0]["recorded_at"])
-    assert recorded_at.year == 2026
-    assert recorded_at.month == 3
-    assert recorded_at.day == 1
-    assert recorded_at.hour == 9
-    assert recorded_at.minute == 30
+    created_at = datetime.fromisoformat(result["matches"][0]["created_at"])
+    assert created_at.year == 2026
+    assert created_at.month == 3
+    assert created_at.day == 1
+    assert created_at.hour == 9
+    assert created_at.minute == 30
 
 
 def test_set_tissue_conditions_multiple_backdated_entries(tissue, session):
@@ -102,7 +102,7 @@ def test_set_tissue_conditions_multiple_backdated_entries(tissue, session):
                         "tissue_name": "Supraspinatus Tendon",
                         "status": "injured",
                         "severity": 3,
-                        "recorded_at": "2026-02-05",
+                        "created_at": "2026-02-05",
                     },
                 },
                 {
@@ -111,7 +111,7 @@ def test_set_tissue_conditions_multiple_backdated_entries(tissue, session):
                         "tissue_name": "Supraspinatus Tendon",
                         "status": "rehabbing",
                         "severity": 3,
-                        "recorded_at": "2026-03-01",
+                        "created_at": "2026-03-01",
                     },
                 },
             ]
@@ -121,14 +121,14 @@ def test_set_tissue_conditions_multiple_backdated_entries(tissue, session):
 
     assert result["created_count"] == 2
     dates = [
-        datetime.fromisoformat(m["recorded_at"]).date().isoformat()
+        datetime.fromisoformat(m["created_at"]).date().isoformat()
         for m in result["matches"]
     ]
     assert "2026-02-05" in dates
     assert "2026-03-01" in dates
 
 
-def test_set_tissue_conditions_invalid_recorded_at_returns_error(tissue, session):
+def test_set_tissue_conditions_invalid_created_at_returns_error(tissue, session):
     result = handle_set_tissue_conditions(
         {
             "changes": [
@@ -138,7 +138,7 @@ def test_set_tissue_conditions_invalid_recorded_at_returns_error(tissue, session
                         "tissue_name": "Supraspinatus Tendon",
                         "status": "injured",
                         "severity": 3,
-                        "recorded_at": "not-a-date",
+                        "created_at": "not-a-date",
                     },
                 }
             ]
@@ -147,4 +147,4 @@ def test_set_tissue_conditions_invalid_recorded_at_returns_error(tissue, session
     )
 
     assert result.get("error") is not None
-    assert "recorded_at" in result["error"].lower() or "invalid" in result["error"].lower()
+    assert "created_at" in result["error"].lower() or "invalid" in result["error"].lower()

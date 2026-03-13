@@ -1327,7 +1327,7 @@ SET_TISSUE_CONDITIONS_DEF = {
                                         "type": "string",
                                     },
                                     "notes": {"type": "string"},
-                                    "recorded_at": {
+                                    "created_at": {
                                         "type": "string",
                                         "description": (
                                             "ISO 8601 date or datetime to "
@@ -1447,7 +1447,7 @@ def handle_set_tissue_conditions(
                 "tissue_conditions",
                 f"Tissue '{set_fields.get('tissue_name', '')}' not found",
             )
-        recorded_at_str = set_fields.get("recorded_at")
+        recorded_at_str = set_fields.get("created_at")
         if recorded_at_str:
             try:
                 recorded_at = datetime.fromisoformat(recorded_at_str)
@@ -1480,7 +1480,7 @@ def handle_set_tissue_conditions(
             "tissue_name": tissue.name,
             "status": condition.status,
             "severity": condition.severity,
-            "recorded_at": condition.updated_at.isoformat(),
+            "created_at": condition.updated_at.isoformat(),
         })
         created += 1
 
