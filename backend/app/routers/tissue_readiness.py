@@ -16,7 +16,7 @@ from app.models import (
 from app.workout_queries import (
     get_all_current_conditions,
     get_current_tissues,
-    session_trained_at,
+    get_last_trained_by_tissue,
 )
 
 router = APIRouter(prefix="/api/tissue-readiness", tags=["tissue-readiness"])
@@ -31,9 +31,6 @@ def get_tissue_readiness(
     tissues = get_current_tissues(session)
     conditions = {c.tissue_id: c for c in get_all_current_conditions(session)}
 
-    # Build map: tissue_id → last trained datetime
-    last_trained_map: dict[int, datetime] = {}
-
     # Get all exercise_tissue mappings
     current_ets = session.exec(select(ExerciseTissue)).all()
 
@@ -42,26 +39,8 @@ def get_tissue_readiness(
     for et in current_ets:
         exercise_tissues.setdefault(et.exercise_id, []).append(et.tissue_id)
 
-    # Get most recent training time per exercise.
-    # We need the actual session row to apply session_trained_at, so fetch
-    # the max session id per exercise (most recent session).
-    stmt = (
-        select(WorkoutSet.exercise_id, func.max(WorkoutSession.id).label("max_sid"))
-        .join(WorkoutSession, WorkoutSet.session_id == WorkoutSession.id)
-        .group_by(WorkoutSet.exercise_id)
-    )
-    for row in session.exec(stmt).all():
-        exercise_id, max_sid = row
-        if exercise_id not in exercise_tissues:
-            continue
-        ws = session.get(WorkoutSession, max_sid)
-        if not ws:
-            continue
-        last_dt = session_trained_at(ws)
-        for tissue_id in exercise_tissues[exercise_id]:
-            existing = last_trained_map.get(tissue_id)
-            if existing is None or last_dt > existing:
-                last_trained_map[tissue_id] = last_dt
+    # Build map: tissue_id → last trained datetime using actual session time.
+    last_trained_map = get_last_trained_by_tissue(session, exercise_tissues)
 
     # Compute 7-day volume per tissue
     cutoff = now - timedelta(days=7)

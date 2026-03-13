@@ -26,7 +26,7 @@ from app.workout_queries import (
     get_all_current_conditions,
     get_current_exercise_tissues,
     get_current_tissues,
-    session_trained_at,
+    get_last_trained_by_tissue,
 )
 
 from .shared import (
@@ -318,28 +318,8 @@ def _compute_tissue_readiness(session: Session) -> list[dict]:
             et.tissue_id
         )
 
-    # Last trained per tissue
-    last_trained_map: dict[int, datetime] = {}
-    stmt = (
-        select(
-            WorkoutSet.exercise_id,
-            func.max(WorkoutSession.id).label("max_sid"),
-        )
-        .join(WorkoutSession, WorkoutSet.session_id == WorkoutSession.id)
-        .group_by(WorkoutSet.exercise_id)
-    )
-    for row in session.exec(stmt).all():
-        exercise_id, max_sid = row
-        if exercise_id not in exercise_tissues:
-            continue
-        ws = session.get(WorkoutSession, max_sid)
-        if not ws:
-            continue
-        last_dt = session_trained_at(ws)
-        for tissue_id in exercise_tissues[exercise_id]:
-            existing = last_trained_map.get(tissue_id)
-            if existing is None or last_dt > existing:
-                last_trained_map[tissue_id] = last_dt
+    # Last trained per tissue using actual session time, not session id order.
+    last_trained_map = get_last_trained_by_tissue(session, exercise_tissues)
 
     result = []
     for t in tissues:

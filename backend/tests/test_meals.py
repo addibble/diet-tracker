@@ -117,6 +117,7 @@ def test_list_meals_by_date(client):
 def test_llm_tool_dedup_same_meal_twice(session):
     """handle_set_meal_logs called twice with identical args returns the same meal."""
     from sqlmodel import select
+
     from app.llm_tools.nutrition import handle_set_meal_logs
     from app.models import Food, MealLog
 
@@ -159,6 +160,7 @@ def test_llm_tool_dedup_same_meal_twice(session):
 def test_llm_tool_dedup_different_items_not_deduped(session):
     """Two create calls with different items are NOT collapsed into one."""
     from sqlmodel import select
+
     from app.llm_tools.nutrition import handle_set_meal_logs
     from app.models import Food, MealLog
 
