@@ -1274,7 +1274,9 @@ SET_TISSUE_CONDITIONS_DEF = {
         "description": (
             "Log a tissue condition. Append-only: always creates "
             "a new record. Use when the user reports pain, "
-            "tenderness, injury, or recovery status."
+            "tenderness, injury, or recovery status. "
+            "To backdate a record, pass created_at (ISO 8601 date "
+            "or datetime, e.g. '2026-02-05')."
         ),
         "parameters": {
             "type": "object",
