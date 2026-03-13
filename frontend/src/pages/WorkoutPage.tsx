@@ -1,10 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import {
   getTissueReadiness,
+  getTrainingModelSummary,
+  getTrainingModelTissueHistory,
   getRoutine,
   getWorkoutSessions,
   getExerciseHistory,
   getExercises,
+  type TrainingModelSummary,
+  type TrainingModelTissueHistory,
   type WkTissueReadiness,
   type WkRoutineExercise,
   type WkSession,
@@ -246,6 +250,207 @@ function SuggestedWorkoutCard({
         })}
       </div>
     </section>
+  )
+}
+
+function pctClass(value: number): string {
+  if (value >= 75) return 'text-red-600 bg-red-50 border-red-100'
+  if (value >= 55) return 'text-amber-700 bg-amber-50 border-amber-100'
+  return 'text-emerald-700 bg-emerald-50 border-emerald-100'
+}
+
+function TrainingModelCard({
+  summary,
+  history,
+  selectedTissueId,
+  onSelectTissue,
+}: {
+  summary: TrainingModelSummary | null
+  history: TrainingModelTissueHistory | null
+  selectedTissueId: number | null
+  onSelectTissue: (value: number | null) => void
+}) {
+  if (!summary) {
+    return (
+      <section className="bg-white border border-gray-200 rounded-2xl p-5">
+        <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">
+          Training Model
+        </p>
+        <p className="text-sm text-gray-500 mt-2">No training model data yet.</p>
+      </section>
+    )
+  }
+
+  const atRisk = summary.tissues.filter((t) => t.risk_7d >= 60).slice(0, 6)
+  const recovering = summary.tissues
+    .filter((t) => t.recovery_estimate >= 0.75 && t.normalized_load < 0.8)
+    .slice(0, 6)
+  const selected = history?.tissue.id ?? selectedTissueId ?? summary.tissues[0]?.tissue.id ?? null
+    const recentHistory = history?.history.slice(-8) ?? []
+
+  return (
+    <section className="bg-white border border-gray-200 rounded-2xl p-5 space-y-4">
+      <div className="flex flex-wrap items-start gap-3 justify-between">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">
+            Training Model
+          </p>
+          <p className="text-sm text-gray-500 mt-1">
+            Forecasting tissue trouble before collapse from normalized load, ramp, and rebound history.
+          </p>
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          <span className="rounded-full border border-red-100 bg-red-50 px-3 py-1 text-xs font-medium text-red-700">
+            {summary.overview.at_risk_count} at risk
+          </span>
+          <span className="rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
+            {summary.overview.recovering_count} recovering well
+          </span>
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="rounded-xl border border-gray-100 bg-gray-50/70 p-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-400">At-Risk Soon</p>
+          <div className="mt-3 space-y-2">
+            {atRisk.length === 0 && (
+              <p className="text-sm text-gray-500">No tissues currently above the alert threshold.</p>
+            )}
+            {atRisk.map((item) => (
+              <button
+                key={item.tissue.id}
+                onClick={() => onSelectTissue(item.tissue.id)}
+                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-left hover:border-gray-300 transition-colors"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-gray-800">{item.tissue.display_name}</p>
+                    <p className="text-xs text-gray-500">
+                      Norm load {item.normalized_load.toFixed(2)} · ramp {item.ramp_ratio.toFixed(2)}
+                    </p>
+                  </div>
+                  <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${pctClass(item.risk_7d)}`}>
+                    {item.risk_7d}% / 7d
+                  </span>
+                </div>
+                {item.contributors.length > 0 && (
+                  <p className="mt-1 text-[11px] text-gray-500">
+                    Drivers: {item.contributors.join(', ')}
+                  </p>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-gray-100 bg-gray-50/70 p-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-400">Recovering Well</p>
+          <div className="mt-3 space-y-2">
+            {recovering.length === 0 && (
+              <p className="text-sm text-gray-500">No tissues currently in a strong rebound state.</p>
+            )}
+            {recovering.map((item) => (
+              <button
+                key={item.tissue.id}
+                onClick={() => onSelectTissue(item.tissue.id)}
+                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-left hover:border-gray-300 transition-colors"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-gray-800">{item.tissue.display_name}</p>
+                    <p className="text-xs text-gray-500">
+                      Recovery {Math.round(item.recovery_estimate * 100)}% · learned {item.learned_recovery_days.toFixed(1)}d
+                    </p>
+                  </div>
+                  <span className="rounded-full border border-emerald-100 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
+                    {item.risk_14d}% / 14d
+                  </span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-gray-100 p-4">
+        <div className="flex flex-wrap items-center gap-3 justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-400">Tissue History</p>
+            <p className="text-sm text-gray-500 mt-1">
+              Current learned capacity vs normalized demand and flagged collapse dates.
+            </p>
+          </div>
+          <select
+            value={selected ?? ''}
+            onChange={(e) => onSelectTissue(e.target.value ? Number(e.target.value) : null)}
+            className="w-full max-w-xs rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 bg-white"
+          >
+            <option value="">Select a tissue...</option>
+            {summary.tissues.map((item) => (
+              <option key={item.tissue.id} value={item.tissue.id}>
+                {item.tissue.display_name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {history && (
+          <div className="mt-4 space-y-3">
+            <div className="grid gap-3 md:grid-cols-4">
+              <StatChip label="Capacity" value={history.history.at(-1)?.capacity_state.toFixed(2) ?? '—'} />
+              <StatChip label="Norm Load" value={history.history.at(-1)?.normalized_load.toFixed(2) ?? '—'} />
+              <StatChip label="Risk 7d" value={`${history.history.at(-1)?.risk_7d ?? 0}%`} />
+              <StatChip label="Recovery" value={`${Math.round((history.history.at(-1)?.recovery_state ?? 0) * 100)}%`} />
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-400">Recent Collapse Windows</p>
+              <p className="mt-1 text-sm text-gray-600">
+                {history.collapse_dates.length > 0
+                  ? history.collapse_dates.slice(-5).join(', ')
+                  : 'No collapse windows flagged in this range.'}
+              </p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs uppercase tracking-[0.14em] text-gray-400">
+                    <th className="py-2 pr-3">Date</th>
+                    <th className="py-2 pr-3">Norm</th>
+                    <th className="py-2 pr-3">Cap</th>
+                    <th className="py-2 pr-3">Risk7</th>
+                    <th className="py-2 pr-3">Collapse</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {[...recentHistory].reverse().map((point) => (
+                    <tr key={point.date}>
+                      <td className="py-2 pr-3 text-gray-700">{point.date}</td>
+                      <td className="py-2 pr-3 text-gray-600">{point.normalized_load.toFixed(2)}</td>
+                      <td className="py-2 pr-3 text-gray-600">{point.capacity_state.toFixed(2)}</td>
+                      <td className="py-2 pr-3">
+                        <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${pctClass(point.risk_7d)}`}>
+                          {point.risk_7d}%
+                        </span>
+                      </td>
+                      <td className="py-2 pr-3 text-gray-600">{point.collapse_flag ? 'Yes' : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function StatChip({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-400">{label}</p>
+      <p className="mt-1 text-lg font-semibold text-gray-800">{value}</p>
+    </div>
   )
 }
 
@@ -574,6 +779,9 @@ function VolumeBarChart({
 
 export default function WorkoutPage() {
   const [readiness, setReadiness] = useState<WkTissueReadiness[]>([])
+  const [trainingModel, setTrainingModel] = useState<TrainingModelSummary | null>(null)
+  const [trainingHistory, setTrainingHistory] = useState<TrainingModelTissueHistory | null>(null)
+  const [selectedTrainingTissueId, setSelectedTrainingTissueId] = useState<number | null>(null)
   const [routine, setRoutine] = useState<WkRoutineExercise[]>([])
   const [sessions, setSessions] = useState<WkSession[]>([])
   const [exercises, setExercises] = useState<WkExercise[]>([])
@@ -583,13 +791,15 @@ export default function WorkoutPage() {
     const load = async () => {
       setLoading(true)
       try {
-        const [r, rt, s, ex] = await Promise.all([
+        const [r, tm, rt, s, ex] = await Promise.all([
           getTissueReadiness(),
+          getTrainingModelSummary(),
           getRoutine(),
           getWorkoutSessions(undefined, undefined, 10),
           getExercises(),
         ])
         setReadiness(r)
+        setTrainingModel(tm)
         setRoutine(rt)
         setSessions(s)
         setExercises(ex)
@@ -602,6 +812,18 @@ export default function WorkoutPage() {
     load()
   }, [])
 
+  useEffect(() => {
+    const tissueId = selectedTrainingTissueId ?? trainingModel?.tissues[0]?.tissue.id ?? null
+    if (!tissueId) {
+      setTrainingHistory(null)
+      return
+    }
+    setSelectedTrainingTissueId(tissueId)
+    getTrainingModelTissueHistory(tissueId, 90)
+      .then(setTrainingHistory)
+      .catch(() => setTrainingHistory(null))
+  }, [selectedTrainingTissueId, trainingModel])
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -613,6 +835,12 @@ export default function WorkoutPage() {
   return (
     <div className="space-y-4 pb-4 overflow-y-auto h-full">
       <TissueStatusTable readiness={readiness} />
+      <TrainingModelCard
+        summary={trainingModel}
+        history={trainingHistory}
+        selectedTissueId={selectedTrainingTissueId}
+        onSelectTissue={setSelectedTrainingTissueId}
+      />
       <SuggestedWorkoutCard routine={routine} readiness={readiness} />
       <RecentSessionsCard sessions={sessions} />
       <ExerciseProgressCard exercises={exercises} />

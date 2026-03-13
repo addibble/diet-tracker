@@ -4,7 +4,7 @@ from sqlmodel import Session, col, select
 
 from app.auth import get_current_user
 from app.database import get_session
-from app.models import Tissue, TissueCondition
+from app.models import Tissue, TissueCondition, TissueModelConfig
 from app.workout_queries import (
     get_all_current_conditions,
     get_current_tissue_condition,
@@ -24,6 +24,12 @@ class TissueCreate(BaseModel):
 class TissueUpdate(BaseModel):
     recovery_hours: float | None = None
     notes: str | None = None
+    capacity_prior: float | None = None
+    recovery_tau_days: float | None = None
+    fatigue_tau_days: float | None = None
+    collapse_drop_threshold: float | None = None
+    ramp_sensitivity: float | None = None
+    risk_sensitivity: float | None = None
 
 
 class TissueConditionCreate(BaseModel):
@@ -50,6 +56,7 @@ def list_tissues(
             "type": t.type,
             "recovery_hours": t.recovery_hours,
             "notes": t.notes,
+            "model_config": _serialize_model_config(session.get(TissueModelConfig, t.id)),
         }
         for t in get_current_tissues(session)
     ]
@@ -65,6 +72,7 @@ def get_tissue(
     if not tissue:
         raise HTTPException(status_code=404, detail="Tissue not found")
     condition = get_current_tissue_condition(session, tissue_id)
+    model_config = session.get(TissueModelConfig, tissue_id)
     return {
         "id": tissue.id,
         "name": tissue.name,
@@ -72,6 +80,7 @@ def get_tissue(
         "type": tissue.type,
         "recovery_hours": tissue.recovery_hours,
         "notes": tissue.notes,
+        "model_config": _serialize_model_config(model_config),
         "condition": {
             "status": condition.status,
             "severity": condition.severity,
@@ -118,12 +127,29 @@ def update_tissue(
     if data.notes is not None:
         tissue.notes = data.notes
     session.add(tissue)
+    config = session.get(TissueModelConfig, tissue_id)
+    if config is None:
+        config = TissueModelConfig(tissue_id=tissue_id)
+    if data.capacity_prior is not None:
+        config.capacity_prior = data.capacity_prior
+    if data.recovery_tau_days is not None:
+        config.recovery_tau_days = data.recovery_tau_days
+    if data.fatigue_tau_days is not None:
+        config.fatigue_tau_days = data.fatigue_tau_days
+    if data.collapse_drop_threshold is not None:
+        config.collapse_drop_threshold = data.collapse_drop_threshold
+    if data.ramp_sensitivity is not None:
+        config.ramp_sensitivity = data.ramp_sensitivity
+    if data.risk_sensitivity is not None:
+        config.risk_sensitivity = data.risk_sensitivity
+    session.add(config)
     session.commit()
     session.refresh(tissue)
     return {
         "id": tissue.id,
         "name": tissue.name,
         "recovery_hours": tissue.recovery_hours,
+        "model_config": _serialize_model_config(config),
     }
 
 
@@ -212,4 +238,17 @@ def create_condition(
         "status": condition.status,
         "severity": condition.severity,
         "updated_at": condition.updated_at,
+    }
+
+
+def _serialize_model_config(config: TissueModelConfig | None) -> dict | None:
+    if config is None:
+        return None
+    return {
+        "capacity_prior": config.capacity_prior,
+        "recovery_tau_days": config.recovery_tau_days,
+        "fatigue_tau_days": config.fatigue_tau_days,
+        "collapse_drop_threshold": config.collapse_drop_threshold,
+        "ramp_sensitivity": config.ramp_sensitivity,
+        "risk_sensitivity": config.risk_sensitivity,
     }

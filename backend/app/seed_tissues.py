@@ -1,8 +1,16 @@
 """Seed the tissue table with the complete human musculoskeletal system."""
 
+from datetime import date
+
 from sqlmodel import Session, select
 
-from app.models import Exercise, ExerciseTissue, Tissue
+from app.models import (
+    Exercise,
+    ExerciseTissue,
+    Tissue,
+    TissueModelConfig,
+    TrainingExclusionWindow,
+)
 
 # Flat tissue list: {name: {type, recovery_hours, display_name?}}
 # display_name is auto-generated from name if not provided.
@@ -215,3 +223,100 @@ def seed_hip_machine_tissues(session: Session) -> None:
                 loading_factor=spec["loading_factor"],
             ))
     session.commit()
+
+
+def seed_exercise_tissue_model_defaults(session: Session) -> None:
+    """Backfill newer exercise-tissue factors from legacy loading factors."""
+    mappings = session.exec(select(ExerciseTissue)).all()
+    for mapping in mappings:
+        base = mapping.loading_factor or 1.0
+        role_scale = {"primary": 1.0, "secondary": 0.65, "stabilizer": 0.35}.get(
+            mapping.role,
+            0.5,
+        )
+        default = max(0.05, round(base * role_scale, 4))
+        if not mapping.routing_factor:
+            mapping.routing_factor = default
+        if not mapping.fatigue_factor:
+            mapping.fatigue_factor = max(0.05, round(default * 0.9, 4))
+        if not mapping.joint_strain_factor:
+            mapping.joint_strain_factor = (
+                max(0.05, round(default * 1.25, 4)) if _is_joint_tissue(session, mapping.tissue_id) else default
+            )
+        if not mapping.tendon_strain_factor:
+            mapping.tendon_strain_factor = (
+                max(0.05, round(default * 1.15, 4)) if _is_tendon_tissue(session, mapping.tissue_id) else default
+            )
+        session.add(mapping)
+    session.commit()
+
+
+def seed_tissue_model_configs(session: Session) -> None:
+    """Create per-tissue model config rows if missing."""
+    tissues = session.exec(select(Tissue)).all()
+    for tissue in tissues:
+        existing = session.get(TissueModelConfig, tissue.id)
+        if existing:
+            continue
+        if tissue.type == "joint":
+            config = TissueModelConfig(
+                tissue_id=tissue.id,
+                capacity_prior=1.0,
+                recovery_tau_days=4.0,
+                fatigue_tau_days=3.0,
+                collapse_drop_threshold=0.4,
+                ramp_sensitivity=1.25,
+                risk_sensitivity=1.35,
+            )
+        elif tissue.type == "tendon":
+            config = TissueModelConfig(
+                tissue_id=tissue.id,
+                capacity_prior=1.0,
+                recovery_tau_days=4.5,
+                fatigue_tau_days=3.0,
+                collapse_drop_threshold=0.4,
+                ramp_sensitivity=1.15,
+                risk_sensitivity=1.25,
+            )
+        else:
+            config = TissueModelConfig(
+                tissue_id=tissue.id,
+                capacity_prior=1.0,
+                recovery_tau_days=3.0,
+                fatigue_tau_days=2.0,
+                collapse_drop_threshold=0.45,
+                ramp_sensitivity=1.0,
+                risk_sensitivity=1.0,
+            )
+        session.add(config)
+    session.commit()
+
+
+def seed_default_training_exclusion_windows(session: Session) -> None:
+    existing = session.exec(
+        select(TrainingExclusionWindow).where(
+            TrainingExclusionWindow.start_date == date(2025, 12, 16),
+        )
+    ).first()
+    if existing:
+        return
+    session.add(
+        TrainingExclusionWindow(
+            start_date=date(2025, 12, 16),
+            end_date=date(2025, 12, 31),
+            kind="surgery",
+            notes="Post-surgery recovery window excluded from overload learning.",
+            exclude_from_model=True,
+        )
+    )
+    session.commit()
+
+
+def _is_tendon_tissue(session: Session, tissue_id: int) -> bool:
+    tissue = session.get(Tissue, tissue_id)
+    return bool(tissue and tissue.type == "tendon")
+
+
+def _is_joint_tissue(session: Session, tissue_id: int) -> bool:
+    tissue = session.get(Tissue, tissue_id)
+    return bool(tissue and tissue.type == "joint")

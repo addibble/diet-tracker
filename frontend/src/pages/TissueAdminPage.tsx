@@ -12,7 +12,13 @@ import {
 type View = 'tissues' | 'exercises'
 
 interface TissueWithExercises extends WkTissue {
-  exercises: { exercise_id: number; exercise_name: string; role: string; loading_factor: number }[]
+  exercises: {
+    exercise_id: number;
+    exercise_name: string;
+    role: string;
+    loading_factor: number;
+    routing_factor: number;
+  }[]
 }
 
 // ── Style Constants ──
@@ -68,8 +74,24 @@ function LoadingEditor({
     try {
       const updatedTissues = exercise.tissues.map((t) =>
         t.tissue_id === tissueId
-          ? { tissue_id: t.tissue_id, role: editRole, loading_factor: loading }
-          : { tissue_id: t.tissue_id, role: t.role, loading_factor: t.loading_factor }
+          ? {
+              tissue_id: t.tissue_id,
+              role: editRole,
+              loading_factor: loading,
+              routing_factor: t.routing_factor,
+              fatigue_factor: t.fatigue_factor,
+              joint_strain_factor: t.joint_strain_factor,
+              tendon_strain_factor: t.tendon_strain_factor,
+            }
+          : {
+              tissue_id: t.tissue_id,
+              role: t.role,
+              loading_factor: t.loading_factor,
+              routing_factor: t.routing_factor,
+              fatigue_factor: t.fatigue_factor,
+              joint_strain_factor: t.joint_strain_factor,
+              tendon_strain_factor: t.tendon_strain_factor,
+            }
       )
       await updateExercise(exerciseId, { tissues: updatedTissues })
       onSave()
@@ -176,6 +198,11 @@ function TissueView({
                 {t.type}
               </span>
               <span className="text-[10px] text-gray-400">{t.recovery_hours}h</span>
+              {t.model_config && (
+                <span className="text-[10px] text-gray-400">
+                  cap {t.model_config.capacity_prior.toFixed(1)} · rec {t.model_config.recovery_tau_days.toFixed(1)}d
+                </span>
+              )}
             </div>
 
             {t.exercises.length > 0 && (
@@ -198,6 +225,9 @@ function TissueView({
                           onSave={onSave}
                         />
                       )}
+                      <span className="text-[10px] font-mono text-gray-400">
+                        r{ex.routing_factor.toFixed(2)}
+                      </span>
                     </span>
                   )
                 })}
@@ -258,6 +288,9 @@ function ExerciseView({ exercises, onSave }: { exercises: WkExercise[]; onSave: 
                     <span className={`px-1 py-px rounded text-[9px] font-medium ${ROLE_COLORS[t.role] ?? ROLE_COLORS.stabilizer}`}>
                       {t.role}
                     </span>
+                    <span className="text-[10px] font-mono text-gray-400">
+                      r{t.routing_factor.toFixed(2)}
+                    </span>
                     <LoadingEditor
                       value={t.loading_factor}
                       role={t.role}
@@ -314,6 +347,7 @@ export default function TissueAdminPage() {
                 exercise_name: ex.name,
                 role: m.role,
                 loading_factor: m.loading_factor,
+                routing_factor: m.routing_factor,
               })
             }
           }

@@ -22,11 +22,18 @@ class TissueMappingInput(BaseModel):
     tissue_id: int
     role: str = "primary"
     loading_factor: float = 1.0
+    routing_factor: float | None = None
+    fatigue_factor: float | None = None
+    joint_strain_factor: float | None = None
+    tendon_strain_factor: float | None = None
 
 
 class ExerciseCreate(BaseModel):
     name: str
     equipment: str | None = None
+    load_input_mode: str = "external_weight"
+    bodyweight_fraction: float = 0.0
+    estimated_minutes_per_set: float = 2.0
     notes: str | None = None
     tissues: list[TissueMappingInput] = []
 
@@ -34,6 +41,9 @@ class ExerciseCreate(BaseModel):
 class ExerciseUpdate(BaseModel):
     name: str | None = None
     equipment: str | None = None
+    load_input_mode: str | None = None
+    bodyweight_fraction: float | None = None
+    estimated_minutes_per_set: float | None = None
     notes: str | None = None
     tissues: list[TissueMappingInput] | None = None
 
@@ -50,11 +60,18 @@ def _build_exercise_response(exercise: Exercise, session: Session) -> dict:
             "tissue_type": tissue.type if tissue else "muscle",
             "role": m.role,
             "loading_factor": m.loading_factor,
+            "routing_factor": m.routing_factor,
+            "fatigue_factor": m.fatigue_factor,
+            "joint_strain_factor": m.joint_strain_factor,
+            "tendon_strain_factor": m.tendon_strain_factor,
         })
     return {
         "id": exercise.id,
         "name": exercise.name,
         "equipment": exercise.equipment,
+        "load_input_mode": exercise.load_input_mode,
+        "bodyweight_fraction": exercise.bodyweight_fraction,
+        "estimated_minutes_per_set": exercise.estimated_minutes_per_set,
         "notes": exercise.notes,
         "created_at": exercise.created_at,
         "tissues": tissues,
@@ -96,7 +113,14 @@ def create_exercise(
     existing = session.exec(select(Exercise).where(Exercise.name == data.name)).first()
     if existing:
         raise HTTPException(status_code=409, detail="Exercise already exists")
-    exercise = Exercise(name=data.name, equipment=data.equipment, notes=data.notes)
+    exercise = Exercise(
+        name=data.name,
+        equipment=data.equipment,
+        load_input_mode=data.load_input_mode,
+        bodyweight_fraction=data.bodyweight_fraction,
+        estimated_minutes_per_set=data.estimated_minutes_per_set,
+        notes=data.notes,
+    )
     session.add(exercise)
     session.commit()
     session.refresh(exercise)
@@ -106,6 +130,10 @@ def create_exercise(
             tissue_id=t.tissue_id,
             role=t.role,
             loading_factor=t.loading_factor,
+            routing_factor=t.routing_factor if t.routing_factor is not None else t.loading_factor,
+            fatigue_factor=t.fatigue_factor if t.fatigue_factor is not None else t.loading_factor,
+            joint_strain_factor=t.joint_strain_factor if t.joint_strain_factor is not None else t.loading_factor,
+            tendon_strain_factor=t.tendon_strain_factor if t.tendon_strain_factor is not None else t.loading_factor,
         ))
     session.commit()
     return _build_exercise_response(exercise, session)
@@ -125,6 +153,12 @@ def update_exercise(
         exercise.name = data.name
     if data.equipment is not None:
         exercise.equipment = data.equipment
+    if data.load_input_mode is not None:
+        exercise.load_input_mode = data.load_input_mode
+    if data.bodyweight_fraction is not None:
+        exercise.bodyweight_fraction = data.bodyweight_fraction
+    if data.estimated_minutes_per_set is not None:
+        exercise.estimated_minutes_per_set = data.estimated_minutes_per_set
     if data.notes is not None:
         exercise.notes = data.notes
     session.add(exercise)
@@ -143,6 +177,10 @@ def update_exercise(
                 tissue_id=t.tissue_id,
                 role=t.role,
                 loading_factor=t.loading_factor,
+                routing_factor=t.routing_factor if t.routing_factor is not None else t.loading_factor,
+                fatigue_factor=t.fatigue_factor if t.fatigue_factor is not None else t.loading_factor,
+                joint_strain_factor=t.joint_strain_factor if t.joint_strain_factor is not None else t.loading_factor,
+                tendon_strain_factor=t.tendon_strain_factor if t.tendon_strain_factor is not None else t.loading_factor,
             ))
         session.commit()
     return _build_exercise_response(exercise, session)

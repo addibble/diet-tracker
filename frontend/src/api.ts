@@ -441,6 +441,9 @@ export interface WkExercise {
   id: number;
   name: string;
   equipment: string | null;
+  load_input_mode: string;
+  bodyweight_fraction: number;
+  estimated_minutes_per_set: number;
   notes: string | null;
   tissues: WkExerciseTissueMapping[];
 }
@@ -452,6 +455,10 @@ export interface WkExerciseTissueMapping {
   tissue_type: string;
   role: string;
   loading_factor: number;
+  routing_factor: number;
+  fatigue_factor: number;
+  joint_strain_factor: number;
+  tendon_strain_factor: number;
 }
 
 export interface WkSetDetail {
@@ -501,6 +508,17 @@ export interface WkTissue {
   display_name: string;
   type: string;
   recovery_hours: number;
+  notes?: string | null;
+  model_config?: WkTissueModelConfig | null;
+}
+
+export interface WkTissueModelConfig {
+  capacity_prior: number;
+  recovery_tau_days: number;
+  fatigue_tau_days: number;
+  collapse_drop_threshold: number;
+  ramp_sensitivity: number;
+  risk_sensitivity: number;
 }
 
 export interface WkTissueCondition {
@@ -540,11 +558,112 @@ export interface WkExerciseHistory {
   }[];
 }
 
+export interface TrainingModelWindow {
+  id: number;
+  start_date: string;
+  end_date: string;
+  kind: string;
+  notes: string | null;
+  exclude_from_model: boolean;
+}
+
+export interface TrainingModelTissueSummary {
+  tissue: WkTissue & Required<Pick<WkTissue, 'model_config'>>;
+  current_capacity: number;
+  normalized_load: number;
+  acute_fatigue: number;
+  chronic_load: number;
+  recovery_estimate: number;
+  learned_recovery_days: number;
+  ramp_ratio: number;
+  risk_7d: number;
+  risk_14d: number;
+  collapse_count: number;
+  contributors: string[];
+  current_condition: {
+    status: string;
+    severity: number;
+    notes: string | null;
+    updated_at: string;
+  } | null;
+  recent_collapses: string[];
+}
+
+export interface TrainingModelExerciseInsight {
+  id: number;
+  name: string;
+  load_input_mode: string;
+  bodyweight_fraction: number;
+  estimated_minutes_per_set: number;
+  tissues: {
+    tissue_id: number;
+    tissue_name: string;
+    tissue_display_name: string;
+    routing_factor: number;
+    fatigue_factor: number;
+    joint_strain_factor: number;
+    tendon_strain_factor: number;
+    confidence: number;
+    trouble_association: number;
+  }[];
+}
+
+export interface TrainingModelSummary {
+  as_of: string;
+  overview: {
+    at_risk_count: number;
+    recovering_count: number;
+    tracked_tissues: number;
+    excluded_windows: TrainingModelWindow[];
+  };
+  tissues: TrainingModelTissueSummary[];
+  exercises: TrainingModelExerciseInsight[];
+}
+
+export interface TrainingModelHistoryPoint {
+  date: string;
+  raw_load: number;
+  normalized_load: number;
+  capacity_state: number;
+  acute_fatigue: number;
+  chronic_load: number;
+  recovery_state: number;
+  ramp_ratio: number;
+  risk_7d: number;
+  risk_14d: number;
+  collapse_flag: boolean;
+  contributors: string[];
+}
+
+export interface TrainingModelTissueHistory {
+  tissue: WkTissue & Required<Pick<WkTissue, 'model_config'>>;
+  as_of: string;
+  learned_recovery_days: number;
+  collapse_dates: string[];
+  history: TrainingModelHistoryPoint[];
+}
+
 // Workout API functions
 export const getExercises = (search?: string) =>
   request<WkExercise[]>(`/exercises${search ? `?search=${encodeURIComponent(search)}` : ''}`);
 
-export const updateExercise = (id: number, data: { name?: string; equipment?: string | null; notes?: string | null; tissues?: { tissue_id: number; role: string; loading_factor: number }[] }) =>
+export const updateExercise = (id: number, data: {
+  name?: string;
+  equipment?: string | null;
+  load_input_mode?: string;
+  bodyweight_fraction?: number;
+  estimated_minutes_per_set?: number;
+  notes?: string | null;
+  tissues?: {
+    tissue_id: number;
+    role: string;
+    loading_factor: number;
+    routing_factor?: number;
+    fatigue_factor?: number;
+    joint_strain_factor?: number;
+    tendon_strain_factor?: number;
+  }[];
+}) =>
   request<WkExercise>(`/exercises/${id}`, { method: 'PUT', body: JSON.stringify(data) });
 
 export const getWorkoutSessions = (startDate?: string, endDate?: string, limit?: number) => {
@@ -569,6 +688,17 @@ export const getExerciseHistory = (id: number, limit?: number) =>
 
 export const getTissues = () =>
   request<WkTissue[]>('/tissues');
+
+export const getTrainingModelSummary = (asOf?: string) =>
+  request<TrainingModelSummary>(`/training-model/summary${asOf ? `?as_of=${asOf}` : ''}`);
+
+export const getTrainingModelTissueHistory = (tissueId: number, days = 90, asOf?: string) => {
+  const params = [`days=${days}`];
+  if (asOf) params.push(`as_of=${asOf}`);
+  return request<TrainingModelTissueHistory>(
+    `/training-model/tissues/${tissueId}/history?${params.join('&')}`,
+  );
+};
 
 // Parse meal with LLM
 export const parseMeal = (description: string) =>

@@ -1,4 +1,5 @@
-from datetime import UTC, date, datetime
+import datetime as dt
+from datetime import UTC, datetime
 
 from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, SQLModel
@@ -44,7 +45,7 @@ class RecipeComponent(SQLModel, table=True):
 class MealLog(SQLModel, table=True):
     __tablename__ = "meal_logs"
     id: int | None = Field(default=None, primary_key=True)
-    date: date
+    date: dt.date
     meal_type: str  # "breakfast", "lunch", "dinner", "snack"
     notes: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
@@ -64,7 +65,7 @@ class Workout(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     # Client-provided deduplication key (e.g. "{date}T{start_time}_{type}")
     sync_key: str = Field(unique=True, index=True)
-    date: date
+    date: dt.date
     workout_type: str          # "Running", "Cycling", "Strength Training", etc.
     duration_minutes: float
     active_calories: float     # calories burned during the workout
@@ -98,6 +99,9 @@ class Exercise(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     name: str = Field(unique=True, index=True)
     equipment: str | None = None  # dumbbell, cable, barbell, machine, bodyweight, etc.
+    load_input_mode: str = "external_weight"
+    bodyweight_fraction: float = 0.0
+    estimated_minutes_per_set: float = 2.0
     notes: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
 
@@ -123,13 +127,17 @@ class ExerciseTissue(SQLModel, table=True):
     tissue_id: int = Field(foreign_key="tissues.id")
     role: str = "primary"  # "primary", "secondary", "stabilizer"
     loading_factor: float = 1.0  # 0.0-1.0
+    routing_factor: float = 1.0
+    fatigue_factor: float = 1.0
+    joint_strain_factor: float = 1.0
+    tendon_strain_factor: float = 1.0
     updated_at: datetime = Field(default_factory=_utcnow)
 
 
 class WorkoutSession(SQLModel, table=True):
     __tablename__ = "workout_sessions"
     id: int | None = Field(default=None, primary_key=True)
-    date: date
+    date: dt.date
     started_at: datetime | None = None
     finished_at: datetime | None = None
     notes: str | None = None
@@ -179,10 +187,46 @@ class TissueCondition(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=_utcnow)
 
 
+class TissueModelConfig(SQLModel, table=True):
+    __tablename__ = "tissue_model_configs"
+    tissue_id: int = Field(foreign_key="tissues.id", primary_key=True)
+    capacity_prior: float = 1.0
+    recovery_tau_days: float = 3.0
+    fatigue_tau_days: float = 2.0
+    collapse_drop_threshold: float = 0.45
+    ramp_sensitivity: float = 1.0
+    risk_sensitivity: float = 1.0
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class TissueRecoveryLog(SQLModel, table=True):
+    __tablename__ = "tissue_recovery_logs"
+    id: int | None = Field(default=None, primary_key=True)
+    date: dt.date = Field(index=True)
+    tissue_id: int = Field(foreign_key="tissues.id", index=True)
+    soreness_0_10: int = 0
+    pain_0_10: int = 0
+    readiness_0_10: int = 5
+    source_session_id: int | None = Field(default=None, foreign_key="workout_sessions.id")
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class TrainingExclusionWindow(SQLModel, table=True):
+    __tablename__ = "training_exclusion_windows"
+    __table_args__ = (UniqueConstraint("start_date", "end_date", "kind"),)
+    id: int | None = Field(default=None, primary_key=True)
+    start_date: dt.date = Field(index=True)
+    end_date: dt.date = Field(index=True)
+    kind: str
+    notes: str | None = None
+    exclude_from_model: bool = True
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
 class MacroTarget(SQLModel, table=True):
     __tablename__ = "macro_targets"
     id: int | None = Field(default=None, primary_key=True)
-    day: date = Field(index=True, unique=True)
+    day: dt.date = Field(index=True, unique=True)
     calories: float
     fat: float
     saturated_fat: float
