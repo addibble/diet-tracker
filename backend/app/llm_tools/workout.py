@@ -1275,7 +1275,11 @@ SET_TISSUE_CONDITIONS_DEF = {
             "Log or correct a tissue condition. Use operation='create' "
             "to append a new record (pass created_at to backdate, "
             "e.g. '2026-02-05'). Use operation='update' with set.id "
-            "to correct an existing record's fields in-place."
+            "to correct an existing record's fields in-place. "
+            "Use operation='delete' with set.id ONLY to remove a record "
+            "that was logged in error (wrong tissue, duplicate, etc.); "
+            "do NOT delete records simply because the user wants to "
+            "revise history."
         ),
         "parameters": {
             "type": "object",
@@ -1289,11 +1293,14 @@ SET_TISSUE_CONDITIONS_DEF = {
                         "properties": {
                             "operation": {
                                 "type": "string",
-                                "enum": ["create", "update"],
+                                "enum": ["create", "update", "delete"],
                                 "description": (
                                     "'create' appends a new record. "
                                     "'update' corrects an existing "
-                                    "record in-place (requires set.id)."
+                                    "record in-place (requires set.id). "
+                                    "'delete' removes an incorrect record "
+                                    "(requires set.id); only for entries "
+                                    "logged in error."
                                 ),
                             },
                             "set": {
@@ -1466,11 +1473,36 @@ def handle_set_tissue_conditions(
     results = []
     created = 0
     updated = 0
+    deleted = 0
     for change in args.get("changes", []):
         operation = change.get("operation", "create")
         set_fields = change.get("set", {})
 
-        if operation == "update":
+        if operation == "delete":
+            record_id = set_fields.get("id")
+            if not record_id:
+                return error_response(
+                    "tissue_conditions",
+                    "operation='delete' requires set.id.",
+                )
+            condition = session.get(TissueCondition, record_id)
+            if not condition:
+                return error_response(
+                    "tissue_conditions",
+                    f"No tissue_condition record with id={record_id}.",
+                )
+            tissue = session.get(Tissue, condition.tissue_id)
+            results.append({
+                "id": condition.id,
+                "tissue_name": tissue.name if tissue else f"id:{condition.tissue_id}",
+                "status": condition.status,
+                "severity": condition.severity,
+                "created_at": condition.updated_at.isoformat(),
+            })
+            session.delete(condition)
+            deleted += 1
+
+        elif operation == "update":
             record_id = set_fields.get("id")
             if not record_id:
                 return error_response(
@@ -1514,7 +1546,7 @@ def handle_set_tissue_conditions(
             })
             updated += 1
 
-        else:  # create
+        else:  # operation == "create"
             tissue = None
             if set_fields.get("tissue_id"):
                 tissue = session.get(Tissue, set_fields["tissue_id"])
@@ -1562,9 +1594,10 @@ def handle_set_tissue_conditions(
     session.commit()
     return setter_response(
         "tissue_conditions", "create", results,
-        matched_count=created + updated,
+        matched_count=created + updated + deleted,
         created_count=created,
         changed_count=updated,
+        deleted_count=deleted,
     )
 
 

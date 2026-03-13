@@ -257,3 +257,40 @@ def test_get_tissue_conditions_includes_id(tissue, session):
     assert result["count"] >= 1
     assert "id" in result["matches"][0]
     assert isinstance(result["matches"][0]["id"], int)
+
+
+def test_delete_tissue_condition_removes_record(tissue, session):
+    record_id = _create_condition(tissue, session, status="injured", severity=3)
+
+    result = handle_set_tissue_conditions(
+        {
+            "changes": [
+                {"operation": "delete", "set": {"id": record_id}}
+            ]
+        },
+        session,
+    )
+
+    assert result.get("error") is None
+    assert result["deleted_count"] == 1
+    assert result["matches"][0]["id"] == record_id
+    # Confirm it's gone from the DB
+    assert session.get(TissueCondition, record_id) is None
+
+
+def test_delete_tissue_condition_missing_id_returns_error(tissue, session):
+    result = handle_set_tissue_conditions(
+        {"changes": [{"operation": "delete", "set": {}}]},
+        session,
+    )
+
+    assert result.get("error") is not None
+
+
+def test_delete_tissue_condition_nonexistent_id_returns_error(tissue, session):
+    result = handle_set_tissue_conditions(
+        {"changes": [{"operation": "delete", "set": {"id": 99999}}]},
+        session,
+    )
+
+    assert result.get("error") is not None
