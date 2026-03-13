@@ -209,3 +209,24 @@ def test_training_model_exclusion_window_crud(client):
 
     listed_after = client.get("/api/training-model/exclusion-windows")
     assert any(row["kind"] == "travel" for row in listed_after.json())
+
+
+def test_training_model_exercise_risk_ranking_query(client, session):
+    _quad, tendon, exercise = _seed_leg_press_fixture(session)
+
+    response = client.get(
+        "/api/training-model/exercises?as_of=2026-01-12&sort_by=risk_7d&direction=desc&limit=10"
+    )
+    assert response.status_code == 200
+    rows = response.json()
+    assert rows
+    leg_press = next(row for row in rows if row["id"] == exercise.id)
+    assert leg_press["weighted_risk_7d"] >= 0
+    assert leg_press["recommendation"] in {"avoid", "caution", "good"}
+    assert any(tissue["tissue_id"] == tendon.id for tissue in leg_press["tissues"])
+
+    avoid_only = client.get(
+        "/api/training-model/exercises?as_of=2026-01-12&recommendation=avoid"
+    )
+    assert avoid_only.status_code == 200
+    assert all(row["recommendation"] == "avoid" for row in avoid_only.json())

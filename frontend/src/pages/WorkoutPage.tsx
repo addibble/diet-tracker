@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import {
   getTissueReadiness,
+  getTrainingModelExercises,
   getTrainingModelSummary,
-  getTrainingModelTissueHistory,
   getRoutine,
   getWorkoutSessions,
   getExerciseHistory,
   getExercises,
+  type TrainingModelExerciseInsight,
   type TrainingModelSummary,
   type TrainingModelTissueHistory,
   type WkTissueReadiness,
@@ -67,7 +68,7 @@ function statusBadge(condition: WkTissueReadiness['condition']): React.ReactNode
   )
 }
 
-function TissueStatusTable({ readiness }: { readiness: WkTissueReadiness[] }) {
+export function TissueStatusTable({ readiness }: { readiness: WkTissueReadiness[] }) {
   const [sortKey, setSortKey] = useState<SortKey>('recovery')
   const [sortAsc, setSortAsc] = useState(true)
 
@@ -259,7 +260,7 @@ function pctClass(value: number): string {
   return 'text-emerald-700 bg-emerald-50 border-emerald-100'
 }
 
-function TrainingModelCard({
+export function TrainingModelCard({
   summary,
   history,
   selectedTissueId,
@@ -445,11 +446,125 @@ function TrainingModelCard({
   )
 }
 
-function StatChip({ label, value }: { label: string; value: string }) {
+export function StatChip({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2">
       <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-400">{label}</p>
       <p className="mt-1 text-lg font-semibold text-gray-800">{value}</p>
+    </div>
+  )
+}
+
+function recommendationClass(value: TrainingModelExerciseInsight['recommendation']): string {
+  if (value === 'avoid') return 'text-red-700 bg-red-50 border-red-100'
+  if (value === 'caution') return 'text-amber-700 bg-amber-50 border-amber-100'
+  return 'text-emerald-700 bg-emerald-50 border-emerald-100'
+}
+
+function ExerciseRiskBoard({
+  summary,
+  exercises,
+  routine,
+}: {
+  summary: TrainingModelSummary | null
+  exercises: TrainingModelExerciseInsight[]
+  routine: WkRoutineExercise[]
+}) {
+  if (!summary) {
+    return (
+      <section className="bg-white border border-gray-200 rounded-2xl p-5">
+        <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">
+          Today by Exercise
+        </p>
+        <p className="text-sm text-gray-500 mt-2">No exercise risk data yet.</p>
+      </section>
+    )
+  }
+
+  const activeRoutineIds = new Set(routine.filter((item) => item.active).map((item) => item.exercise_id))
+  const routineFirst = [
+    ...exercises.filter((item) => activeRoutineIds.has(item.id)),
+    ...exercises.filter((item) => !activeRoutineIds.has(item.id)),
+  ]
+  const avoid = routineFirst.filter((item) => item.recommendation === 'avoid').slice(0, 6)
+  const caution = routineFirst.filter((item) => item.recommendation === 'caution').slice(0, 6)
+  const good = [...routineFirst]
+    .filter((item) => item.recommendation === 'good')
+    .sort((a, b) => b.suitability_score - a.suitability_score)
+    .slice(0, 6)
+
+  return (
+    <section className="bg-white border border-gray-200 rounded-2xl p-5 space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">
+            Today by Exercise
+          </p>
+          <p className="text-sm text-gray-500 mt-1">
+            Ranked directly from tissue risk, ramp, and recovery so you can choose exercises without decoding tissue rows.
+          </p>
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          <span className="rounded-full border border-red-100 bg-red-50 px-3 py-1 text-xs font-medium text-red-700">
+            {summary.overview.at_risk_count} tissues at risk
+          </span>
+          <span className="rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
+            {summary.overview.recovering_count} recovering well
+          </span>
+        </div>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-3">
+        <ExerciseColumn title="Avoid Today" items={avoid} emptyText="No exercises are currently flagged to avoid." />
+        <ExerciseColumn title="Use Caution" items={caution} emptyText="No exercises currently sit in the caution band." />
+        <ExerciseColumn title="Good Candidates" items={good} emptyText="No low-risk candidates available yet." />
+      </div>
+    </section>
+  )
+}
+
+function ExerciseColumn({
+  title,
+  items,
+  emptyText,
+}: {
+  title: string
+  items: TrainingModelExerciseInsight[]
+  emptyText: string
+}) {
+  return (
+    <div className="rounded-xl border border-gray-100 bg-gray-50/70 p-4">
+      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-400">{title}</p>
+      <div className="mt-3 space-y-2">
+        {items.length === 0 && (
+          <p className="text-sm text-gray-500">{emptyText}</p>
+        )}
+        {items.map((item) => (
+          <div key={item.id} className="rounded-xl border border-gray-200 bg-white px-3 py-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-gray-800 truncate">{item.name}</p>
+                <p className="text-xs text-gray-500">
+                  Risk {item.weighted_risk_7d.toFixed(0)}% · suitability {item.suitability_score.toFixed(0)}
+                </p>
+              </div>
+              <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${recommendationClass(item.recommendation)}`}>
+                {item.recommendation}
+              </span>
+            </div>
+            {item.blocked_tissues.length > 0 && (
+              <p className="mt-2 text-[11px] text-gray-600">
+                Avoid for: {item.blocked_tissues.join(', ')}
+              </p>
+            )}
+            {item.favored_tissues.length > 0 && (
+              <p className="mt-1 text-[11px] text-gray-500">
+                Good for: {item.favored_tissues.join(', ')}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -780,8 +895,7 @@ function VolumeBarChart({
 export default function WorkoutPage() {
   const [readiness, setReadiness] = useState<WkTissueReadiness[]>([])
   const [trainingModel, setTrainingModel] = useState<TrainingModelSummary | null>(null)
-  const [trainingHistory, setTrainingHistory] = useState<TrainingModelTissueHistory | null>(null)
-  const [selectedTrainingTissueId, setSelectedTrainingTissueId] = useState<number | null>(null)
+  const [trainingExercises, setTrainingExercises] = useState<TrainingModelExerciseInsight[]>([])
   const [routine, setRoutine] = useState<WkRoutineExercise[]>([])
   const [sessions, setSessions] = useState<WkSession[]>([])
   const [exercises, setExercises] = useState<WkExercise[]>([])
@@ -803,6 +917,8 @@ export default function WorkoutPage() {
         setRoutine(rt)
         setSessions(s)
         setExercises(ex)
+        const ranked = await getTrainingModelExercises({ sortBy: 'risk_7d', direction: 'desc', limit: 60 })
+        setTrainingExercises(ranked)
       } catch {
         // reset
       } finally {
@@ -811,18 +927,6 @@ export default function WorkoutPage() {
     }
     load()
   }, [])
-
-  useEffect(() => {
-    const tissueId = selectedTrainingTissueId ?? trainingModel?.tissues[0]?.tissue.id ?? null
-    if (!tissueId) {
-      setTrainingHistory(null)
-      return
-    }
-    setSelectedTrainingTissueId(tissueId)
-    getTrainingModelTissueHistory(tissueId, 90)
-      .then(setTrainingHistory)
-      .catch(() => setTrainingHistory(null))
-  }, [selectedTrainingTissueId, trainingModel])
 
   if (loading) {
     return (
@@ -834,13 +938,7 @@ export default function WorkoutPage() {
 
   return (
     <div className="space-y-4 pb-4 overflow-y-auto h-full">
-      <TissueStatusTable readiness={readiness} />
-      <TrainingModelCard
-        summary={trainingModel}
-        history={trainingHistory}
-        selectedTissueId={selectedTrainingTissueId}
-        onSelectTissue={setSelectedTrainingTissueId}
-      />
+      <ExerciseRiskBoard summary={trainingModel} exercises={trainingExercises} routine={routine} />
       <SuggestedWorkoutCard routine={routine} readiness={readiness} />
       <RecentSessionsCard sessions={sessions} />
       <ExerciseProgressCard exercises={exercises} />

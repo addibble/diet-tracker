@@ -8,6 +8,7 @@ from app.auth import get_current_user
 from app.database import get_session
 from app.models import Tissue, TissueRecoveryLog, TrainingExclusionWindow
 from app.training_model import (
+    build_exercise_risk_ranking,
     build_tissue_history,
     build_training_model_summary,
     list_exclusion_windows,
@@ -40,6 +41,28 @@ def get_summary(
     _user: str = Depends(get_current_user),
 ):
     return build_training_model_summary(session, as_of=as_of)
+
+
+@router.get("/exercises")
+def get_exercise_risk_ranking(
+    as_of: datetime.date | None = Query(default=None),
+    sort_by: str = Query(default="risk_7d", pattern="^(risk_7d|risk_14d|suitability|normalized_load)$"),
+    direction: str = Query(default="desc", pattern="^(asc|desc)$"),
+    limit: int = Query(default=50, ge=1, le=200),
+    recommendation: str | None = Query(default=None, pattern="^(avoid|caution|good)$"),
+    session: Session = Depends(get_session),
+    _user: str = Depends(get_current_user),
+):
+    rows = build_exercise_risk_ranking(
+        session,
+        as_of=as_of,
+        sort_by=sort_by,
+        descending=direction == "desc",
+        limit=None,
+    )
+    if recommendation:
+        rows = [row for row in rows if row["recommendation"] == recommendation]
+    return rows[:limit]
 
 
 @router.get("/tissues/{tissue_id}/history")

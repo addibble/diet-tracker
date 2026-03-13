@@ -22,6 +22,7 @@ from app.models import (
     WorkoutSession,
     WorkoutSet,
 )
+from app.training_model import build_exercise_risk_ranking
 from app.workout_queries import (
     get_all_current_conditions,
     get_current_exercise_tissues,
@@ -375,7 +376,8 @@ GET_EXERCISES_DEF = {
         "description": (
             "Get exercise records with tissue mappings. "
             "Search by name (fuzzy) or equipment. "
-            "Include history and stats for progression data."
+            "Include history, stats, and training_risk for progression data "
+            "and exercise selection."
         ),
         "parameters": {
             "type": "object",
@@ -384,7 +386,8 @@ GET_EXERCISES_DEF = {
                     "type": "object",
                     "description": (
                         "id({eq,in}), name({eq,fuzzy,contains}), "
-                        "equipment({eq,contains})."
+                        "equipment({eq,contains}), "
+                        "recommendation({eq}: avoid/caution/good)."
                     ),
                 },
                 "include": {
@@ -395,11 +398,20 @@ GET_EXERCISES_DEF = {
                             "current_tissues",
                             "history",
                             "stats",
+                            "training_risk",
                         ],
                     },
                     "default": ["current_tissues"],
                 },
                 "limit": {"type": "integer", "default": 50},
+                "sort": {
+                    "type": "array",
+                    "description": (
+                        "Sort by name, or when include contains training_risk, "
+                        "by training_risk_7d, training_risk_14d, suitability_score, "
+                        "or max_tissue_risk_7d."
+                    ),
+                },
             },
         },
     },
@@ -667,6 +679,44 @@ def handle_get_exercises(args: dict, session: Session) -> dict:
     if fuzzy_specs:
         records, match_info = apply_fuzzy_post_filter(records, fuzzy_specs)
 
+    training_risk_map = {}
+    if "training_risk" in includes:
+        risk_rows = build_exercise_risk_ranking(session)
+        training_risk_map = {row["id"]: row for row in risk_rows}
+        recommendation_filter = (filters or {}).get("recommendation")
+        if recommendation_filter:
+            expected = (
+                recommendation_filter.get("eq")
+                if isinstance(recommendation_filter, dict)
+                else recommendation_filter
+            )
+            records = [
+                exercise
+                for exercise in records
+                if training_risk_map.get(exercise.id, {}).get("recommendation") == expected
+            ]
+        custom_sort = (args.get("sort") or [])
+        if custom_sort:
+            field = custom_sort[0].get("field")
+            reverse = custom_sort[0].get("direction", "asc") == "desc"
+            if field in {
+                "training_risk_7d",
+                "training_risk_14d",
+                "suitability_score",
+                "max_tissue_risk_7d",
+            }:
+                field_map = {
+                    "training_risk_7d": "weighted_risk_7d",
+                    "training_risk_14d": "weighted_risk_14d",
+                    "suitability_score": "suitability_score",
+                    "max_tissue_risk_7d": "max_tissue_risk_7d",
+                }
+                sort_key = field_map[field]
+                records.sort(
+                    key=lambda exercise: training_risk_map.get(exercise.id, {}).get(sort_key, 0),
+                    reverse=reverse,
+                )
+
     results = []
     for ex in records:
         d = _build_exercise_detail(ex, session)
@@ -674,6 +724,8 @@ def handle_get_exercises(args: dict, session: Session) -> dict:
             d["history"] = _include_exercise_history(ex, session)
         if "stats" in includes:
             d["stats"] = _include_exercise_stats(ex, session)
+        if "training_risk" in includes:
+            d["training_risk"] = training_risk_map.get(ex.id)
         results.append(d)
 
     return getter_response(

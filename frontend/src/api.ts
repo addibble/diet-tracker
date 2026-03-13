@@ -592,17 +592,27 @@ export interface TrainingModelTissueSummary {
 export interface TrainingModelExerciseInsight {
   id: number;
   name: string;
+  equipment: string | null;
   load_input_mode: string;
-  bodyweight_fraction: number;
   estimated_minutes_per_set: number;
+  weighted_risk_7d: number;
+  weighted_risk_14d: number;
+  max_tissue_risk_7d: number;
+  weighted_normalized_load: number;
+  suitability_score: number;
+  recommendation: 'avoid' | 'caution' | 'good';
+  blocked_tissues: string[];
+  favored_tissues: string[];
   tissues: {
     tissue_id: number;
     tissue_name: string;
     tissue_display_name: string;
+    tissue_type: string;
     routing_factor: number;
-    fatigue_factor: number;
-    joint_strain_factor: number;
-    tendon_strain_factor: number;
+    tissue_risk_7d: number;
+    tissue_risk_14d: number;
+    tissue_normalized_load: number;
+    recovery_state: number;
     confidence: number;
     trouble_association: number;
   }[];
@@ -691,6 +701,25 @@ export const getTissues = () =>
 
 export const getTrainingModelSummary = (asOf?: string) =>
   request<TrainingModelSummary>(`/training-model/summary${asOf ? `?as_of=${asOf}` : ''}`);
+
+export const getTrainingModelExercises = (
+  params?: {
+    asOf?: string;
+    sortBy?: 'risk_7d' | 'risk_14d' | 'suitability' | 'normalized_load';
+    direction?: 'asc' | 'desc';
+    limit?: number;
+    recommendation?: 'avoid' | 'caution' | 'good';
+  },
+) => {
+  const query = new URLSearchParams();
+  if (params?.asOf) query.set('as_of', params.asOf);
+  if (params?.sortBy) query.set('sort_by', params.sortBy);
+  if (params?.direction) query.set('direction', params.direction);
+  if (params?.limit) query.set('limit', String(params.limit));
+  if (params?.recommendation) query.set('recommendation', params.recommendation);
+  const suffix = query.size ? `?${query.toString()}` : '';
+  return request<TrainingModelExerciseInsight[]>(`/training-model/exercises${suffix}`);
+};
 
 export const getTrainingModelTissueHistory = (tissueId: number, days = 90, asOf?: string) => {
   const params = [`days=${days}`];
