@@ -223,6 +223,8 @@ def test_training_model_exercise_risk_ranking_query(client, session):
     leg_press = next(row for row in rows if row["id"] == exercise.id)
     assert leg_press["weighted_risk_7d"] >= 0
     assert leg_press["recommendation"] in {"avoid", "caution", "good"}
+    assert leg_press["recommendation_reason"]
+    assert isinstance(leg_press["recommendation_details"], list)
     assert any(tissue["tissue_id"] == tendon.id for tissue in leg_press["tissues"])
 
     avoid_only = client.get(

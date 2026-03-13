@@ -601,6 +601,8 @@ export interface TrainingModelExerciseInsight {
   weighted_normalized_load: number;
   suitability_score: number;
   recommendation: 'avoid' | 'caution' | 'good';
+  recommendation_reason: string;
+  recommendation_details: string[];
   blocked_tissues: string[];
   favored_tissues: string[];
   tissues: {

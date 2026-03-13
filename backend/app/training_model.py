@@ -183,6 +183,14 @@ def build_exercise_risk_ranking(
             100.0,
         )
         recommendation = _recommend_exercise(weighted_risk_7d, max_tissue_risk, blocked_tissues)
+        recommendation_reason, recommendation_details = _build_recommendation_reason(
+            recommendation=recommendation,
+            weighted_risk_7d=weighted_risk_7d,
+            max_tissue_risk=max_tissue_risk,
+            blocked_tissues=blocked_tissues,
+            favored_tissues=favored_tissues,
+            weighted_normalized_load=weighted_normalized_load,
+        )
         exercise_rows.append(
             {
                 "id": exercise.id,
@@ -196,6 +204,8 @@ def build_exercise_risk_ranking(
                 "weighted_normalized_load": round(weighted_normalized_load, 3),
                 "suitability_score": round(suitability, 2),
                 "recommendation": recommendation,
+                "recommendation_reason": recommendation_reason,
+                "recommendation_details": recommendation_details,
                 "blocked_tissues": blocked_tissues[:5],
                 "favored_tissues": favored_tissues[:5],
                 "tissues": mappings,
@@ -945,6 +955,65 @@ def _recommend_exercise(
     if max_tissue_risk >= 55 or weighted_risk_7d >= 40:
         return "caution"
     return "good"
+
+
+def _build_recommendation_reason(
+    *,
+    recommendation: str,
+    weighted_risk_7d: float,
+    max_tissue_risk: int,
+    blocked_tissues: list[str],
+    favored_tissues: list[str],
+    weighted_normalized_load: float,
+) -> tuple[str, list[str]]:
+    details: list[str] = []
+    if weighted_risk_7d >= 60:
+        details.append("high 7d tissue risk")
+    elif weighted_risk_7d >= 40:
+        details.append("moderate 7d tissue risk")
+    elif weighted_risk_7d <= 25:
+        details.append("low 7d tissue risk")
+
+    if max_tissue_risk >= 75:
+        details.append(f"max tissue risk {max_tissue_risk}%")
+    elif max_tissue_risk >= 55:
+        details.append(f"some tissues are elevated ({max_tissue_risk}% max)")
+
+    if blocked_tissues:
+        details.append(f"loads {', '.join(blocked_tissues[:3])}")
+    elif weighted_normalized_load >= 1.0:
+        details.append(f"normalized demand {weighted_normalized_load:.2f}x capacity")
+
+    if favored_tissues:
+        details.append(f"favours recovering tissues: {', '.join(favored_tissues[:3])}")
+
+    if recommendation == "avoid":
+        reason = (
+            "Avoid because it directly loads "
+            f"{', '.join(blocked_tissues[:3]) or 'high-risk tissues'} while current tissue risk is elevated."
+        )
+    elif recommendation == "caution":
+        tissue_phrase = (
+            f" and this exercise still leans on {', '.join(blocked_tissues[:2])}"
+            if blocked_tissues
+            else ""
+        )
+        reason = (
+            "Use caution because recent tissue risk is elevated"
+            f"{tissue_phrase}."
+        )
+    else:
+        if favored_tissues:
+            reason = (
+                "Good candidate because its main tissues are recovering well"
+                " and current weighted risk is low."
+            )
+        else:
+            reason = (
+                "Good candidate because current weighted tissue risk is low"
+                " and no mapped tissue is in the avoid band."
+            )
+    return reason, details[:4]
 
 
 def _merge_contributors(primary: list[str], secondary: list[str]) -> list[str]:

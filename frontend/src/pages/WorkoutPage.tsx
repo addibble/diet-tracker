@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import {
-  getTissueReadiness,
   getTrainingModelExercises,
   getTrainingModelSummary,
   getRoutine,
@@ -190,12 +189,27 @@ function TissueRow({
 
 function SuggestedWorkoutCard({
   routine,
-  readiness: _readiness,
+  trainingExercises,
 }: {
   routine: WkRoutineExercise[]
-  readiness: WkTissueReadiness[]
+  trainingExercises: TrainingModelExerciseInsight[]
 }) {
-  const active = routine.filter((r) => r.active)
+  const recommendationByExerciseId = new Map(
+    trainingExercises.map((item) => [item.id, item] as const),
+  )
+  const active = [...routine]
+    .filter((r) => r.active)
+    .sort((a, b) => {
+      const left = recommendationByExerciseId.get(a.exercise_id)
+      const right = recommendationByExerciseId.get(b.exercise_id)
+      const leftRank = recommendationSortRank(left?.recommendation)
+      const rightRank = recommendationSortRank(right?.recommendation)
+      if (leftRank !== rightRank) return leftRank - rightRank
+      const leftSuitability = left?.suitability_score ?? -1
+      const rightSuitability = right?.suitability_score ?? -1
+      if (leftSuitability !== rightSuitability) return rightSuitability - leftSuitability
+      return a.sort_order - b.sort_order
+    })
 
   if (active.length === 0) {
     return (
@@ -221,28 +235,55 @@ function SuggestedWorkoutCard({
             ? `${re.target_sets}x${re.target_rep_min}-${re.target_rep_max}`
             : `${re.target_sets} sets`
           const lastWeight = re.last_performance?.sets?.[0]?.weight
+          const trainingRisk = recommendationByExerciseId.get(re.exercise_id)
           return (
             <div
               key={re.id}
-              className="flex items-center gap-3 rounded-xl bg-gray-50 border border-gray-100 px-3 py-2"
+              className="rounded-xl bg-gray-50 border border-gray-100 px-3 py-2"
             >
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-gray-800 truncate">
-                  {re.exercise_name}
-                </p>
-                <p className="text-xs text-gray-500">
-                  {repRange}
-                  {lastWeight != null && ` @ ${lastWeight} lbs`}
-                  {re.notes && ` — ${re.notes}`}
-                </p>
+              <div className="flex items-center gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-medium text-gray-800 truncate">
+                      {re.exercise_name}
+                    </p>
+                    {trainingRisk && (
+                      <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${recommendationClass(trainingRisk.recommendation)}`}>
+                        {trainingRisk.recommendation}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    {repRange}
+                    {lastWeight != null && ` @ ${lastWeight} lbs`}
+                    {re.notes && ` — ${re.notes}`}
+                  </p>
+                  {trainingRisk && (
+                    <p className="mt-1 text-[11px] text-gray-600">
+                      {trainingRisk.recommendation_reason}
+                    </p>
+                  )}
+                </div>
+                {re.last_performance && (
+                  <div className="flex gap-0.5">
+                    {re.last_performance.sets.map((s, i) => (
+                      <span
+                        key={i}
+                        className={`w-2 h-2 rounded-full ${repDot(s.rep_completion)}`}
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
-              {re.last_performance && (
-                <div className="flex gap-0.5">
-                  {re.last_performance.sets.map((s, i) => (
+              {trainingRisk && trainingRisk.recommendation_details.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {trainingRisk.recommendation_details.slice(0, 3).map((detail) => (
                     <span
-                      key={i}
-                      className={`w-2 h-2 rounded-full ${repDot(s.rep_completion)}`}
-                    />
+                      key={detail}
+                      className="rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[10px] font-medium text-gray-600"
+                    >
+                      {detail}
+                    </span>
                   ))}
                 </div>
               )}
@@ -461,6 +502,13 @@ function recommendationClass(value: TrainingModelExerciseInsight['recommendation
   return 'text-emerald-700 bg-emerald-50 border-emerald-100'
 }
 
+function recommendationSortRank(value: TrainingModelExerciseInsight['recommendation'] | undefined): number {
+  if (value === 'good') return 0
+  if (value === 'caution') return 1
+  if (value === 'avoid') return 2
+  return 3
+}
+
 function ExerciseRiskBoard({
   summary,
   exercises,
@@ -552,6 +600,21 @@ function ExerciseColumn({
                 {item.recommendation}
               </span>
             </div>
+            <p className="mt-2 text-[11px] text-gray-600">
+              {item.recommendation_reason}
+            </p>
+            {item.recommendation_details.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {item.recommendation_details.slice(0, 3).map((detail) => (
+                  <span
+                    key={detail}
+                    className="rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-[10px] font-medium text-gray-600"
+                  >
+                    {detail}
+                  </span>
+                ))}
+              </div>
+            )}
             {item.blocked_tissues.length > 0 && (
               <p className="mt-2 text-[11px] text-gray-600">
                 Avoid for: {item.blocked_tissues.join(', ')}
@@ -893,7 +956,6 @@ function VolumeBarChart({
 // ── Main Page ──
 
 export default function WorkoutPage() {
-  const [readiness, setReadiness] = useState<WkTissueReadiness[]>([])
   const [trainingModel, setTrainingModel] = useState<TrainingModelSummary | null>(null)
   const [trainingExercises, setTrainingExercises] = useState<TrainingModelExerciseInsight[]>([])
   const [routine, setRoutine] = useState<WkRoutineExercise[]>([])
@@ -905,14 +967,12 @@ export default function WorkoutPage() {
     const load = async () => {
       setLoading(true)
       try {
-        const [r, tm, rt, s, ex] = await Promise.all([
-          getTissueReadiness(),
+        const [tm, rt, s, ex] = await Promise.all([
           getTrainingModelSummary(),
           getRoutine(),
           getWorkoutSessions(undefined, undefined, 10),
           getExercises(),
         ])
-        setReadiness(r)
         setTrainingModel(tm)
         setRoutine(rt)
         setSessions(s)
@@ -939,7 +999,7 @@ export default function WorkoutPage() {
   return (
     <div className="space-y-4 pb-4 overflow-y-auto h-full">
       <ExerciseRiskBoard summary={trainingModel} exercises={trainingExercises} routine={routine} />
-      <SuggestedWorkoutCard routine={routine} readiness={readiness} />
+      <SuggestedWorkoutCard routine={routine} trainingExercises={trainingExercises} />
       <RecentSessionsCard sessions={sessions} />
       <ExerciseProgressCard exercises={exercises} />
     </div>
