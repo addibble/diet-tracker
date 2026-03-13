@@ -7,12 +7,7 @@ from sqlalchemy import func
 from sqlmodel import Session, col, select
 
 from app.config import settings
-from app.models import (
-    ExerciseTissue,
-    Tissue,
-    TissueCondition,
-    WorkoutSession,
-)
+from app.models import ExerciseTissue, Tissue, TissueCondition, WorkoutSession, WorkoutSet
 
 # Default workout time when started_at is not available
 _DEFAULT_WORKOUT_HOUR = 8
@@ -28,6 +23,35 @@ def session_trained_at(ws: WorkoutSession) -> datetime:
     tz = ZoneInfo(settings.default_timezone)
     local_dt = datetime.combine(ws.date, time(_DEFAULT_WORKOUT_HOUR), tzinfo=tz)
     return local_dt.astimezone(UTC)
+
+
+def get_last_trained_by_tissue(
+    session: Session, exercise_tissues: dict[int, list[int]]
+) -> dict[int, datetime]:
+    """Get most recent trained timestamp per tissue using session time, not row id.
+
+    Workout session ids are not guaranteed to be chronological after imports or
+    data repairs, so we must compare actual training timestamps.
+    """
+    last_trained_map: dict[int, datetime] = {}
+    stmt = (
+        select(WorkoutSet.exercise_id, WorkoutSession.id)
+        .join(WorkoutSession, WorkoutSet.session_id == WorkoutSession.id)
+        .distinct()
+    )
+    for exercise_id, session_id in session.exec(stmt).all():
+        tissue_ids = exercise_tissues.get(exercise_id)
+        if not tissue_ids:
+            continue
+        ws = session.get(WorkoutSession, session_id)
+        if not ws:
+            continue
+        last_dt = session_trained_at(ws)
+        for tissue_id in tissue_ids:
+            existing = last_trained_map.get(tissue_id)
+            if existing is None or last_dt > existing:
+                last_trained_map[tissue_id] = last_dt
+    return last_trained_map
 
 
 def get_current_tissues(session: Session) -> list[Tissue]:
