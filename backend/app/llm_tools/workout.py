@@ -1327,6 +1327,16 @@ SET_TISSUE_CONDITIONS_DEF = {
                                         "type": "string",
                                     },
                                     "notes": {"type": "string"},
+                                    "created_at": {
+                                        "type": "string",
+                                        "description": (
+                                            "ISO 8601 date or datetime to "
+                                            "backdate the record "
+                                            "(e.g. '2026-02-05' or "
+                                            "'2026-02-05T00:00:00'). "
+                                            "Defaults to now."
+                                        ),
+                                    },
                                 },
                             },
                         },
@@ -1437,6 +1447,21 @@ def handle_set_tissue_conditions(
                 "tissue_conditions",
                 f"Tissue '{set_fields.get('tissue_name', '')}' not found",
             )
+        recorded_at_str = set_fields.get("created_at")
+        if recorded_at_str:
+            try:
+                recorded_at = datetime.fromisoformat(recorded_at_str)
+                if recorded_at.tzinfo is None:
+                    recorded_at = recorded_at.replace(tzinfo=UTC)
+            except ValueError:
+                return error_response(
+                    "tissue_conditions",
+                    f"Invalid recorded_at value: '{recorded_at_str}'. "
+                    "Use ISO 8601 format, e.g. '2026-02-05' or "
+                    "'2026-02-05T12:00:00'.",
+                )
+        else:
+            recorded_at = datetime.now(UTC)
         condition = TissueCondition(
             tissue_id=tissue.id,
             status=set_fields["status"],
@@ -1447,6 +1472,7 @@ def handle_set_tissue_conditions(
             ),
             rehab_protocol=set_fields.get("rehab_protocol"),
             notes=set_fields.get("notes"),
+            updated_at=recorded_at,
         )
         session.add(condition)
         session.flush()
@@ -1454,6 +1480,7 @@ def handle_set_tissue_conditions(
             "tissue_name": tissue.name,
             "status": condition.status,
             "severity": condition.severity,
+            "created_at": condition.updated_at.isoformat(),
         })
         created += 1
 
