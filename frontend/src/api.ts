@@ -855,6 +855,45 @@ export const getPlannerToday = (asOf?: string) => {
   return request<PlannerTodayResponse>(`/planner/today${params}`);
 };
 
+export const savePlan = (dayLabel: string, targetRegions: string[], exercises: PlannerExercisePrescription[]) =>
+  request<SavedPlan>('/planner/save', {
+    method: 'POST',
+    body: JSON.stringify({ day_label: dayLabel, target_regions: targetRegions, exercises }),
+  });
+
+export const getActivePlan = () =>
+  request<SavedPlan>('/planner/active').catch(() => null);
+
+export const startPlan = () =>
+  request<{ workout_session_id: number }>('/planner/start', { method: 'POST' });
+
+export const completePlan = () =>
+  request<{ id: number; status: string }>('/planner/complete', { method: 'POST' });
+
+export interface SavedPlan {
+  id: number;
+  date: string;
+  status: string;
+  day_label: string;
+  target_regions: string[];
+  workout_session_id: number | null;
+  exercises: SavedPlanExercise[];
+}
+
+export interface SavedPlanExercise {
+  exercise_id: number;
+  exercise_name: string;
+  equipment: string | null;
+  target_sets: number;
+  target_rep_min: number | null;
+  target_rep_max: number | null;
+  rep_scheme: string | null;
+  target_weight: number | null;
+  completed_sets: { reps: number | null; weight: number | null; rpe: number | null }[];
+  sets_done: number;
+  done: boolean;
+}
+
 // Parse meal with LLM
 export const parseMeal = (description: string) =>
   request<ParseResult>('/meals/parse', {

@@ -7,6 +7,7 @@ import {
   getRegions,
   getExerciseStrength,
   getPlannerToday,
+  savePlan,
   type TrainingModelSummary,
   type TrainingModelTissueSummary,
   type TrainingModelExerciseInsight,
@@ -425,26 +426,16 @@ function StrengthCard({
 
 // ── Planner Card ──
 
-function buildChatPrompt(dayLabel: string, exercises: PlannerExercisePrescription[]): string {
-  if (!exercises.length) return `I just finished my ${dayLabel} workout.`
-  const lines = exercises.map(ex => {
-    const weight = ex.target_weight != null ? ` @ ${ex.target_weight} lb` : ''
-    return `${ex.exercise_name}: ${ex.target_sets}x${ex.target_reps}${weight}`
-  })
-  return `I just finished my ${dayLabel} workout:\n${lines.join('\n')}`
-}
+const schemeColor = (scheme: string) =>
+  scheme === 'heavy' ? 'bg-red-100 text-red-700' :
+  scheme === 'volume' ? 'bg-blue-100 text-blue-700' :
+  'bg-green-100 text-green-700'
 
-function PlannerCard({ planner, onRefresh }: { planner: PlannerTodayResponse; onRefresh?: () => void }) {
-  const [copied, setCopied] = useState(false)
-
-  const copyToChat = (dayLabel: string, exercises: PlannerExercisePrescription[]) => {
-    const text = buildChatPrompt(dayLabel, exercises)
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    })
-  }
-
+function PlannerCard({ planner, onRefresh, onSave }: {
+  planner: PlannerTodayResponse;
+  onRefresh?: () => void;
+  onSave?: (dayLabel: string, regions: string[], exercises: PlannerExercisePrescription[]) => void;
+}) {
   if (!planner.suggestion) {
     return (
       <div className="bg-white border border-gray-200 rounded-2xl p-5">
@@ -461,14 +452,9 @@ function PlannerCard({ planner, onRefresh }: { planner: PlannerTodayResponse; on
 
   const s = planner.suggestion
   const exercises = s.exercises || []
-  const schemeColor = (scheme: string) =>
-    scheme === 'heavy' ? 'bg-red-100 text-red-700' :
-    scheme === 'volume' ? 'bg-blue-100 text-blue-700' :
-    'bg-green-100 text-green-700'
 
   return (
     <div className="bg-white border border-gray-200 rounded-2xl p-5">
-      {/* Header */}
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-semibold text-gray-900">Today's Plan</h3>
@@ -476,13 +462,12 @@ function PlannerCard({ planner, onRefresh }: { planner: PlannerTodayResponse; on
         </div>
         <div className="flex items-center gap-2">
           {onRefresh && (
-            <button onClick={onRefresh} className="text-[10px] text-gray-400 hover:text-gray-600">↺ refresh</button>
+            <button onClick={onRefresh} className="text-[10px] text-gray-400 hover:text-gray-600">refresh</button>
           )}
           <span className="text-xs text-gray-500">{Math.round(s.readiness_score * 100)}% ready</span>
         </div>
       </div>
 
-      {/* Target regions */}
       {s.target_regions.length > 0 && (
         <div className="flex flex-wrap gap-1 mb-3 mt-2">
           {s.target_regions.map(r => (
@@ -493,50 +478,17 @@ function PlannerCard({ planner, onRefresh }: { planner: PlannerTodayResponse; on
         </div>
       )}
 
-      {/* Exercises */}
-      {exercises.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 p-4 text-center mb-3">
-          <p className="text-xs text-gray-500 mb-1">No exercises selected — tissue mappings may not be configured.</p>
-          <p className="text-[11px] text-gray-400">Ask the assistant to map exercises to tissues.</p>
-        </div>
-      ) : (
-        <div className="space-y-2 mb-3">
-          {exercises.map((ex, i) => (
-            <div key={ex.exercise_id ?? i} className="flex items-start gap-3 p-2.5 rounded-lg border border-gray-100 bg-gray-50/50">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="text-sm font-medium text-gray-900">{ex.exercise_name}</span>
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${schemeColor(ex.rep_scheme)}`}>
-                    {ex.rep_scheme}
-                  </span>
-                </div>
-                <div className="text-[11px] text-gray-600 mt-0.5 font-medium">
-                  {ex.target_sets} × {ex.target_reps}
-                  {ex.target_weight != null && <> @ <span className="text-gray-900">{ex.target_weight} lb</span></>}
-                </div>
-                {ex.overload_note && (
-                  <div className="text-[10px] text-amber-600 mt-0.5">{ex.overload_note}</div>
-                )}
-              </div>
-              <div className="text-right shrink-0 text-[10px] text-gray-400 max-w-24 leading-tight">
-                {ex.rationale}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+      <ExerciseList exercises={exercises} />
 
-      {/* Log workout action */}
-      {exercises.length > 0 && (
+      {exercises.length > 0 && onSave && (
         <button
-          onClick={() => copyToChat(s.day_label, exercises)}
-          className="w-full py-2 text-xs font-medium rounded-xl border border-gray-200 bg-gray-50 hover:bg-gray-100 text-gray-700 transition-colors mb-3"
+          onClick={() => onSave(s.day_label, s.target_regions, exercises)}
+          className="w-full py-2 text-xs font-medium rounded-xl bg-gray-900 hover:bg-gray-800 text-white transition-colors mb-3"
         >
-          {copied ? '✓ Copied — paste into chat after your workout' : '📋 Copy workout to log in chat'}
+          Save Plan & Start in Chat
         </button>
       )}
 
-      {/* Footer */}
       <div className="space-y-1 border-t border-gray-100 pt-2">
         {s.tomorrow_outlook && (
           <p className="text-[11px] text-gray-500">{s.tomorrow_outlook}</p>
@@ -547,6 +499,45 @@ function PlannerCard({ planner, onRefresh }: { planner: PlannerTodayResponse; on
           </p>
         )}
       </div>
+    </div>
+  )
+}
+
+function ExerciseList({ exercises }: { exercises: { exercise_name: string; exercise_id?: number; rep_scheme: string; target_sets: number; target_reps: string; target_weight: number | null; overload_note?: string | null; rationale?: string }[] }) {
+  if (exercises.length === 0) {
+    return (
+      <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 p-4 text-center mb-3">
+        <p className="text-xs text-gray-500">No matching exercises found for these regions.</p>
+        <p className="text-[11px] text-gray-400 mt-1">Ask the assistant to map exercises to tissues.</p>
+      </div>
+    )
+  }
+  return (
+    <div className="space-y-2 mb-3">
+      {exercises.map((ex, i) => (
+        <div key={ex.exercise_id ?? i} className="flex items-start gap-3 p-2.5 rounded-lg border border-gray-100 bg-gray-50/50">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-sm font-medium text-gray-900">{ex.exercise_name}</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${schemeColor(ex.rep_scheme)}`}>
+                {ex.rep_scheme}
+              </span>
+            </div>
+            <div className="text-[11px] text-gray-600 mt-0.5 font-medium">
+              {ex.target_sets} x {ex.target_reps}
+              {ex.target_weight != null && <> @ <span className="text-gray-900">{ex.target_weight} lb</span></>}
+            </div>
+            {ex.overload_note && (
+              <div className="text-[10px] text-amber-600 mt-0.5">{ex.overload_note}</div>
+            )}
+          </div>
+          {ex.rationale && (
+            <div className="text-right shrink-0 text-[10px] text-gray-400 max-w-24 leading-tight">
+              {ex.rationale}
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   )
 }
@@ -679,6 +670,12 @@ export default function TrainingPage() {
     refreshPlanner()
   }, [refreshPlanner])
 
+  const handleSavePlan = useCallback((dayLabel: string, regions: string[], exercises: PlannerExercisePrescription[]) => {
+    savePlan(dayLabel, regions, exercises).then(() => {
+      refreshPlanner()
+    }).catch(() => {})
+  }, [refreshPlanner])
+
   return (
     <ScrollablePage>
       <div className="space-y-4 pb-4">
@@ -705,7 +702,7 @@ export default function TrainingPage() {
               />
             )}
             {/* Today's Plan */}
-            {plannerLoading ? <CardSkeleton lines={4} /> : planner && <PlannerCard planner={planner} onRefresh={refreshPlanner} />}
+            {plannerLoading ? <CardSkeleton lines={4} /> : planner && <PlannerCard planner={planner} onRefresh={refreshPlanner} onSave={handleSavePlan} />}
           </div>
         )}
 

@@ -2481,19 +2481,17 @@ GET_WORKOUT_PLAN_DEF = {
     "function": {
         "name": "get_workout_plan",
         "description": (
-            "Get today's auto-generated workout plan. The planner selects which "
-            "muscle group to train based on tissue readiness, recovery check-ins, "
-            "injury status, and time since last trained. Returns exercise "
-            "prescriptions with sets, reps, and target weights. Call this when the "
-            "user asks what to train today, wants a workout suggestion, or asks "
-            "about their training plan."
+            "Get today's workout plan. If a plan has been saved, returns it with "
+            "progress (which exercises are done). Otherwise generates a new suggestion. "
+            "Call when the user asks what to train, wants to start their workout, or "
+            "asks about today's plan."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "as_of": {
                     "type": "string",
-                    "description": "Optional date (YYYY-MM-DD) to plan for. Defaults to today.",
+                    "description": "Optional date (YYYY-MM-DD). Defaults to today.",
                 },
             },
             "required": [],
@@ -2505,21 +2503,27 @@ GET_WORKOUT_PLAN_DEF = {
 def handle_get_workout_plan(args: dict, session: "Session") -> dict:
     from datetime import date as date_type
 
-    from app.planner import suggest_today
+    from app.planner import get_saved_plan, suggest_today
 
     as_of = None
     if args.get("as_of"):
         as_of = date_type.fromisoformat(args["as_of"])
 
-    result = suggest_today(session, as_of=as_of)
+    plan_date = as_of or date_type.today()
 
-    # Format for LLM consumption
+    # Check for saved plan first
+    saved = get_saved_plan(session, plan_date)
+    if saved:
+        return _format_saved_plan(saved)
+
+    # No saved plan — generate suggestion
+    result = suggest_today(session, as_of=as_of)
     if result.get("suggestion") is None:
-        return {"plan": result.get("message", "No plan available.")}
+        return {"plan": result.get("message", "No plan available."), "saved": False}
 
     s = result["suggestion"]
     lines = [
-        f"Today's Plan: {s['day_label']}",
+        f"Suggested Plan: {s['day_label']}",
         f"Target regions: {', '.join(s['target_regions'])}",
         f"Readiness: {round(s['readiness_score'] * 100)}%",
         f"Rationale: {s['rationale']}",
@@ -2533,17 +2537,59 @@ def handle_get_workout_plan(args: dict, session: "Session") -> dict:
             f"  - {ex['exercise_name']}: {ex['target_sets']}x{ex['target_reps']}"
             f"{weight_str} [{ex['rep_scheme']}]{note}"
         )
-        if ex.get("rationale"):
-            lines.append(f"    Reason: {ex['rationale']}")
 
     lines.append("")
     lines.append(s.get("tomorrow_outlook", ""))
-
     if result.get("alternatives"):
         alt_names = [a["day_label"] for a in result["alternatives"]]
         lines.append(f"Alternatives: {', '.join(alt_names)}")
+    lines.append("")
+    lines.append("This plan is not saved yet. The user can save it from the Training page.")
 
-    return {"plan": "\n".join(lines)}
+    return {"plan": "\n".join(lines), "saved": False}
+
+
+def _format_saved_plan(saved: dict) -> dict:
+    status = saved["status"]
+    lines = [
+        f"Today's Plan: {saved['day_label']} [{status}]",
+        f"Regions: {', '.join(saved.get('target_regions', []))}",
+        "",
+    ]
+
+    remaining = []
+    completed = []
+    for ex in saved.get("exercises", []):
+        name = ex["exercise_name"]
+        rep_range = f"{ex.get('target_rep_min', '?')}-{ex.get('target_rep_max', '?')}"
+        weight_str = f" @ {ex['target_weight']} lb" if ex.get("target_weight") else ""
+        scheme = f" [{ex['rep_scheme']}]" if ex.get("rep_scheme") else ""
+        target = f"{ex['target_sets']}x{rep_range}{weight_str}{scheme}"
+
+        if ex["done"]:
+            sets_info = ", ".join(
+                f"{s['reps']}@{s.get('weight', '?')} RPE {s.get('rpe', '?')}"
+                for s in ex.get("completed_sets", [])
+            )
+            completed.append(f"  [done] {name}: {sets_info}")
+        else:
+            done_count = ex["sets_done"]
+            if done_count > 0:
+                remaining.append(f"  [in progress {done_count}/{ex['target_sets']}] {name}: {target}")
+            else:
+                remaining.append(f"  [ ] {name}: {target}")
+
+    if remaining:
+        lines.append("Remaining:")
+        lines.extend(remaining)
+    if completed:
+        lines.append("\nCompleted:")
+        lines.extend(completed)
+
+    if not remaining and completed:
+        lines.append("\nAll exercises done! Ask the user if they want to finish the workout.")
+
+    return {"plan": "\n".join(lines), "saved": True, "status": status}
 
 
 # =====================================================================
