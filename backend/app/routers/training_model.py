@@ -289,7 +289,7 @@ def get_regions(
             "display_name": tissue.display_name,
             "type": tissue.type,
         })
-    return {
-        region: tissues_list
+    return [
+        {"region": region, "tissues": tissues_list}
         for region, tissues_list in sorted(regions.items())
-    }
+    ]
