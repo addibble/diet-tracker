@@ -265,7 +265,9 @@ def _select_exercises(
             continue
 
         # Find which target tissues this exercise hits
-        exercise_id = ex["exercise_id"]
+        exercise_id = ex.get("exercise_id") or ex.get("id")
+        if not exercise_id:
+            continue
         mappings = session.exec(
             select(ExerciseTissue).where(ExerciseTissue.exercise_id == exercise_id)
         ).all()
@@ -341,7 +343,7 @@ def _prescribe_all(
 
     results = []
     for ex in exercises:
-        exercise_id = ex["exercise_id"]
+        exercise_id = ex.get("exercise_id") or ex.get("id")
 
         # Get exercise object for equipment info
         exercise = session.get(Exercise, exercise_id)
@@ -399,8 +401,8 @@ def _prescribe_all(
         target_sets = 3 if rep_scheme == "heavy" else 4 if rep_scheme == "volume" else 3
 
         results.append({
-            "exercise_id": exercise_id,
-            "exercise_name": ex.get("exercise_name", exercise.name),
+            "exercise_id": exercise.id,
+            "exercise_name": ex.get("exercise_name") or ex.get("name") or exercise.name,
             "equipment": exercise.equipment,
             "rep_scheme": rep_scheme,
             "target_sets": target_sets,
