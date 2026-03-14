@@ -62,6 +62,16 @@ function CardSkeleton({ lines = 3 }: { lines?: number }) {
 
 // ── Recovery Check-in Card ──
 
+// Map 0-3 UI scale to 0-10 DB scale
+const SEVERITY_MAP = [0, 4, 7, 10] as const
+const SEVERITY_LABELS = ['None', 'Some', 'Substantial', 'Severe'] as const
+const SEVERITY_COLORS = [
+  'bg-emerald-100 text-emerald-700 border-emerald-300',
+  'bg-yellow-100 text-yellow-700 border-yellow-300',
+  'bg-amber-100 text-amber-700 border-amber-300',
+  'bg-red-100 text-red-700 border-red-300',
+] as const
+
 function CheckInCard({
   regions,
   existingCheckIns,
@@ -72,16 +82,22 @@ function CheckInCard({
   onSubmit: () => void
 }) {
   const [selected, setSelected] = useState<string | null>(null)
-  const [soreness, setSoreness] = useState(0)
-  const [pain, setPain] = useState(0)
-  const [stiffness, setStiffness] = useState(0)
-  const [readiness, setReadiness] = useState(5)
+  const [soreness, setSoreness] = useState(0)  // 0-3
+  const [pain, setPain] = useState(0)           // 0-3
+  const [stiffness, setStiffness] = useState(0) // 0-3
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     setSaved(new Set(existingCheckIns.map(c => c.region)))
   }, [existingCheckIns])
+
+  // Auto-calculate readiness: start at 10, subtract for each nonzero category
+  const readiness = Math.max(0, 10
+    - (soreness > 0 ? soreness + 1 : 0)
+    - (pain > 0 ? pain + 1 : 0)
+    - (stiffness > 0 ? stiffness : 0)
+  )
 
   const submit = async () => {
     if (!selected) return
@@ -90,9 +106,9 @@ function CheckInCard({
       await createRecoveryCheckIn({
         date: today(),
         region: selected,
-        soreness_0_10: soreness,
-        pain_0_10: pain,
-        stiffness_0_10: stiffness,
+        soreness_0_10: SEVERITY_MAP[soreness],
+        pain_0_10: SEVERITY_MAP[pain],
+        stiffness_0_10: SEVERITY_MAP[stiffness],
         readiness_0_10: readiness,
       })
       setSaved(prev => new Set([...prev, selected]))
@@ -100,29 +116,31 @@ function CheckInCard({
       setSoreness(0)
       setPain(0)
       setStiffness(0)
-      setReadiness(5)
       onSubmit()
     } finally {
       setSaving(false)
     }
   }
 
-  const SliderRow = ({ label, value, onChange, low, high, color }: {
+  const SeverityRow = ({ label, value, onChange }: {
     label: string; value: number; onChange: (v: number) => void;
-    low: string; high: string; color: string;
   }) => (
-    <div className="space-y-1">
-      <div className="flex justify-between items-baseline">
-        <span className="text-xs font-medium text-gray-600">{label}</span>
-        <span className={`text-sm font-semibold tabular-nums ${color}`}>{value}</span>
-      </div>
-      <input
-        type="range" min={0} max={10} value={value}
-        onChange={e => onChange(+e.target.value)}
-        className="w-full h-1.5 accent-gray-700"
-      />
-      <div className="flex justify-between text-[10px] text-gray-400">
-        <span>{low}</span><span>{high}</span>
+    <div className="space-y-1.5">
+      <span className="text-xs font-medium text-gray-600">{label}</span>
+      <div className="grid grid-cols-4 gap-1.5">
+        {SEVERITY_LABELS.map((lbl, i) => (
+          <button
+            key={i}
+            onClick={() => onChange(i)}
+            className={`py-1.5 text-xs font-medium rounded-lg border transition-all ${
+              value === i
+                ? SEVERITY_COLORS[i]
+                : 'bg-white border-gray-200 text-gray-400 hover:border-gray-300'
+            }`}
+          >
+            {lbl}
+          </button>
+        ))}
       </div>
     </div>
   )
@@ -137,7 +155,7 @@ function CheckInCard({
           return (
             <button
               key={r.region}
-              onClick={() => { setSelected(active ? null : r.region); setSoreness(0); setPain(0); setStiffness(0); setReadiness(5) }}
+              onClick={() => { setSelected(active ? null : r.region); setSoreness(0); setPain(0); setStiffness(0) }}
               className={`px-2.5 py-1 text-xs rounded-lg border transition-all ${
                 done
                   ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
@@ -153,15 +171,17 @@ function CheckInCard({
       </div>
       {selected && (
         <div className="rounded-xl border border-gray-100 bg-gray-50/70 p-4 space-y-3">
-          <p className="text-xs font-medium text-gray-700">{regionLabel(selected)}</p>
-          <SliderRow label="Soreness" value={soreness} onChange={setSoreness}
-            low="None" high="Severe" color={soreness > 6 ? 'text-red-600' : soreness > 3 ? 'text-amber-600' : 'text-emerald-600'} />
-          <SliderRow label="Pain" value={pain} onChange={setPain}
-            low="None" high="Severe" color={pain > 4 ? 'text-red-600' : pain > 2 ? 'text-amber-600' : 'text-emerald-600'} />
-          <SliderRow label="Stiffness" value={stiffness} onChange={setStiffness}
-            low="None" high="Severe" color={stiffness > 5 ? 'text-amber-600' : 'text-emerald-600'} />
-          <SliderRow label="Readiness" value={readiness} onChange={setReadiness}
-            low="Not ready" high="Peak" color={readiness >= 7 ? 'text-emerald-600' : readiness >= 4 ? 'text-amber-600' : 'text-red-600'} />
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-medium text-gray-700">{regionLabel(selected)}</p>
+            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+              readiness >= 8 ? 'bg-emerald-100 text-emerald-700' :
+              readiness >= 5 ? 'bg-yellow-100 text-yellow-700' :
+              'bg-red-100 text-red-700'
+            }`}>Readiness: {readiness}/10</span>
+          </div>
+          <SeverityRow label="Soreness" value={soreness} onChange={setSoreness} />
+          <SeverityRow label="Pain" value={pain} onChange={setPain} />
+          <SeverityRow label="Stiffness" value={stiffness} onChange={setStiffness} />
           <button
             onClick={submit}
             disabled={saving}
