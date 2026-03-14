@@ -210,7 +210,7 @@ def delete_exercise(
 @router.get("/{exercise_id}/history")
 def get_exercise_history(
     exercise_id: int,
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=500),
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):

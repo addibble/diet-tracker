@@ -221,17 +221,25 @@ function CheckInCard({
 
 function TissueAndExerciseCard({ tissues, exercises }: { tissues: TrainingModelTissueSummary[], exercises: TrainingModelExerciseInsight[] }) {
   const [tab, setTab] = useState<'tissues' | 'exercises'>('tissues')
+  const [tissueFilter, setTissueFilter] = useState<'all' | 'elevated' | 'monitor' | 'recovered'>('all')
   const [exFilter, setExFilter] = useState<'all' | 'avoid' | 'caution' | 'good'>('all')
 
   const atRisk = tissues.filter(t => t.risk_7d >= 55)
-  const recovering = tissues.filter(t => t.risk_7d < 30 && t.recovery_estimate >= 0.75)
   const mid = tissues.filter(t => t.risk_7d >= 30 && t.risk_7d < 55)
-  const filtered = exFilter === 'all' ? exercises : exercises.filter(e => e.recommendation === exFilter)
-  const counts = {
+  const recovering = tissues.filter(t => t.risk_7d < 30 && t.recovery_estimate >= 0.75)
+
+  const tissueCounts = { elevated: atRisk.length, monitor: mid.length, recovered: recovering.length }
+  const filteredTissues = tissueFilter === 'elevated' ? atRisk
+    : tissueFilter === 'monitor' ? mid
+    : tissueFilter === 'recovered' ? recovering
+    : tissues
+
+  const exCounts = {
     avoid: exercises.filter(e => e.recommendation === 'avoid').length,
     caution: exercises.filter(e => e.recommendation === 'caution').length,
     good: exercises.filter(e => e.recommendation === 'good').length,
   }
+  const filteredEx = exFilter === 'all' ? exercises : exercises.filter(e => e.recommendation === exFilter)
 
   const TissueRow = ({ t }: { t: TrainingModelTissueSummary }) => (
     <div className={`flex items-center gap-3 p-2.5 rounded-lg border ${riskBg(t.risk_7d)}`}>
@@ -264,46 +272,50 @@ function TissueAndExerciseCard({ tissues, exercises }: { tissues: TrainingModelT
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-semibold text-gray-900">Tissue & Exercise Status</h3>
         <div className="flex gap-1">
-          <button
-            onClick={() => setTab('tissues')}
-            className={`px-3 py-1 text-xs rounded-lg border transition-all ${tab === 'tissues' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-500 border-gray-200'}`}
-          >Tissues</button>
-          <button
-            onClick={() => setTab('exercises')}
-            className={`px-3 py-1 text-xs rounded-lg border transition-all ${tab === 'exercises' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-500 border-gray-200'}`}
-          >Exercises</button>
+          <button onClick={() => setTab('tissues')} className={`px-3 py-1 text-xs rounded-lg border transition-all ${tab === 'tissues' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-500 border-gray-200'}`}>Tissues</button>
+          <button onClick={() => setTab('exercises')} className={`px-3 py-1 text-xs rounded-lg border transition-all ${tab === 'exercises' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-500 border-gray-200'}`}>Exercises</button>
         </div>
       </div>
 
       {tab === 'tissues' && (
-        <div className="space-y-3">
-          {atRisk.length > 0 && (
-            <div>
-              <p className="text-[10px] uppercase tracking-wider text-red-600 font-semibold mb-1.5">Elevated Risk</p>
-              <div className="space-y-1.5">{atRisk.map(t => <TissueRow key={t.tissue.id} t={t} />)}</div>
-            </div>
-          )}
-          {mid.length > 0 && (
-            <div>
-              <p className="text-[10px] uppercase tracking-wider text-amber-600 font-semibold mb-1.5">Monitor</p>
-              <div className="space-y-1.5">{mid.map(t => <TissueRow key={t.tissue.id} t={t} />)}</div>
-            </div>
-          )}
-          {recovering.length > 0 && (
-            <div>
-              <p className="text-[10px] uppercase tracking-wider text-emerald-600 font-semibold mb-1.5">Recovered</p>
-              <div className="space-y-1.5">{recovering.slice(0, 5).map(t => <TissueRow key={t.tissue.id} t={t} />)}</div>
-              {recovering.length > 5 && <p className="text-[11px] text-gray-400 mt-1">+{recovering.length - 5} more</p>}
-            </div>
-          )}
-          {tissues.length === 0 && <p className="text-sm text-gray-400">No tissue data available</p>}
+        <div>
+          <div className="flex gap-1.5 mb-3 flex-wrap">
+            {([
+              ['all', 'All'],
+              ['elevated', `Elevated (${tissueCounts.elevated})`],
+              ['monitor', `Monitor (${tissueCounts.monitor})`],
+              ['recovered', `Recovered (${tissueCounts.recovered})`],
+            ] as const).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setTissueFilter(key)}
+                className={`px-2.5 py-1 text-xs rounded-lg border transition-all ${
+                  tissueFilter === key
+                    ? key === 'elevated' ? 'bg-red-100 text-red-700 border-red-300 font-semibold'
+                      : key === 'monitor' ? 'bg-amber-100 text-amber-700 border-amber-300 font-semibold'
+                      : key === 'recovered' ? 'bg-emerald-100 text-emerald-700 border-emerald-300 font-semibold'
+                      : 'bg-gray-900 text-white border-gray-900 font-semibold'
+                    : 'bg-white border-gray-200 text-gray-500 hover:border-gray-300'
+                }`}
+              >{label}</button>
+            ))}
+          </div>
+          <div className="space-y-1.5 max-h-72 overflow-y-auto">
+            {filteredTissues.map(t => <TissueRow key={t.tissue.id} t={t} />)}
+            {filteredTissues.length === 0 && <p className="text-sm text-gray-400 py-2">No tissues in this category</p>}
+          </div>
         </div>
       )}
 
       {tab === 'exercises' && (
         <div>
           <div className="flex gap-1.5 mb-3 flex-wrap">
-            {([['all', 'All'], ['good', `Good (${counts.good})`], ['caution', `Caution (${counts.caution})`], ['avoid', `Avoid (${counts.avoid})`]] as const).map(([key, label]) => (
+            {([
+              ['all', 'All'],
+              ['good', `Good (${exCounts.good})`],
+              ['caution', `Caution (${exCounts.caution})`],
+              ['avoid', `Avoid (${exCounts.avoid})`],
+            ] as const).map(([key, label]) => (
               <button
                 key={key}
                 onClick={() => setExFilter(key)}
@@ -318,8 +330,8 @@ function TissueAndExerciseCard({ tissues, exercises }: { tissues: TrainingModelT
               >{label}</button>
             ))}
           </div>
-          <div className="space-y-1.5 max-h-80 overflow-y-auto">
-            {filtered.map(ex => (
+          <div className="space-y-1.5 max-h-72 overflow-y-auto">
+            {filteredEx.map(ex => (
               <div key={ex.id} className="flex items-center gap-3 p-2.5 rounded-lg border border-gray-100 bg-gray-50/50">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
@@ -345,7 +357,7 @@ function TissueAndExerciseCard({ tissues, exercises }: { tissues: TrainingModelT
                 </div>
               </div>
             ))}
-            {filtered.length === 0 && <p className="text-sm text-gray-400 py-2">No exercises in this category</p>}
+            {filteredEx.length === 0 && <p className="text-sm text-gray-400 py-2">No exercises in this category</p>}
           </div>
         </div>
       )}
@@ -680,12 +692,12 @@ function CapacityCard({ tissues }: { tissues: TrainingModelTissueSummary[] }) {
   return (
     <div className="bg-white border border-gray-200 rounded-2xl p-5">
       <h3 className="text-sm font-semibold text-gray-900 mb-3">Capacity Trends <span className="font-normal text-gray-400">30d</span></h3>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="space-y-3">
         {growing.length > 0 && (
           <div>
             <p className="text-[10px] uppercase tracking-wider text-emerald-600 font-semibold mb-1.5">Growing</p>
             <div className="space-y-1.5">
-              {growing.slice(0, 6).map(t => (
+              {growing.map(t => (
                 <div key={t.tissue.id} className="flex items-center gap-2">
                   <span className="text-xs text-gray-700 flex-1 truncate">{t.tissue.display_name}</span>
                   <span className="text-xs font-semibold tabular-nums text-emerald-600">+{t.capacity_trend_30d_pct}%</span>
@@ -699,7 +711,7 @@ function CapacityCard({ tissues }: { tissues: TrainingModelTissueSummary[] }) {
           <div>
             <p className="text-[10px] uppercase tracking-wider text-red-600 font-semibold mb-1.5">Declining</p>
             <div className="space-y-1.5">
-              {declining.slice(0, 6).map(t => (
+              {declining.map(t => (
                 <div key={t.tissue.id} className="flex items-center gap-2">
                   <span className="text-xs text-gray-700 flex-1 truncate">{t.tissue.display_name}</span>
                   <span className="text-xs font-semibold tabular-nums text-red-600">{t.capacity_trend_30d_pct}%</span>
@@ -802,28 +814,31 @@ export default function TrainingPage() {
           <span className="text-xs text-gray-400 tabular-nums">{today()}</span>
         </div>
 
-        {/* Row 1: Quick-loading sections */}
+        {/* Row 1: Check-in + Exercise Progress (left) | Today's Plan (right) */}
         {!quickLoaded ? (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <CardSkeleton lines={4} />
-            <CardSkeleton lines={3} />
+            <div className="space-y-4"><CardSkeleton lines={4} /><CardSkeleton lines={5} /></div>
+            <CardSkeleton lines={8} />
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Recovery Check-in */}
-            {regions && (
-              <CheckInCard
-                regions={regions}
-                existingCheckIns={checkIns}
-                onSubmit={refreshCheckIns}
-              />
-            )}
-            {/* Today's Plan */}
-            {plannerLoading ? <CardSkeleton lines={4} /> : planner && <PlannerCard planner={planner} onRefresh={refreshPlanner} onSave={handleSavePlan} />}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+            {/* Left: Check-in stacked above Exercise Progress */}
+            <div className="space-y-4">
+              {regions && (
+                <CheckInCard
+                  regions={regions}
+                  existingCheckIns={checkIns}
+                  onSubmit={refreshCheckIns}
+                />
+              )}
+              <ExerciseProgressCard exercises={allExercises} />
+            </div>
+            {/* Right: Today's Plan */}
+            {plannerLoading ? <CardSkeleton lines={8} /> : planner && <PlannerCard planner={planner} onRefresh={refreshPlanner} onSave={handleSavePlan} />}
           </div>
         )}
 
-        {/* Row 2: Model-dependent sections */}
+        {/* Row 2: Tissue & Exercise (left) | Capacity Trends (right) */}
         {modelLoading ? (
           <>
             <div className="flex items-center gap-2 text-xs text-gray-400">
@@ -834,7 +849,6 @@ export default function TrainingPage() {
               <CardSkeleton lines={5} />
               <CardSkeleton lines={5} />
             </div>
-            <CardSkeleton lines={3} />
           </>
         ) : modelSummary ? (
           <>
@@ -851,15 +865,10 @@ export default function TrainingPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Tissue & Exercise Status */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
               <TissueAndExerciseCard tissues={modelSummary.tissues} exercises={modelSummary.exercises} />
-              {/* Exercise Progress */}
-              <ExerciseProgressCard exercises={allExercises} />
+              <CapacityCard tissues={modelSummary.tissues} />
             </div>
-
-            {/* Capacity Trends */}
-            <CapacityCard tissues={modelSummary.tissues} />
           </>
         ) : (
           <div className="bg-white border border-gray-200 rounded-2xl p-5">

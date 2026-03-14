@@ -463,27 +463,45 @@ function groupSetsByExercise(sets: WkSession['sets']) {
 // ── Recent Sessions ──
 
 function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
-  const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [expandedDate, setExpandedDate] = useState<string | null>(null)
 
-  if (sessions.length === 0) return null
+  // Group multiple sessions on the same date into one entry
+  const byDate = useMemo(() => {
+    const map = new Map<string, WkSession[]>()
+    for (const ws of sessions) {
+      const list = map.get(ws.date) ?? []
+      list.push(ws)
+      map.set(ws.date, list)
+    }
+    // Sort dates descending, return array of merged day entries
+    return Array.from(map.entries())
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([date, daySessions]) => {
+        const allSets = daySessions.flatMap(s => s.sets)
+        const exerciseMap = groupSetsByExercise(allSets)
+        const totalVolume = allSets.reduce((sum, s) => sum + (s.reps || 0) * (s.weight || 0), 0)
+        const notes = daySessions.map(s => s.notes).filter(Boolean).join(' · ')
+        return { date, exerciseMap, totalVolume, notes, allSets }
+      })
+  }, [sessions])
+
+  if (byDate.length === 0) return null
 
   return (
     <section className="bg-white border border-gray-200 rounded-2xl p-5">
       <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400 mb-3">Recent Sessions</p>
       <div className="space-y-2">
-        {sessions.map((ws) => {
-          const exerciseMap = groupSetsByExercise(ws.sets)
-          const totalVolume = ws.sets.reduce((sum, s) => sum + (s.reps || 0) * (s.weight || 0), 0)
-          const isExpanded = expandedId === ws.id
+        {byDate.map(({ date, exerciseMap, totalVolume, notes, allSets }) => {
+          const isExpanded = expandedDate === date
           return (
-            <div key={ws.id} className="rounded-xl border border-gray-200">
+            <div key={date} className="rounded-xl border border-gray-200">
               <button
-                onClick={() => setExpandedId(isExpanded ? null : ws.id)}
+                onClick={() => setExpandedDate(isExpanded ? null : date)}
                 className="w-full text-left px-3 py-2 flex items-center gap-3"
               >
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-gray-800">
-                    {new Date(ws.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                    {new Date(date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
                   </p>
                   <p className="text-xs text-gray-500">
                     {exerciseMap.size} exercise{exerciseMap.size !== 1 ? 's' : ''}
@@ -491,7 +509,7 @@ function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
                   </p>
                 </div>
                 <div className="flex gap-0.5">
-                  {ws.sets.filter(s => s.rep_completion).slice(0, 8).map((s, i) => (
+                  {allSets.filter(s => s.rep_completion).slice(0, 8).map((s, i) => (
                     <span key={i} className={`w-2 h-2 rounded-full ${repDot(s.rep_completion)}`} />
                   ))}
                 </div>
@@ -511,7 +529,7 @@ function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
                       </div>
                     </div>
                   ))}
-                  {ws.notes && <p className="text-xs text-gray-400 italic">{ws.notes}</p>}
+                  {notes && <p className="text-xs text-gray-400 italic">{notes}</p>}
                 </div>
               )}
             </div>
