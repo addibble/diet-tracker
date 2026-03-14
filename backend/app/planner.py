@@ -1,8 +1,15 @@
-"""Workout planner: selects today's program day and prescribes rep schemes."""
+"""Auto-generating workout planner.
+
+Instead of requiring pre-configured program templates, this planner:
+1. Groups tissues into trainable clusters (regions that naturally train together)
+2. Scores each cluster by readiness + time since last trained
+3. Selects exercises that cover the chosen cluster's tissues
+4. Prescribes rep schemes based on tissue recovery state and e1RM
+5. Predicts whether tomorrow should be a rest day
+"""
 
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from datetime import date, timedelta
 
@@ -11,245 +18,362 @@ from sqlmodel import Session, col, select
 from app.models import (
     Exercise,
     ExerciseTissue,
-    PlannedSession,
-    ProgramDay,
-    ProgramDayExercise,
-    TrainingProgram,
     WorkoutSession,
     WorkoutSet,
 )
 from app.training_model import build_exercise_strength, build_training_model_summary
 
+# ── Tissue clusters ──────────────────────────────────────────────────
+# Regions that naturally train together.  Each cluster is a list of
+# tissue regions.  The planner picks the best cluster per day.
 
-def _today(as_of: date | None = None) -> date:
-    return as_of or date.today()
+TISSUE_CLUSTERS: list[dict] = [
+    {
+        "label": "Push",
+        "regions": ["chest", "shoulders", "triceps"],
+    },
+    {
+        "label": "Pull",
+        "regions": ["upper_back", "biceps", "forearms"],
+    },
+    {
+        "label": "Legs",
+        "regions": ["quads", "hamstrings", "glutes", "calves", "tibs"],
+    },
+    {
+        "label": "Core & Posterior",
+        "regions": ["core", "lower_back", "hips"],
+    },
+]
 
-
-def _get_active_program(session: Session) -> TrainingProgram | None:
-    return session.exec(
-        select(TrainingProgram).where(TrainingProgram.active == 1)
-    ).first()
+# Minimum average readiness to suggest training (below = rest day)
+REST_DAY_THRESHOLD = 0.35
+# Max exercises per session
+MAX_EXERCISES = 6
+MIN_EXERCISES = 3
 
 
 def suggest_today(session: Session, *, as_of: date | None = None) -> dict:
-    """Return the recommended program day for today with exercise prescriptions."""
-    today = _today(as_of)
-    program = _get_active_program(session)
-    if program is None:
+    """Return auto-generated workout suggestion for today."""
+    today = as_of or date.today()
+
+    summary = build_training_model_summary(session, as_of=as_of, include_exercises=True)
+    tissues_data = summary.get("tissues", [])
+    exercises_data = summary.get("exercises", [])
+
+    if not tissues_data:
         return {
-            "date": today.isoformat(),
-            "message": "No active training program. Create one first.",
-            "program": None,
-            "suggested_day": None,
-            "all_days": [],
+            "as_of": today.isoformat(),
+            "suggestion": None,
+            "alternatives": [],
+            "message": "No training data yet. Log some workouts first.",
         }
 
-    days = list(
-        session.exec(
-            select(ProgramDay)
-            .where(ProgramDay.program_id == program.id)
-            .order_by(ProgramDay.sort_order)
-        ).all()
-    )
-    if not days:
-        return {
-            "date": today.isoformat(),
-            "message": "Active program has no days configured.",
-            "program": {"id": program.id, "name": program.name},
-            "suggested_day": None,
-            "all_days": [],
-        }
-
-    # Get training model summary for tissue readiness
-    summary = build_training_model_summary(session, as_of=as_of)
-    tissue_map = {}
-    for t in summary.get("tissues", []):
+    # Build region -> tissue readiness map
+    region_readiness: dict[str, list[float]] = defaultdict(list)
+    region_risk: dict[str, list[int]] = defaultdict(list)
+    region_conditions: dict[str, list[str]] = defaultdict(list)
+    tissue_id_by_region: dict[str, list[int]] = defaultdict(list)
+    for t in tissues_data:
         tissue_info = t["tissue"]
-        tissue_map[tissue_info["name"].lower()] = t
+        region = tissue_info.get("region", "other")
+        recovery = t.get("recovery_estimate", 0.5)
+        risk = t.get("risk_7d", 0)
 
-    # Get recent planned sessions to determine rotation
-    recent_planned = list(
-        session.exec(
-            select(PlannedSession)
-            .where(PlannedSession.date >= today - timedelta(days=30))
-            .order_by(col(PlannedSession.date).desc())
-        ).all()
+        # Check for active tissue conditions (injury, tender)
+        condition = t.get("current_condition")
+        if condition:
+            status = condition.get("status", "")
+            if status == "injured":
+                recovery = 0.0  # Force zero readiness for injured tissues
+                risk = 100
+            elif status == "tender":
+                recovery = min(recovery, 0.3)  # Cap readiness for tender tissues
+                risk = max(risk, 70)
+            region_conditions[region].append(status)
+
+        region_readiness[region].append(recovery)
+        region_risk[region].append(risk)
+        tissue_id_by_region[region].append(tissue_info["id"])
+
+    # Find when each region was last trained
+    region_last_trained = _region_last_trained(session, tissue_id_by_region, today)
+
+    # Score each cluster
+    scored_clusters = []
+    for cluster in TISSUE_CLUSTERS:
+        readiness_vals = []
+        risk_vals = []
+        days_since_vals = []
+        for region in cluster["regions"]:
+            readiness_vals.extend(region_readiness.get(region, [0.7]))
+            risk_vals.extend(region_risk.get(region, [0]))
+            days_since_vals.append(region_last_trained.get(region, 14))
+
+        avg_readiness = sum(readiness_vals) / len(readiness_vals) if readiness_vals else 0.7
+        avg_risk = sum(risk_vals) / len(risk_vals) if risk_vals else 0
+        avg_days_since = sum(days_since_vals) / len(days_since_vals) if days_since_vals else 14
+
+        # Penalize if high risk
+        risk_penalty = min(avg_risk / 100, 0.5) * 0.3
+
+        # Rotation score: more days since last = higher score, cap at 7
+        rotation_score = min(avg_days_since / 7.0, 1.0)
+
+        total_score = (avg_readiness - risk_penalty) * 0.6 + rotation_score * 0.4
+
+        scored_clusters.append({
+            "cluster": cluster,
+            "score": round(total_score, 3),
+            "readiness": round(avg_readiness, 3),
+            "rotation": round(rotation_score, 3),
+            "avg_days_since": round(avg_days_since, 1),
+            "avg_risk": round(avg_risk, 1),
+        })
+
+    scored_clusters.sort(key=lambda x: x["score"], reverse=True)
+    best = scored_clusters[0]
+
+    # Check if best cluster is below rest threshold
+    if best["readiness"] < REST_DAY_THRESHOLD:
+        return {
+            "as_of": today.isoformat(),
+            "suggestion": None,
+            "alternatives": [],
+            "message": "All tissue groups are fatigued. Rest day recommended.",
+        }
+
+    # Collect blocked (injured) tissue IDs
+    blocked_tissue_ids: set[int] = set()
+    for t in tissues_data:
+        condition = t.get("current_condition")
+        if condition and condition.get("status") == "injured":
+            blocked_tissue_ids.add(t["tissue"]["id"])
+
+    # Select exercises for the best cluster
+    target_regions = set(best["cluster"]["regions"])
+    target_tissue_ids = set()
+    for region in target_regions:
+        target_tissue_ids.update(tissue_id_by_region.get(region, []))
+
+    exercises = _select_exercises(
+        session, exercises_data, target_tissue_ids, target_regions, today,
+        blocked_tissue_ids=blocked_tissue_ids,
     )
-    last_day_date: dict[int, date] = {}
-    for ps in recent_planned:
-        if ps.program_day_id not in last_day_date:
-            last_day_date[ps.program_day_id] = ps.date
 
-    # Score each day
-    scored_days = []
-    max_days_since = 1  # avoid division by zero
-    for day in days:
-        days_since = (today - last_day_date[day.id]).days if day.id in last_day_date else 14
-        if days_since > max_days_since:
-            max_days_since = days_since
+    # Prescribe rep schemes
+    prescribed = _prescribe_all(session, exercises, tissues_data, as_of=as_of)
 
-    for day in days:
-        regions = []
-        if day.target_regions:
-            try:
-                regions = json.loads(day.target_regions)
-            except (json.JSONDecodeError, TypeError):
-                regions = []
+    # Build alternatives from other clusters above rest threshold
+    alternatives = []
+    for sc in scored_clusters[1:]:
+        if sc["readiness"] >= REST_DAY_THRESHOLD:
+            alternatives.append(_cluster_to_suggestion_brief(sc))
 
-        # Compute readiness from tissue states
-        readiness_values = []
-        risk_penalty = 0.0
-        condition_penalty = 0.0
-        for region in regions:
-            region_lower = region.lower()
-            for tissue_name, tissue_data in tissue_map.items():
-                if region_lower in tissue_name or tissue_name in region_lower:
-                    recovery = tissue_data.get("recovery_estimate", 0.5)
-                    readiness_values.append(recovery)
-                    if tissue_data.get("risk_7d", 0) >= 60:
-                        risk_penalty += 0.2
-                    cond = tissue_data.get("current_condition")
-                    if cond and cond.get("status") in ("injured", "tender"):
-                        condition_penalty += 0.3
+    # Check tomorrow's outlook
+    tomorrow_outlook = _tomorrow_outlook(scored_clusters, best)
 
-        avg_readiness = (
-            sum(readiness_values) / len(readiness_values) if readiness_values else 0.7
-        )
-        readiness_score = max(0.0, avg_readiness - risk_penalty - condition_penalty)
-
-        days_since = (
-            (today - last_day_date[day.id]).days if day.id in last_day_date else 14
-        )
-        rotation_score = min(days_since / max_days_since, 1.0) if max_days_since > 0 else 0.5
-
-        total_score = readiness_score * 0.6 + rotation_score * 0.4
-
-        scored_days.append(
-            {
-                "day": day,
-                "score": round(total_score, 3),
-                "readiness": round(readiness_score, 3),
-                "rotation": round(rotation_score, 3),
-                "days_since_last": days_since,
-            }
-        )
-
-    scored_days.sort(key=lambda x: x["score"], reverse=True)
-    best = scored_days[0]
-
-    # Get exercise prescriptions for the best day
-    exercises = prescribe_exercises(session, best["day"].id, as_of=as_of)
+    suggestion = {
+        "day_label": best["cluster"]["label"],
+        "readiness_score": best["readiness"],
+        "days_since_last": best["avg_days_since"],
+        "target_regions": list(target_regions),
+        "exercises": prescribed,
+        "rationale": _build_rationale(best),
+        "tomorrow_outlook": tomorrow_outlook,
+    }
 
     return {
-        "date": today.isoformat(),
-        "program": {"id": program.id, "name": program.name},
-        "suggested_day": {
-            "id": best["day"].id,
-            "day_label": best["day"].day_label,
-            "target_regions": (
-                json.loads(best["day"].target_regions)
-                if best["day"].target_regions
-                else []
-            ),
-            "score": best["score"],
-            "readiness": best["readiness"],
-            "rotation": best["rotation"],
-            "days_since_last": best["days_since_last"],
-            "notes": best["day"].notes,
-            "exercises": exercises,
-        },
-        "all_days": [
-            {
-                "id": sd["day"].id,
-                "day_label": sd["day"].day_label,
-                "score": sd["score"],
-                "readiness": sd["readiness"],
-                "rotation": sd["rotation"],
-                "days_since_last": sd["days_since_last"],
-            }
-            for sd in scored_days
-        ],
+        "as_of": today.isoformat(),
+        "suggestion": suggestion,
+        "alternatives": alternatives,
+        "message": None,
     }
 
 
-def prescribe_exercises(
-    session: Session, program_day_id: int, *, as_of: date | None = None
+def _region_last_trained(
+    session: Session,
+    tissue_id_by_region: dict[str, list[int]],
+    today: date,
+) -> dict[str, int]:
+    """Find how many days ago each region was last trained."""
+    all_tissue_ids = []
+    for ids in tissue_id_by_region.values():
+        all_tissue_ids.extend(ids)
+
+    if not all_tissue_ids:
+        return {}
+
+    # Get recent workout sets with their exercise-tissue mappings
+    cutoff = today - timedelta(days=30)
+    stmt = (
+        select(WorkoutSession.date, ExerciseTissue.tissue_id)
+        .join(WorkoutSet, WorkoutSet.session_id == WorkoutSession.id)
+        .join(ExerciseTissue, ExerciseTissue.exercise_id == WorkoutSet.exercise_id)
+        .where(
+            col(ExerciseTissue.tissue_id).in_(all_tissue_ids),
+            col(WorkoutSession.date) >= cutoff,
+            col(WorkoutSession.date) <= today,
+        )
+        .distinct()
+    )
+    rows = session.exec(stmt).all()
+
+    # Map tissue_id -> latest date
+    tissue_last: dict[int, date] = {}
+    for session_date, tissue_id in rows:
+        if tissue_id not in tissue_last or session_date > tissue_last[tissue_id]:
+            tissue_last[tissue_id] = session_date
+
+    # Aggregate to region level (use most recent tissue in region)
+    result: dict[str, int] = {}
+    for region, tissue_ids in tissue_id_by_region.items():
+        latest = None
+        for tid in tissue_ids:
+            d = tissue_last.get(tid)
+            if d and (latest is None or d > latest):
+                latest = d
+        result[region] = (today - latest).days if latest else 14
+
+    return result
+
+
+def _select_exercises(
+    session: Session,
+    exercises_data: list[dict],
+    target_tissue_ids: set[int],
+    target_regions: set[str],
+    today: date,
+    blocked_tissue_ids: set[int] | None = None,
 ) -> list[dict]:
-    """For each exercise in the program day, prescribe sets/reps/weight."""
-    today = _today(as_of)
+    """Select a coherent subset of exercises that covers target tissues.
 
-    day_exercises = list(
-        session.exec(
-            select(ProgramDayExercise)
-            .where(ProgramDayExercise.program_day_id == program_day_id)
-            .order_by(ProgramDayExercise.sort_order)
+    Strategy:
+    - Filter to exercises that are "good" or "caution" (not "avoid")
+    - Skip exercises that primarily load injured/blocked tissues
+    - Prefer exercises that hit more target tissues (compounds first)
+    - Use greedy set-cover to maximize tissue coverage
+    - Limit to MAX_EXERCISES
+    """
+    blocked = blocked_tissue_ids or set()
+
+    # Build exercise -> target tissue coverage
+    candidates = []
+    for ex in exercises_data:
+        rec = ex.get("recommendation", "good")
+        if rec == "avoid":
+            continue
+
+        # Find which target tissues this exercise hits
+        exercise_id = ex["exercise_id"]
+        mappings = session.exec(
+            select(ExerciseTissue).where(ExerciseTissue.exercise_id == exercise_id)
         ).all()
-    )
 
-    if not day_exercises:
-        return []
+        # Skip exercises that primarily load blocked (injured) tissues
+        has_blocked_primary = any(
+            m.tissue_id in blocked and m.role == "primary"
+            for m in mappings
+        )
+        if has_blocked_primary:
+            continue
 
-    # Build tissue readiness map
-    summary = build_training_model_summary(session, as_of=as_of)
+        covered = set()
+        total_routing = 0.0
+        for m in mappings:
+            if m.tissue_id in blocked:
+                continue  # Don't count blocked tissues as coverage
+            if m.tissue_id in target_tissue_ids and m.role in ("primary", "secondary"):
+                covered.add(m.tissue_id)
+                total_routing += m.routing_factor
+
+        if not covered:
+            continue
+
+        # Preference: compounds (more tissues) + good recommendation + higher routing
+        compound_bonus = len(covered) / max(len(target_tissue_ids), 1)
+        rec_bonus = 1.0 if rec == "good" else 0.5
+        score = compound_bonus * 0.4 + rec_bonus * 0.3 + min(total_routing, 1.0) * 0.3
+
+        candidates.append({
+            **ex,
+            "covered_tissues": covered,
+            "selection_score": score,
+        })
+
+    # Greedy set-cover: pick exercises that cover the most uncovered tissues
+    selected = []
+    covered_so_far: set[int] = set()
+
+    # Sort by selection score descending
+    candidates.sort(key=lambda x: x["selection_score"], reverse=True)
+
+    for candidate in candidates:
+        if len(selected) >= MAX_EXERCISES:
+            break
+
+        new_coverage = candidate["covered_tissues"] - covered_so_far
+        if not new_coverage and len(selected) >= MIN_EXERCISES:
+            continue  # Already have enough, skip redundant exercises
+
+        # Prefer exercises that add new coverage
+        if new_coverage or len(selected) < MIN_EXERCISES:
+            selected.append(candidate)
+            covered_so_far.update(candidate["covered_tissues"])
+
+    return selected
+
+
+def _prescribe_all(
+    session: Session,
+    exercises: list[dict],
+    tissues_data: list[dict],
+    *,
+    as_of: date | None = None,
+) -> list[dict]:
+    """Prescribe sets/reps/weight for each selected exercise."""
+    today = as_of or date.today()
+
+    # Build tissue readiness lookup
     tissue_readiness: dict[int, float] = {}
-    tissue_risk: dict[int, int] = {}
-    for t in summary.get("tissues", []):
-        tid = t["tissue"]["id"]
-        tissue_readiness[tid] = t.get("recovery_estimate", 0.5)
-        tissue_risk[tid] = t.get("risk_7d", 0)
-
-    # Build map of exercise -> tissue mappings
-    exercise_ids = [de.exercise_id for de in day_exercises]
-    exercise_tissues = list(
-        session.exec(
-            select(ExerciseTissue).where(
-                col(ExerciseTissue.exercise_id).in_(exercise_ids)
-            )
-        ).all()
-    )
-    tissues_by_exercise: dict[int, list[ExerciseTissue]] = defaultdict(list)
-    for et in exercise_tissues:
-        tissues_by_exercise[et.exercise_id].append(et)
+    for t in tissues_data:
+        tissue_readiness[t["tissue"]["id"]] = t.get("recovery_estimate", 0.5)
 
     results = []
-    for de in day_exercises:
-        exercise = session.get(Exercise, de.exercise_id)
+    for ex in exercises:
+        exercise_id = ex["exercise_id"]
+
+        # Get exercise object for equipment info
+        exercise = session.get(Exercise, exercise_id)
         if not exercise:
             continue
 
         # Get e1RM
         current_e1rm = 0.0
         try:
-            strength = build_exercise_strength(session, exercise.id, as_of=as_of)
+            strength = build_exercise_strength(session, exercise_id, as_of=as_of)
             current_e1rm = strength.get("current_e1rm", 0.0)
-        except (KeyError, Exception):
+        except Exception:
             pass
 
-        # Get tissue readiness for this exercise
-        mappings = tissues_by_exercise.get(exercise.id, [])
-        readiness_vals = []
-        for m in mappings:
-            if m.tissue_id in tissue_readiness:
-                readiness_vals.append(tissue_readiness[m.tissue_id])
+        # Compute avg readiness of tissues this exercise hits
+        covered = ex.get("covered_tissues", set())
+        readiness_vals = [tissue_readiness.get(tid, 0.7) for tid in covered]
+        avg_readiness = sum(readiness_vals) / len(readiness_vals) if readiness_vals else 0.7
 
-        avg_readiness = (
-            sum(readiness_vals) / len(readiness_vals) if readiness_vals else 0.7
-        )
-
-        # Check days since last heavy work on these tissues
-        days_since_heavy = _days_since_heavy_work(session, exercise.id, today)
+        # Days since heavy work
+        days_since_heavy = _days_since_heavy_work(session, exercise_id, today)
 
         # Select rep scheme
         rep_scheme, target_reps, intensity_range, rationale = _select_rep_scheme(
             avg_readiness, days_since_heavy
         )
 
-        # Compute target weight
+        # Compute target weight from e1RM
         target_weight = None
         if current_e1rm > 0:
             intensity = (intensity_range[0] + intensity_range[1]) / 2
             raw_weight = current_e1rm * intensity
-            # Round to nearest sensible increment
             if exercise.equipment == "barbell":
                 target_weight = round(raw_weight / 5) * 5
             elif exercise.equipment == "dumbbell":
@@ -258,10 +382,8 @@ def prescribe_exercises(
                 target_weight = round(raw_weight / 5) * 5
             target_weight = max(target_weight, 0)
 
-        # Get last performance
-        last_perf = _get_last_performance(session, exercise.id)
-
-        # Progressive overload logic
+        # Get last performance for overload logic
+        last_perf = _get_last_performance(session, exercise_id)
         overload_note = None
         if last_perf and target_weight and target_weight > 0:
             last_weight = last_perf.get("max_weight", 0)
@@ -274,24 +396,22 @@ def prescribe_exercises(
                 target_weight = last_weight
                 overload_note = "Repeat weight, aim for full completion"
 
-        target_sets = de.target_sets
+        target_sets = 3 if rep_scheme == "heavy" else 4 if rep_scheme == "volume" else 3
 
-        results.append(
-            {
-                "exercise_id": exercise.id,
-                "exercise_name": exercise.name,
-                "equipment": exercise.equipment,
-                "rep_scheme": rep_scheme,
-                "target_sets": target_sets,
-                "target_reps": target_reps,
-                "target_weight": target_weight,
-                "rationale": rationale,
-                "overload_note": overload_note,
-                "current_e1rm": round(current_e1rm, 2) if current_e1rm else None,
-                "avg_tissue_readiness": round(avg_readiness, 3),
-                "last_performance": last_perf,
-            }
-        )
+        results.append({
+            "exercise_id": exercise_id,
+            "exercise_name": ex.get("exercise_name", exercise.name),
+            "equipment": exercise.equipment,
+            "rep_scheme": rep_scheme,
+            "target_sets": target_sets,
+            "target_reps": target_reps,
+            "target_weight": target_weight,
+            "rationale": rationale,
+            "overload_note": overload_note,
+            "current_e1rm": round(current_e1rm, 2) if current_e1rm else None,
+            "avg_tissue_readiness": round(avg_readiness, 3),
+            "last_performance": last_perf,
+        })
 
     return results
 
@@ -299,10 +419,7 @@ def prescribe_exercises(
 def _select_rep_scheme(
     avg_readiness: float, days_since_heavy: int
 ) -> tuple[str, str, tuple[float, float], str]:
-    """Select rep scheme based on tissue readiness and training history.
-
-    Returns (scheme_name, target_reps_str, intensity_range, rationale).
-    """
+    """Select rep scheme based on tissue readiness and training history."""
     if avg_readiness >= 0.8 and days_since_heavy >= 5:
         return (
             "heavy",
@@ -326,10 +443,8 @@ def _select_rep_scheme(
         )
 
 
-def _days_since_heavy_work(
-    session: Session, exercise_id: int, today: date
-) -> int:
-    """Find how many days since last heavy set (<=5 reps at RPE >= 7) for this exercise."""
+def _days_since_heavy_work(session: Session, exercise_id: int, today: date) -> int:
+    """Find how many days since last heavy set (<=5 reps) for this exercise."""
     stmt = (
         select(WorkoutSession.date)
         .join(WorkoutSet, WorkoutSet.session_id == WorkoutSession.id)
@@ -380,42 +495,52 @@ def _get_last_performance(session: Session, exercise_id: int) -> dict | None:
     }
 
 
-def accept_plan(
-    session: Session, program_day_id: int, plan_date: date, *, as_of: date | None = None
-) -> dict:
-    """Create a PlannedSession record linking a program day to a date."""
-    day = session.get(ProgramDay, program_day_id)
-    if day is None:
-        raise ValueError(f"Program day {program_day_id} not found")
+def _build_rationale(scored: dict) -> str:
+    """Build human-readable rationale for why this cluster was chosen."""
+    parts = []
+    readiness_pct = round(scored["readiness"] * 100)
+    parts.append(f"{readiness_pct}% tissue readiness")
 
-    planned = PlannedSession(
-        program_day_id=program_day_id,
-        date=plan_date,
-        status="planned",
-    )
-    session.add(planned)
-    session.commit()
-    session.refresh(planned)
+    days = scored["avg_days_since"]
+    if days >= 7:
+        parts.append(f"not trained in {days:.0f} days")
+    elif days >= 3:
+        parts.append(f"last trained {days:.0f} days ago")
+    else:
+        parts.append(f"trained {days:.0f} days ago")
 
+    if scored["avg_risk"] > 30:
+        parts.append(f"moderate risk ({scored['avg_risk']:.0f}%)")
+
+    return "; ".join(parts)
+
+
+def _cluster_to_suggestion_brief(scored: dict) -> dict:
+    """Convert a scored cluster to a brief alternative suggestion."""
     return {
-        "id": planned.id,
-        "program_day_id": planned.program_day_id,
-        "date": planned.date.isoformat(),
-        "status": planned.status,
-        "workout_session_id": planned.workout_session_id,
-        "notes": planned.notes,
+        "day_label": scored["cluster"]["label"],
+        "readiness_score": scored["readiness"],
+        "days_since_last": scored["avg_days_since"],
+        "target_regions": scored["cluster"]["regions"],
+        "rationale": _build_rationale(scored),
     }
 
 
-def suggest_week(
-    session: Session, *, as_of: date | None = None
-) -> list[dict]:
-    """Return suggestions for the next 7 days."""
-    today = _today(as_of)
-    results = []
-    for offset in range(7):
-        day_date = today + timedelta(days=offset)
-        suggestion = suggest_today(session, as_of=day_date)
-        suggestion["date"] = day_date.isoformat()
-        results.append(suggestion)
-    return results
+def _tomorrow_outlook(scored_clusters: list[dict], chosen_today: dict) -> str:
+    """Predict what tomorrow looks like after today's session."""
+    today_regions = set(chosen_today["cluster"]["regions"])
+
+    # Find best non-overlapping cluster for tomorrow
+    best_tomorrow = None
+    for sc in scored_clusters:
+        tomorrow_regions = set(sc["cluster"]["regions"])
+        if tomorrow_regions & today_regions:
+            continue  # Overlaps with today
+        if sc["readiness"] >= REST_DAY_THRESHOLD:
+            best_tomorrow = sc
+            break
+
+    if best_tomorrow:
+        return f"Tomorrow: {best_tomorrow['cluster']['label']} ({round(best_tomorrow['readiness'] * 100)}% ready)"
+    else:
+        return "Tomorrow: rest day recommended"

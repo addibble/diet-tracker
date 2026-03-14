@@ -696,13 +696,13 @@ export interface ExerciseStrength {
 // ── Planner Types ──
 
 export interface PlannerSuggestion {
-  program_day_id: number;
   day_label: string;
   readiness_score: number;
   days_since_last: number | null;
   target_regions: string[];
-  exercises: PlannerExercisePrescription[];
+  exercises?: PlannerExercisePrescription[];
   rationale: string;
+  tomorrow_outlook?: string;
 }
 
 export interface PlannerExercisePrescription {
@@ -714,6 +714,7 @@ export interface PlannerExercisePrescription {
   target_reps: string;
   target_weight: number | null;
   rationale: string;
+  overload_note: string | null;
   last_performance: {
     date: string;
     sets: { reps: number | null; weight: number | null; rep_completion: string | null }[];
@@ -725,25 +726,6 @@ export interface PlannerTodayResponse {
   suggestion: PlannerSuggestion | null;
   alternatives: PlannerSuggestion[];
   message: string | null;
-}
-
-export interface TrainingProgram {
-  id: number;
-  name: string;
-  active: number;
-  notes: string | null;
-  days: {
-    id: number;
-    day_label: string;
-    target_regions: string[];
-    exercises: {
-      exercise_id: number;
-      exercise_name: string;
-      target_sets: number;
-      target_rep_min: number | null;
-      target_rep_max: number | null;
-    }[];
-  }[];
 }
 
 // Workout API functions
@@ -872,15 +854,6 @@ export const getPlannerToday = (asOf?: string) => {
   const params = asOf ? `?as_of=${asOf}` : '';
   return request<PlannerTodayResponse>(`/planner/today${params}`);
 };
-
-export const getPlannerPrograms = () =>
-  request<TrainingProgram[]>('/planner/programs');
-
-export const acceptPlan = (programDayId: number, date: string) =>
-  request<{ id: number }>('/planner/accept', {
-    method: 'POST',
-    body: JSON.stringify({ program_day_id: programDayId, date }),
-  });
 
 // Parse meal with LLM
 export const parseMeal = (description: string) =>

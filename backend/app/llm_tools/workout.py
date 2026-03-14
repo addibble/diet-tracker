@@ -2473,6 +2473,80 @@ def get_workout_context(session: Session) -> dict[str, str]:
 
 
 # =====================================================================
+#  Workout planner tool
+# =====================================================================
+
+GET_WORKOUT_PLAN_DEF = {
+    "type": "function",
+    "function": {
+        "name": "get_workout_plan",
+        "description": (
+            "Get today's auto-generated workout plan. The planner selects which "
+            "muscle group to train based on tissue readiness, recovery check-ins, "
+            "injury status, and time since last trained. Returns exercise "
+            "prescriptions with sets, reps, and target weights. Call this when the "
+            "user asks what to train today, wants a workout suggestion, or asks "
+            "about their training plan."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "as_of": {
+                    "type": "string",
+                    "description": "Optional date (YYYY-MM-DD) to plan for. Defaults to today.",
+                },
+            },
+            "required": [],
+        },
+    },
+}
+
+
+def handle_get_workout_plan(args: dict, session: "Session") -> dict:
+    from datetime import date as date_type
+
+    from app.planner import suggest_today
+
+    as_of = None
+    if args.get("as_of"):
+        as_of = date_type.fromisoformat(args["as_of"])
+
+    result = suggest_today(session, as_of=as_of)
+
+    # Format for LLM consumption
+    if result.get("suggestion") is None:
+        return {"plan": result.get("message", "No plan available.")}
+
+    s = result["suggestion"]
+    lines = [
+        f"Today's Plan: {s['day_label']}",
+        f"Target regions: {', '.join(s['target_regions'])}",
+        f"Readiness: {round(s['readiness_score'] * 100)}%",
+        f"Rationale: {s['rationale']}",
+        "",
+        "Exercises:",
+    ]
+    for ex in s.get("exercises", []):
+        weight_str = f" @ {ex['target_weight']} lb" if ex.get("target_weight") else ""
+        note = f" ({ex['overload_note']})" if ex.get("overload_note") else ""
+        lines.append(
+            f"  - {ex['exercise_name']}: {ex['target_sets']}x{ex['target_reps']}"
+            f"{weight_str} [{ex['rep_scheme']}]{note}"
+        )
+        if ex.get("rationale"):
+            lines.append(f"    Reason: {ex['rationale']}")
+
+    lines.append("")
+    lines.append(s.get("tomorrow_outlook", ""))
+
+    if result.get("alternatives"):
+        alt_names = [a["day_label"] for a in result["alternatives"]]
+        lines.append(f"Alternatives: {', '.join(alt_names)}")
+
+    return {"plan": "\n".join(lines)}
+
+
+# =====================================================================
 #  Tool registration
 # =====================================================================
 
@@ -2483,6 +2557,7 @@ WORKOUT_TOOL_DEFINITIONS = [
     GET_WORKOUT_SESSIONS_DEF, SET_WORKOUT_SESSIONS_DEF,
     GET_ROUTINE_EXERCISES_DEF, SET_ROUTINE_EXERCISES_DEF,
     GET_WORKOUTS_DEF, SET_WORKOUTS_DEF,
+    GET_WORKOUT_PLAN_DEF,
 ]
 
 WORKOUT_TOOL_HANDLERS = {
@@ -2498,4 +2573,5 @@ WORKOUT_TOOL_HANDLERS = {
     "set_routine_exercises": handle_set_routine_exercises,
     "get_workouts": handle_get_workouts,
     "set_workouts": handle_set_workouts,
+    "get_workout_plan": handle_get_workout_plan,
 }

@@ -403,17 +403,23 @@ function StrengthCard({
 
 // ── Planner Card ──
 
-function PlannerCard({ planner }: { planner: PlannerTodayResponse }) {
+function PlannerCard({ planner, onRefresh }: { planner: PlannerTodayResponse; onRefresh?: () => void }) {
   if (!planner.suggestion) {
     return (
       <div className="bg-white border border-gray-200 rounded-2xl p-5">
-        <h3 className="text-sm font-semibold text-gray-900 mb-2">Today's Plan</h3>
-        <p className="text-sm text-gray-500">{planner.message || 'No training program configured. Create one to get automated workout suggestions.'}</p>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-sm font-semibold text-gray-900">Today's Plan</h3>
+          {onRefresh && (
+            <button onClick={onRefresh} className="text-[10px] text-gray-400 hover:text-gray-600">refresh</button>
+          )}
+        </div>
+        <p className="text-sm text-gray-500">{planner.message || 'No exercises available for planning.'}</p>
       </div>
     )
   }
 
   const s = planner.suggestion
+  const exercises = s.exercises || []
   const schemeColor = (scheme: string) =>
     scheme === 'heavy' ? 'bg-red-100 text-red-700' :
     scheme === 'volume' ? 'bg-blue-100 text-blue-700' :
@@ -424,8 +430,11 @@ function PlannerCard({ planner }: { planner: PlannerTodayResponse }) {
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-semibold text-gray-900">Today's Plan</h3>
         <div className="flex items-center gap-2">
+          {onRefresh && (
+            <button onClick={onRefresh} className="text-[10px] text-gray-400 hover:text-gray-600">refresh</button>
+          )}
           <span className="text-xs px-2.5 py-1 rounded-lg bg-gray-900 text-white font-medium">{s.day_label}</span>
-          <span className="text-xs text-gray-500">Readiness: {Math.round(s.readiness_score * 100)}%</span>
+          <span className="text-xs text-gray-500">{Math.round(s.readiness_score * 100)}% ready</span>
         </div>
       </div>
       {s.target_regions.length > 0 && (
@@ -438,7 +447,7 @@ function PlannerCard({ planner }: { planner: PlannerTodayResponse }) {
         </div>
       )}
       <div className="space-y-2">
-        {s.exercises.map(ex => (
+        {exercises.map(ex => (
           <div key={ex.exercise_id} className="flex items-center gap-3 p-2.5 rounded-lg border border-gray-100 bg-gray-50/50">
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
@@ -450,6 +459,7 @@ function PlannerCard({ planner }: { planner: PlannerTodayResponse }) {
               <div className="text-[11px] text-gray-500 mt-0.5">
                 {ex.target_sets} x {ex.target_reps}
                 {ex.target_weight != null && <> @ {ex.target_weight} lb</>}
+                {ex.overload_note && <span className="text-amber-600 ml-1">({ex.overload_note})</span>}
               </div>
             </div>
             <div className="text-right shrink-0 text-[11px] text-gray-400 max-w-28 truncate">
@@ -458,11 +468,16 @@ function PlannerCard({ planner }: { planner: PlannerTodayResponse }) {
           </div>
         ))}
       </div>
-      {planner.alternatives.length > 0 && (
-        <p className="text-[11px] text-gray-400 mt-3">
-          Alternatives: {planner.alternatives.map(a => a.day_label).join(', ')}
-        </p>
-      )}
+      <div className="mt-3 space-y-1">
+        {s.tomorrow_outlook && (
+          <p className="text-[11px] text-gray-500">{s.tomorrow_outlook}</p>
+        )}
+        {planner.alternatives.length > 0 && (
+          <p className="text-[11px] text-gray-400">
+            Alternatives: {planner.alternatives.map(a => `${a.day_label} (${Math.round(a.readiness_score * 100)}%)`).join(', ')}
+          </p>
+        )}
+      </div>
     </div>
   )
 }
@@ -581,9 +596,19 @@ export default function TrainingPage() {
     getExerciseStrength(exerciseId).then(setStrengthData).catch(() => setStrengthData(null))
   }, [])
 
+  const refreshPlanner = useCallback(() => {
+    setPlannerLoading(true)
+    getPlannerToday().then(data => {
+      setPlanner(data)
+      setPlannerLoading(false)
+    }).catch(() => { setPlanner(null); setPlannerLoading(false) })
+  }, [])
+
   const refreshCheckIns = useCallback(() => {
     getRecoveryCheckIns(today()).then(setCheckIns).catch(() => {})
-  }, [])
+    // Re-plan after check-in since readiness may have changed
+    refreshPlanner()
+  }, [refreshPlanner])
 
   return (
     <ScrollablePage>
@@ -611,7 +636,7 @@ export default function TrainingPage() {
               />
             )}
             {/* Today's Plan */}
-            {plannerLoading ? <CardSkeleton lines={4} /> : planner && <PlannerCard planner={planner} />}
+            {plannerLoading ? <CardSkeleton lines={4} /> : planner && <PlannerCard planner={planner} onRefresh={refreshPlanner} />}
           </div>
         )}
 

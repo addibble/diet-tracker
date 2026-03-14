@@ -46,7 +46,7 @@ TOOL_HANDLERS: dict[str, Callable[[dict, Session], dict]] = {
 
 _WORKOUT_PATTERN = re.compile(
     r"\b("
-    r"workout|train|training|exercise|lift|lifting|"
+    r"workout|train|training|exercise|lift|lifting|plan|planner|"
     r"bench|squat|deadlift|press|curl|row|"
     r"run|running|walk|walking|cardio|routine|"
     r"rep|reps|set|sets|rpe|"
