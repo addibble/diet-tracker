@@ -206,15 +206,33 @@ def create_check_in(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    row = RecoveryCheckIn(
-        date=data.date,
-        region=data.region,
-        soreness_0_10=data.soreness_0_10,
-        pain_0_10=data.pain_0_10,
-        stiffness_0_10=data.stiffness_0_10,
-        readiness_0_10=data.readiness_0_10,
-        notes=data.notes,
-    )
+    from sqlmodel import select as sel
+
+    # Upsert: update existing check-in for same date+region if one exists
+    existing = session.exec(
+        sel(RecoveryCheckIn)
+        .where(RecoveryCheckIn.date == data.date, RecoveryCheckIn.region == data.region)
+        .order_by(RecoveryCheckIn.id.desc())  # type: ignore[union-attr]
+        .limit(1)
+    ).first()
+
+    if existing:
+        existing.soreness_0_10 = data.soreness_0_10
+        existing.pain_0_10 = data.pain_0_10
+        existing.stiffness_0_10 = data.stiffness_0_10
+        existing.readiness_0_10 = data.readiness_0_10
+        existing.notes = data.notes
+        row = existing
+    else:
+        row = RecoveryCheckIn(
+            date=data.date,
+            region=data.region,
+            soreness_0_10=data.soreness_0_10,
+            pain_0_10=data.pain_0_10,
+            stiffness_0_10=data.stiffness_0_10,
+            readiness_0_10=data.readiness_0_10,
+            notes=data.notes,
+        )
     session.add(row)
     session.commit()
     session.refresh(row)
