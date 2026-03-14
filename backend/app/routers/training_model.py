@@ -6,7 +6,7 @@ from sqlmodel import Session
 
 from app.auth import get_current_user
 from app.database import get_session
-from app.models import Exercise, RecoveryCheckIn, Tissue, TissueRecoveryLog, TrainingExclusionWindow
+from app.models import RecoveryCheckIn, Tissue, TissueRecoveryLog, TrainingExclusionWindow
 from app.training_model import (
     build_exercise_risk_ranking,
     build_exercise_strength,
@@ -90,10 +90,10 @@ def get_exercise_strength(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    exercise = session.get(Exercise, exercise_id)
-    if not exercise:
+    try:
+        return build_exercise_strength(session, exercise_id, as_of=as_of, days=days)
+    except KeyError:
         raise HTTPException(status_code=404, detail="Exercise not found")
-    return build_exercise_strength(session, exercise_id, as_of=as_of, days=days)
 
 
 @router.get("/exclusion-windows")

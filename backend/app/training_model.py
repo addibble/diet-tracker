@@ -356,23 +356,56 @@ def build_exercise_strength(
     as_of: date | None = None,
     days: int = _DEFAULT_WINDOW_DAYS,
 ) -> dict:
-    """Return e1RM time series and trend for a single exercise."""
-    context = _build_context(session, as_of=as_of)
-    exercise = None
-    for ex in context["exercises"]:
-        if ex.id == exercise_id:
-            exercise = ex
-            break
+    """Return e1RM time series and trend for a single exercise.
+
+    This is a lightweight query that only reads workout sets — it does NOT
+    rebuild the full training model context, so it returns quickly.
+    """
+    exercise = session.get(Exercise, exercise_id)
     if exercise is None:
         raise KeyError(f"Unknown exercise_id {exercise_id}")
-    e1rm_series = context["e1rm_by_exercise"].get(exercise_id, [])
-    cutoff = context["as_of"] - timedelta(days=max(1, days - 1))
-    filtered = [(d.isoformat(), v) for d, v in e1rm_series if d >= cutoff]
+
+    as_of_date = as_of or date.today()
+    cutoff = as_of_date - timedelta(days=max(1, days - 1))
+
+    # Load bodyweight data for bodyweight/mixed exercises
+    weight_rows = list(
+        session.exec(select(WeightLog).order_by(col(WeightLog.logged_at).asc())).all()
+    )
+    bw_by_date = _bodyweight_by_date(
+        [r for r in weight_rows if r.logged_at.date() <= as_of_date]
+    )
+
+    # Query sets for this exercise only
+    stmt = (
+        select(WorkoutSet, WorkoutSession.date)
+        .join(WorkoutSession, WorkoutSet.session_id == WorkoutSession.id)
+        .where(WorkoutSet.exercise_id == exercise_id)
+        .where(WorkoutSession.date >= cutoff)
+        .where(WorkoutSession.date <= as_of_date)
+        .where(WorkoutSet.reps.isnot(None))  # type: ignore[union-attr]
+        .order_by(WorkoutSession.date)
+    )
+    rows = session.exec(stmt).all()
+
+    # Compute best e1RM per day
+    daily_best: dict[date, float] = {}
+    for workout_set, workout_date in rows:
+        ew = _effective_weight(exercise, workout_set, bw_by_date, workout_date)
+        if ew <= 0 or not workout_set.reps or workout_set.reps < 1:
+            continue
+        e1rm = _estimated_1rm(ew, workout_set.reps)
+        if e1rm > daily_best.get(workout_date, 0.0):
+            daily_best[workout_date] = e1rm
+
+    e1rm_series = sorted(daily_best.items())
+    filtered = [(d.isoformat(), v) for d, v in e1rm_series]
+
     # Trend: compare last 14 days avg vs prior 14 days avg
-    recent_values = [v for d, v in e1rm_series if d >= context["as_of"] - timedelta(days=14)]
+    recent_values = [v for d, v in e1rm_series if d >= as_of_date - timedelta(days=14)]
     prior_values = [
         v for d, v in e1rm_series
-        if context["as_of"] - timedelta(days=28) <= d < context["as_of"] - timedelta(days=14)
+        if as_of_date - timedelta(days=28) <= d < as_of_date - timedelta(days=14)
     ]
     trend = "stable"
     trend_pct = 0.0
@@ -390,7 +423,7 @@ def build_exercise_strength(
     return {
         "exercise_id": exercise_id,
         "exercise_name": exercise.name,
-        "as_of": context["as_of"].isoformat(),
+        "as_of": as_of_date.isoformat(),
         "current_e1rm": round(current, 2),
         "peak_e1rm": round(peak, 2),
         "trend": trend,
