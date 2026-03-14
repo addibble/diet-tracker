@@ -436,6 +436,30 @@ function PlannerCard({ planner, onRefresh, onSave }: {
   onRefresh?: () => void;
   onSave?: (dayLabel: string, regions: string[], exercises: PlannerExercisePrescription[]) => void;
 }) {
+  const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set())
+  const [initialized, setInitialized] = useState(false)
+
+  // Initialize checked state from backend `selected` flags
+  useEffect(() => {
+    if (planner.suggestion?.exercises) {
+      setCheckedIds(new Set(
+        planner.suggestion.exercises
+          .filter(e => e.selected !== false)
+          .map(e => e.exercise_id)
+      ))
+      setInitialized(true)
+    }
+  }, [planner])
+
+  const toggleExercise = (id: number) => {
+    setCheckedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
   if (!planner.suggestion) {
     return (
       <div className="bg-white border border-gray-200 rounded-2xl p-5">
@@ -452,6 +476,7 @@ function PlannerCard({ planner, onRefresh, onSave }: {
 
   const s = planner.suggestion
   const exercises = s.exercises || []
+  const selectedCount = exercises.filter(e => checkedIds.has(e.exercise_id)).length
 
   return (
     <div className="bg-white border border-gray-200 rounded-2xl p-5">
@@ -478,14 +503,67 @@ function PlannerCard({ planner, onRefresh, onSave }: {
         </div>
       )}
 
-      <ExerciseList exercises={exercises} />
+      {initialized && exercises.length > 0 && (
+        <div className="space-y-1.5 mb-3 max-h-[28rem] overflow-y-auto">
+          {exercises.map((ex) => {
+            const checked = checkedIds.has(ex.exercise_id)
+            return (
+              <button
+                key={ex.exercise_id}
+                onClick={() => toggleExercise(ex.exercise_id)}
+                className={`w-full flex items-start gap-2.5 p-2.5 rounded-lg border text-left transition-all ${
+                  checked
+                    ? 'border-gray-300 bg-white'
+                    : 'border-gray-100 bg-gray-50/50 opacity-60'
+                }`}
+              >
+                <div className={`mt-0.5 w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors ${
+                  checked ? 'bg-gray-900 border-gray-900' : 'bg-white border-gray-300'
+                }`}>
+                  {checked && (
+                    <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-sm font-medium text-gray-900">{ex.exercise_name}</span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${schemeColor(ex.rep_scheme)}`}>
+                      {ex.rep_scheme}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-gray-600 mt-0.5 font-medium">
+                    {ex.target_sets} x {ex.target_reps}
+                    {ex.target_weight != null && <> @ <span className="text-gray-900">{ex.target_weight} lb</span></>}
+                  </div>
+                  {ex.overload_note && (
+                    <div className="text-[10px] text-amber-600 mt-0.5">{ex.overload_note}</div>
+                  )}
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      {exercises.length === 0 && (
+        <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 p-4 text-center mb-3">
+          <p className="text-xs text-gray-500">No matching exercises found for these regions.</p>
+        </div>
+      )}
 
       {exercises.length > 0 && onSave && (
         <button
-          onClick={() => onSave(s.day_label, s.target_regions, exercises)}
-          className="w-full py-2 text-xs font-medium rounded-xl bg-gray-900 hover:bg-gray-800 text-white transition-colors mb-3"
+          onClick={() => onSave(
+            s.day_label,
+            s.target_regions,
+            exercises.filter(e => checkedIds.has(e.exercise_id)),
+          )}
+          disabled={selectedCount === 0}
+          className="w-full py-2 text-xs font-medium rounded-xl bg-gray-900 hover:bg-gray-800 text-white transition-colors mb-3 disabled:opacity-40"
         >
-          Save Plan & Start in Chat
+          Save Plan ({selectedCount} exercises) & Start in Chat
         </button>
       )}
 
@@ -503,44 +581,6 @@ function PlannerCard({ planner, onRefresh, onSave }: {
   )
 }
 
-function ExerciseList({ exercises }: { exercises: { exercise_name: string; exercise_id?: number; rep_scheme: string; target_sets: number; target_reps: string; target_weight: number | null; overload_note?: string | null; rationale?: string }[] }) {
-  if (exercises.length === 0) {
-    return (
-      <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 p-4 text-center mb-3">
-        <p className="text-xs text-gray-500">No matching exercises found for these regions.</p>
-        <p className="text-[11px] text-gray-400 mt-1">Ask the assistant to map exercises to tissues.</p>
-      </div>
-    )
-  }
-  return (
-    <div className="space-y-2 mb-3">
-      {exercises.map((ex, i) => (
-        <div key={ex.exercise_id ?? i} className="flex items-start gap-3 p-2.5 rounded-lg border border-gray-100 bg-gray-50/50">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-sm font-medium text-gray-900">{ex.exercise_name}</span>
-              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${schemeColor(ex.rep_scheme)}`}>
-                {ex.rep_scheme}
-              </span>
-            </div>
-            <div className="text-[11px] text-gray-600 mt-0.5 font-medium">
-              {ex.target_sets} x {ex.target_reps}
-              {ex.target_weight != null && <> @ <span className="text-gray-900">{ex.target_weight} lb</span></>}
-            </div>
-            {ex.overload_note && (
-              <div className="text-[10px] text-amber-600 mt-0.5">{ex.overload_note}</div>
-            )}
-          </div>
-          {ex.rationale && (
-            <div className="text-right shrink-0 text-[10px] text-gray-400 max-w-24 leading-tight">
-              {ex.rationale}
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  )
-}
 
 // ── Capacity Trends ──
 

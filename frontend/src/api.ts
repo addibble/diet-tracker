@@ -715,6 +715,7 @@ export interface PlannerExercisePrescription {
   target_weight: number | null;
   rationale: string;
   overload_note: string | null;
+  selected: boolean;
   last_performance: {
     date: string;
     sets: { reps: number | null; weight: number | null; rep_completion: string | null }[];

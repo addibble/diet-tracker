@@ -38,8 +38,8 @@ TISSUE_CLUSTERS: list[dict] = [
 ]
 
 REST_DAY_THRESHOLD = 0.35
-MAX_EXERCISES = 6
-MIN_EXERCISES = 3
+MAX_CANDIDATES = 16
+DEFAULT_SELECTED = 8
 AUTO_PROGRAM_NAME = "__auto_plan__"
 
 
@@ -91,16 +91,25 @@ def suggest_today(session: Session, *, as_of: date | None = None) -> dict:
 
     best = scored_clusters[0]
 
-    # Select exercises that match the cluster's available regions
-    exercises = _select_exercises(
+    # Collect adjacent cluster regions for secondary candidates
+    adjacent_regions: set[str] = set()
+    for sc in scored_clusters[1:]:
+        if sc["readiness"] >= REST_DAY_THRESHOLD:
+            adjacent_regions |= sc["available_regions"]
+    adjacent_regions -= best["available_regions"]
+    adjacent_regions -= blocked_regions
+
+    # Select candidate exercises (up to MAX_CANDIDATES)
+    candidates = _select_exercises(
         exercises_data,
         best["available_regions"],
+        adjacent_regions,
         blocked_regions,
         exercise_region_map,
     )
 
     # Prescribe rep schemes
-    prescribed = _prescribe_all(session, exercises, tissues_data, as_of=as_of)
+    prescribed = _prescribe_all(session, candidates, tissues_data, as_of=as_of)
 
     # Alternatives
     alternatives = [
@@ -528,14 +537,18 @@ def _score_clusters(
 def _select_exercises(
     exercises_data: list[dict],
     target_regions: set[str],
+    adjacent_regions: set[str],
     blocked_regions: set[str],
     exercise_region_map: dict[int, list[dict]],
 ) -> list[dict]:
-    """Select exercises that match target regions, avoiding blocked regions.
+    """Select up to MAX_CANDIDATES exercises, prioritizing target regions.
 
-    Uses exercise→region mapping from DB, not tissue IDs from model summary.
+    Returns candidates sorted by relevance. First DEFAULT_SELECTED are marked
+    ``selected=True``; the rest are ``selected=False`` so the UI can show
+    checkboxes.
     """
-    candidates = []
+    primary_candidates: list[dict] = []
+    adjacent_candidates: list[dict] = []
 
     for ex in exercises_data:
         rec = ex.get("recommendation", "good")
@@ -558,44 +571,59 @@ def _select_exercises(
         if has_blocked_primary:
             continue
 
-        # Score: how well does this exercise hit the target regions?
+        # Score hits on target regions
         target_hits = []
-        total_routing = 0.0
+        target_routing = 0.0
         for m in region_mappings:
             if m["region"] in target_regions and m["role"] in ("primary", "secondary"):
                 target_hits.append(m["region"])
-                total_routing += m["routing"]
+                target_routing += m["routing"]
 
-        if not target_hits:
+        # Score hits on adjacent regions (secondary pool)
+        adj_hits = []
+        adj_routing = 0.0
+        for m in region_mappings:
+            if m["region"] in adjacent_regions and m["role"] in ("primary", "secondary"):
+                adj_hits.append(m["region"])
+                adj_routing += m["routing"]
+
+        if not target_hits and not adj_hits:
             continue
 
-        # Prefer: more target regions hit, good recommendation, higher routing
-        coverage = len(set(target_hits)) / max(len(target_regions), 1)
         rec_bonus = 1.0 if rec == "good" else 0.5
-        score = coverage * 0.4 + rec_bonus * 0.3 + min(total_routing, 1.0) * 0.3
 
-        candidates.append({
-            **ex,
-            "target_hits": set(target_hits),
-            "selection_score": score,
-        })
+        if target_hits:
+            coverage = len(set(target_hits)) / max(len(target_regions), 1)
+            score = coverage * 0.4 + rec_bonus * 0.3 + min(target_routing, 1.0) * 0.3
+            primary_candidates.append({
+                **ex,
+                "target_hits": set(target_hits),
+                "selection_score": score,
+            })
+        else:
+            coverage = len(set(adj_hits)) / max(len(adjacent_regions), 1)
+            score = coverage * 0.3 + rec_bonus * 0.3 + min(adj_routing, 1.0) * 0.2
+            adjacent_candidates.append({
+                **ex,
+                "target_hits": set(adj_hits),
+                "selection_score": score,
+            })
 
-    # Greedy set-cover: maximize region coverage
-    selected = []
-    covered_regions: set[str] = set()
-    candidates.sort(key=lambda x: x["selection_score"], reverse=True)
+    # Sort each pool by score descending
+    primary_candidates.sort(key=lambda x: x["selection_score"], reverse=True)
+    adjacent_candidates.sort(key=lambda x: x["selection_score"], reverse=True)
 
-    for candidate in candidates:
-        if len(selected) >= MAX_EXERCISES:
-            break
-        new_regions = candidate["target_hits"] - covered_regions
-        if not new_regions and len(selected) >= MIN_EXERCISES:
-            continue
-        if new_regions or len(selected) < MIN_EXERCISES:
-            selected.append(candidate)
-            covered_regions.update(candidate["target_hits"])
+    # Fill from primary first, then adjacent, up to MAX_CANDIDATES
+    combined = primary_candidates[:MAX_CANDIDATES]
+    remaining = MAX_CANDIDATES - len(combined)
+    if remaining > 0:
+        combined.extend(adjacent_candidates[:remaining])
 
-    return selected
+    # Mark first DEFAULT_SELECTED as selected
+    for i, c in enumerate(combined):
+        c["selected"] = i < DEFAULT_SELECTED
+
+    return combined
 
 
 # ── Rep scheme prescription ──────────────────────────────────────────
@@ -672,6 +700,7 @@ def _prescribe_all(
             "rationale": rationale,
             "overload_note": overload_note,
             "current_e1rm": round(current_e1rm, 2) if current_e1rm else None,
+            "selected": ex.get("selected", True),
         })
 
     return results
