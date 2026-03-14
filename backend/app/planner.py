@@ -171,15 +171,22 @@ def suggest_today(session: Session, *, as_of: date | None = None) -> dict:
             "message": "All tissue groups are fatigued. Rest day recommended.",
         }
 
-    # Collect blocked (injured) tissue IDs
+    # Collect blocked tissue IDs: injured conditions + substantial pain check-ins
     blocked_tissue_ids: set[int] = set()
     for t in tissues_data:
         condition = t.get("current_condition")
         if condition and condition.get("status") == "injured":
             blocked_tissue_ids.add(t["tissue"]["id"])
 
-    # Select exercises for the best cluster
-    target_regions = set(best["cluster"]["regions"])
+    # Regions with pain >= 7 (substantial/severe) in today's check-in are blocked
+    checkin_blocked_regions: set[str] = set()
+    for region, checkin in todays_checkins.items():
+        if checkin["pain_0_10"] >= 7 or checkin["soreness_0_10"] >= 7:
+            checkin_blocked_regions.add(region)
+            blocked_tissue_ids.update(tissue_id_by_region.get(region, []))
+
+    # Select exercises for the best cluster, excluding blocked regions from targets
+    target_regions = set(best["cluster"]["regions"]) - checkin_blocked_regions
     target_tissue_ids = set()
     for region in target_regions:
         target_tissue_ids.update(tissue_id_by_region.get(region, []))
@@ -362,10 +369,28 @@ def _select_exercises(
         if not new_coverage and len(selected) >= MIN_EXERCISES:
             continue  # Already have enough, skip redundant exercises
 
-        # Prefer exercises that add new coverage
         if new_coverage or len(selected) < MIN_EXERCISES:
             selected.append(candidate)
             covered_so_far.update(candidate["covered_tissues"])
+
+    # Fallback: if tissue-cover found nothing (missing ExerciseTissue mappings),
+    # fall back to top-ranked non-avoided exercises from the model ranking.
+    if not selected:
+        fallback = [
+            ex for ex in exercises_data
+            if ex.get("recommendation", "good") != "avoid"
+            and not any(
+                m.tissue_id in blocked and m.role == "primary"
+                for m in session.exec(
+                    select(ExerciseTissue).where(
+                        ExerciseTissue.exercise_id == (ex.get("exercise_id") or ex.get("id"))
+                    )
+                ).all()
+            )
+        ]
+        # Sort by suitability (model already ranks by risk; use index as proxy)
+        for ex in fallback[:MAX_EXERCISES]:
+            selected.append({**ex, "covered_tissues": set(), "selection_score": 0.0})
 
     return selected
 
