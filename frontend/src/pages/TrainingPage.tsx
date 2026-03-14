@@ -1,11 +1,12 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import ScrollablePage from '../components/ScrollablePage'
 import {
   getTrainingModelSummary,
   getRecoveryCheckIns,
   createRecoveryCheckIn,
   getRegions,
-  getExerciseStrength,
+  getExercises,
+  getExerciseHistory,
   getPlannerToday,
   savePlan,
   type TrainingModelSummary,
@@ -13,7 +14,8 @@ import {
   type TrainingModelExerciseInsight,
   type RecoveryCheckIn,
   type RegionInfo,
-  type ExerciseStrength,
+  type WkExercise,
+  type WkExerciseHistory,
   type PlannerTodayResponse,
   type PlannerExercisePrescription,
 } from '../api'
@@ -33,9 +35,6 @@ const recBadge = (rec: string) => {
   if (rec === 'caution') return 'bg-amber-100 text-amber-700 border-amber-200'
   return 'bg-emerald-100 text-emerald-700 border-emerald-200'
 }
-
-const trendIcon = (t: string) => t === 'rising' ? '\u2197' : t === 'falling' ? '\u2198' : '\u2192'
-const trendColor = (t: string) => t === 'rising' ? 'text-emerald-600' : t === 'falling' ? 'text-red-600' : 'text-gray-500'
 
 const regionLabel = (r: string) => r.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 
@@ -218,12 +217,21 @@ function CheckInCard({
   )
 }
 
-// ── Tissue Risk Overview ──
+// ── Tissue & Exercise merged card ──
 
-function TissueRiskCard({ tissues }: { tissues: TrainingModelTissueSummary[] }) {
+function TissueAndExerciseCard({ tissues, exercises }: { tissues: TrainingModelTissueSummary[], exercises: TrainingModelExerciseInsight[] }) {
+  const [tab, setTab] = useState<'tissues' | 'exercises'>('tissues')
+  const [exFilter, setExFilter] = useState<'all' | 'avoid' | 'caution' | 'good'>('all')
+
   const atRisk = tissues.filter(t => t.risk_7d >= 55)
   const recovering = tissues.filter(t => t.risk_7d < 30 && t.recovery_estimate >= 0.75)
   const mid = tissues.filter(t => t.risk_7d >= 30 && t.risk_7d < 55)
+  const filtered = exFilter === 'all' ? exercises : exercises.filter(e => e.recommendation === exFilter)
+  const counts = {
+    avoid: exercises.filter(e => e.recommendation === 'avoid').length,
+    caution: exercises.filter(e => e.recommendation === 'caution').length,
+    good: exercises.filter(e => e.recommendation === 'good').length,
+  }
 
   const TissueRow = ({ t }: { t: TrainingModelTissueSummary }) => (
     <div className={`flex items-center gap-3 p-2.5 rounded-lg border ${riskBg(t.risk_7d)}`}>
@@ -253,172 +261,247 @@ function TissueRiskCard({ tissues }: { tissues: TrainingModelTissueSummary[] }) 
 
   return (
     <div className="bg-white border border-gray-200 rounded-2xl p-5">
-      <h3 className="text-sm font-semibold text-gray-900 mb-3">Tissue Risk Overview</h3>
-      {atRisk.length > 0 && (
-        <div className="mb-3">
-          <p className="text-[10px] uppercase tracking-wider text-red-600 font-semibold mb-1.5">Elevated Risk</p>
-          <div className="space-y-1.5">{atRisk.map(t => <TissueRow key={t.tissue.id} t={t} />)}</div>
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-semibold text-gray-900">Tissue & Exercise Status</h3>
+        <div className="flex gap-1">
+          <button
+            onClick={() => setTab('tissues')}
+            className={`px-3 py-1 text-xs rounded-lg border transition-all ${tab === 'tissues' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-500 border-gray-200'}`}
+          >Tissues</button>
+          <button
+            onClick={() => setTab('exercises')}
+            className={`px-3 py-1 text-xs rounded-lg border transition-all ${tab === 'exercises' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-500 border-gray-200'}`}
+          >Exercises</button>
         </div>
-      )}
-      {mid.length > 0 && (
-        <div className="mb-3">
-          <p className="text-[10px] uppercase tracking-wider text-amber-600 font-semibold mb-1.5">Monitor</p>
-          <div className="space-y-1.5">{mid.map(t => <TissueRow key={t.tissue.id} t={t} />)}</div>
-        </div>
-      )}
-      {recovering.length > 0 && (
-        <div>
-          <p className="text-[10px] uppercase tracking-wider text-emerald-600 font-semibold mb-1.5">Recovered</p>
-          <div className="space-y-1.5">{recovering.slice(0, 5).map(t => <TissueRow key={t.tissue.id} t={t} />)}</div>
-          {recovering.length > 5 && (
-            <p className="text-[11px] text-gray-400 mt-1.5">+{recovering.length - 5} more recovered tissues</p>
+      </div>
+
+      {tab === 'tissues' && (
+        <div className="space-y-3">
+          {atRisk.length > 0 && (
+            <div>
+              <p className="text-[10px] uppercase tracking-wider text-red-600 font-semibold mb-1.5">Elevated Risk</p>
+              <div className="space-y-1.5">{atRisk.map(t => <TissueRow key={t.tissue.id} t={t} />)}</div>
+            </div>
           )}
+          {mid.length > 0 && (
+            <div>
+              <p className="text-[10px] uppercase tracking-wider text-amber-600 font-semibold mb-1.5">Monitor</p>
+              <div className="space-y-1.5">{mid.map(t => <TissueRow key={t.tissue.id} t={t} />)}</div>
+            </div>
+          )}
+          {recovering.length > 0 && (
+            <div>
+              <p className="text-[10px] uppercase tracking-wider text-emerald-600 font-semibold mb-1.5">Recovered</p>
+              <div className="space-y-1.5">{recovering.slice(0, 5).map(t => <TissueRow key={t.tissue.id} t={t} />)}</div>
+              {recovering.length > 5 && <p className="text-[11px] text-gray-400 mt-1">+{recovering.length - 5} more</p>}
+            </div>
+          )}
+          {tissues.length === 0 && <p className="text-sm text-gray-400">No tissue data available</p>}
         </div>
       )}
-      {tissues.length === 0 && <p className="text-sm text-gray-400">No tissue data available</p>}
-    </div>
-  )
-}
 
-// ── Exercise Recommendations ──
-
-function ExerciseRecCard({ exercises }: { exercises: TrainingModelExerciseInsight[] }) {
-  const [filter, setFilter] = useState<'all' | 'avoid' | 'caution' | 'good'>('all')
-  const filtered = filter === 'all' ? exercises : exercises.filter(e => e.recommendation === filter)
-  const counts = {
-    avoid: exercises.filter(e => e.recommendation === 'avoid').length,
-    caution: exercises.filter(e => e.recommendation === 'caution').length,
-    good: exercises.filter(e => e.recommendation === 'good').length,
-  }
-
-  return (
-    <div className="bg-white border border-gray-200 rounded-2xl p-5">
-      <h3 className="text-sm font-semibold text-gray-900 mb-3">Exercise Recommendations</h3>
-      <div className="flex gap-1.5 mb-3">
-        {([['all', 'All', 'bg-gray-100 text-gray-700'], ['good', `Good (${counts.good})`, 'bg-emerald-100 text-emerald-700'], ['caution', `Caution (${counts.caution})`, 'bg-amber-100 text-amber-700'], ['avoid', `Avoid (${counts.avoid})`, 'bg-red-100 text-red-700']] as const).map(([key, label, colors]) => (
-          <button
-            key={key}
-            onClick={() => setFilter(key)}
-            className={`px-2.5 py-1 text-xs rounded-lg border transition-all ${
-              filter === key ? `${colors} border-current font-semibold` : 'bg-white border-gray-200 text-gray-500 hover:border-gray-300'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-      <div className="space-y-1.5 max-h-80 overflow-y-auto">
-        {filtered.map(ex => (
-          <div key={ex.id} className="flex items-center gap-3 p-2.5 rounded-lg border border-gray-100 bg-gray-50/50 hover:bg-gray-50 transition-colors">
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-gray-900 truncate">{ex.name}</span>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded-full border font-medium ${recBadge(ex.recommendation)}`}>
-                  {ex.recommendation}
-                </span>
-              </div>
-              <div className="flex gap-3 mt-0.5 text-[11px] text-gray-500">
-                {ex.equipment && <span>{ex.equipment}</span>}
-                {ex.current_e1rm && <span>e1RM: {ex.current_e1rm} lb</span>}
-                <span>suit: {Math.round(ex.suitability_score)}%</span>
-              </div>
-              {ex.recommendation_details.length > 0 && (
-                <div className="flex flex-wrap gap-1 mt-1">
-                  {ex.recommendation_details.slice(0, 2).map((d, i) => (
-                    <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">{d}</span>
-                  ))}
+      {tab === 'exercises' && (
+        <div>
+          <div className="flex gap-1.5 mb-3 flex-wrap">
+            {([['all', 'All'], ['good', `Good (${counts.good})`], ['caution', `Caution (${counts.caution})`], ['avoid', `Avoid (${counts.avoid})`]] as const).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setExFilter(key)}
+                className={`px-2.5 py-1 text-xs rounded-lg border transition-all ${
+                  exFilter === key
+                    ? key === 'good' ? 'bg-emerald-100 text-emerald-700 border-emerald-300 font-semibold'
+                      : key === 'caution' ? 'bg-amber-100 text-amber-700 border-amber-300 font-semibold'
+                      : key === 'avoid' ? 'bg-red-100 text-red-700 border-red-300 font-semibold'
+                      : 'bg-gray-900 text-white border-gray-900 font-semibold'
+                    : 'bg-white border-gray-200 text-gray-500 hover:border-gray-300'
+                }`}
+              >{label}</button>
+            ))}
+          </div>
+          <div className="space-y-1.5 max-h-80 overflow-y-auto">
+            {filtered.map(ex => (
+              <div key={ex.id} className="flex items-center gap-3 p-2.5 rounded-lg border border-gray-100 bg-gray-50/50">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-gray-900 truncate">{ex.name}</span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full border font-medium ${recBadge(ex.recommendation)}`}>{ex.recommendation}</span>
+                  </div>
+                  <div className="flex gap-3 mt-0.5 text-[11px] text-gray-500">
+                    {ex.equipment && <span>{ex.equipment}</span>}
+                    {ex.current_e1rm && <span>e1RM: {ex.current_e1rm} lb</span>}
+                    <span>suit: {Math.round(ex.suitability_score)}%</span>
+                  </div>
+                  {ex.recommendation_details.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {ex.recommendation_details.slice(0, 2).map((d, i) => (
+                        <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">{d}</span>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-            <div className="text-right shrink-0">
-              <span className={`text-base font-bold tabular-nums ${riskColor(ex.weighted_risk_7d)}`}>
-                {Math.round(ex.weighted_risk_7d)}
-              </span>
-              <span className="text-[10px] text-gray-400 ml-0.5">%</span>
-            </div>
+                <div className="text-right shrink-0">
+                  <span className={`text-base font-bold tabular-nums ${riskColor(ex.weighted_risk_7d)}`}>{Math.round(ex.weighted_risk_7d)}</span>
+                  <span className="text-[10px] text-gray-400 ml-0.5">%</span>
+                </div>
+              </div>
+            ))}
+            {filtered.length === 0 && <p className="text-sm text-gray-400 py-2">No exercises in this category</p>}
           </div>
-        ))}
-        {filtered.length === 0 && <p className="text-sm text-gray-400 py-2">No exercises in this category</p>}
-      </div>
+        </div>
+      )}
     </div>
   )
 }
 
-// ── Strength Trends ──
+// ── Exercise Progress ──
 
-function StrengthCard({
-  exercises,
-  strengthData,
-  onSelect,
-  selectedId,
-}: {
-  exercises: TrainingModelExerciseInsight[]
-  strengthData: ExerciseStrength | null
-  onSelect: (id: number) => void
-  selectedId: number | null
-}) {
-  const withE1rm = exercises.filter(e => e.current_e1rm != null).sort((a, b) => (b.current_e1rm ?? 0) - (a.current_e1rm ?? 0))
-  if (withE1rm.length === 0) return null
+const fmtVol = (v: number) =>
+  v >= 10000 ? `${(v / 1000).toFixed(0)}k` : v >= 1000 ? `${(v / 1000).toFixed(1)}k` : Math.round(v).toString()
 
-  // Simple SVG sparkline for e1RM history
-  const Sparkline = ({ data }: { data: { date: string; e1rm: number }[] }) => {
-    if (data.length < 2) return null
-    const values = data.map(d => d.e1rm)
-    const min = Math.min(...values) * 0.95
-    const max = Math.max(...values) * 1.05
-    const w = 200
-    const h = 40
-    const points = data.map((d, i) => {
-      const x = (i / (data.length - 1)) * w
-      const y = h - ((d.e1rm - min) / (max - min)) * h
-      return `${x},${y}`
-    }).join(' ')
-    return (
-      <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-10">
-        <polyline points={points} fill="none" stroke="#059669" strokeWidth="2" strokeLinejoin="round" />
-        {data.length > 0 && (() => {
-          const lastX = w
-          const lastY = h - ((values[values.length - 1] - min) / (max - min)) * h
-          return <circle cx={lastX} cy={lastY} r="3" fill="#059669" />
-        })()}
-      </svg>
-    )
-  }
+function ExerciseProgressCard({ exercises }: { exercises: WkExercise[] }) {
+  const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [history, setHistory] = useState<WkExerciseHistory | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!selectedId) { setHistory(null); return }
+    setLoading(true)
+    getExerciseHistory(selectedId, 200).then(setHistory).catch(() => setHistory(null)).finally(() => setLoading(false))
+  }, [selectedId])
+
+  // Aggregate history into months
+  const monthlyData = useMemo(() => {
+    if (!history) return []
+    const byMonth: Record<string, { pr: number; volume: number; e1rm: number; sessions: number }> = {}
+    for (const s of history.sessions) {
+      const month = s.date.slice(0, 7)
+      if (!byMonth[month]) byMonth[month] = { pr: 0, volume: 0, e1rm: 0, sessions: 0 }
+      byMonth[month].pr = Math.max(byMonth[month].pr, s.max_weight)
+      byMonth[month].volume += s.total_volume
+      byMonth[month].sessions += 1
+      for (const set of s.sets) {
+        if (set.weight && set.reps && set.reps > 0) {
+          const reps = Math.min(set.reps, 12)
+          const epley = set.weight * (1 + 0.0333 * reps)
+          byMonth[month].e1rm = Math.max(byMonth[month].e1rm, epley)
+        }
+      }
+    }
+    return Object.entries(byMonth)
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([month, d]) => ({
+        month,
+        label: new Date(month + '-15').toLocaleDateString(undefined, { month: 'short', year: '2-digit' }),
+        ...d,
+      }))
+  }, [history])
+
+  const allTimePR = monthlyData.length > 0 ? Math.max(...monthlyData.map(m => m.pr)) : 0
+  const currentE1rm = monthlyData.length > 0 ? Math.round(monthlyData[monthlyData.length - 1].e1rm) : 0
+
+  // SVG dual chart
+  const svgW = 340, svgE1rmH = 140, svgVolH = 100
+  const ml = 40, mr = 12, mt = 10, mb = 28
+  const plotW = svgW - ml - mr
+
+  const maxE1rm = Math.max(...monthlyData.map(m => m.e1rm), 1) * 1.1
+  const maxVol = Math.max(...monthlyData.map(m => m.volume), 1)
+  const n = monthlyData.length
+  const step = n > 1 ? plotW / (n - 1) : plotW
+  const barStep = plotW / Math.max(n, 1)
+  const barW = Math.max(3, barStep * 0.6)
+
+  const toX = (i: number) => ml + (n > 1 ? i * step : plotW / 2)
+  const toY_e1rm = (v: number) => mt + ((maxE1rm - v) / maxE1rm) * (svgE1rmH - mt - mb)
+
+  const showLabels = n <= 18
 
   return (
     <div className="bg-white border border-gray-200 rounded-2xl p-5">
-      <h3 className="text-sm font-semibold text-gray-900 mb-3">Strength Trends</h3>
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mb-3">
-        {withE1rm.slice(0, 9).map(ex => (
-          <button
-            key={ex.id}
-            onClick={() => onSelect(ex.id)}
-            className={`p-2.5 rounded-lg border text-left transition-all ${
-              selectedId === ex.id ? 'border-gray-900 bg-gray-50' : 'border-gray-100 hover:border-gray-300'
-            }`}
-          >
-            <p className="text-xs font-medium text-gray-900 truncate">{ex.name}</p>
-            <p className="text-lg font-bold tabular-nums text-gray-900">{ex.current_e1rm} <span className="text-xs font-normal text-gray-400">lb</span></p>
-            {ex.peak_e1rm && ex.peak_e1rm > (ex.current_e1rm ?? 0) && (
-              <p className="text-[10px] text-gray-400">peak: {ex.peak_e1rm}</p>
-            )}
-          </button>
-        ))}
-      </div>
-      {strengthData && (
-        <div className="rounded-xl border border-gray-100 bg-gray-50/70 p-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-medium text-gray-900">{strengthData.exercise_name}</span>
-            <span className={`text-sm font-semibold ${trendColor(strengthData.trend)}`}>
-              {trendIcon(strengthData.trend)} {strengthData.trend_pct > 0 ? '+' : ''}{strengthData.trend_pct}%
-            </span>
+      <h3 className="text-sm font-semibold text-gray-900 mb-2">Exercise Progress</h3>
+      <select
+        className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 bg-white mb-3"
+        value={selectedId ?? ''}
+        onChange={e => setSelectedId(e.target.value ? Number(e.target.value) : null)}
+      >
+        <option value="">Select an exercise...</option>
+        {exercises.map(ex => <option key={ex.id} value={ex.id}>{ex.name}</option>)}
+      </select>
+
+      {loading && <p className="text-sm text-gray-400">Loading...</p>}
+
+      {!loading && selectedId && monthlyData.length === 0 && (
+        <p className="text-sm text-gray-400">No history for this exercise.</p>
+      )}
+
+      {monthlyData.length > 0 && (
+        <>
+          {/* Stats row */}
+          <div className="grid grid-cols-3 gap-2 mb-3">
+            <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-center">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-400">e1RM (cur)</p>
+              <p className="text-base font-bold text-gray-900 mt-0.5">{currentE1rm} <span className="text-xs font-normal text-gray-400">lb</span></p>
+            </div>
+            <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-center">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-400">PR</p>
+              <p className="text-base font-bold text-gray-900 mt-0.5">{allTimePR} <span className="text-xs font-normal text-gray-400">lb</span></p>
+            </div>
+            <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-center">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-400">Sessions</p>
+              <p className="text-base font-bold text-gray-900 mt-0.5">{history?.sessions.length ?? 0}</p>
+            </div>
           </div>
-          <div className="flex gap-4 text-xs text-gray-500 mb-3">
-            <span>Current: <strong className="text-gray-900">{strengthData.current_e1rm} lb</strong></span>
-            <span>Peak: <strong className="text-gray-900">{strengthData.peak_e1rm} lb</strong></span>
-          </div>
-          {strengthData.history.length >= 2 && <Sparkline data={strengthData.history} />}
-        </div>
+
+          {/* e1RM line chart */}
+          <p className="text-[10px] uppercase tracking-[0.14em] text-gray-400 mb-1">Estimated 1RM (monthly)</p>
+          <svg viewBox={`0 0 ${svgW} ${svgE1rmH}`} className="w-full" style={{ height: `${svgE1rmH}px` }}>
+            {[0, 0.5, 1].map((f, i) => {
+              const val = f * maxE1rm
+              const y = toY_e1rm(val)
+              return (
+                <g key={i}>
+                  <line x1={ml} x2={svgW - mr} y1={y} y2={y} stroke="#e5e7eb" strokeDasharray="3 3" />
+                  <text x={ml - 3} y={y + 3} textAnchor="end" fontSize="9" fill="#9ca3af">{Math.round(val)}</text>
+                </g>
+              )
+            })}
+            <polyline
+              points={monthlyData.map((m, i) => `${toX(i)},${toY_e1rm(m.e1rm)}`).join(' ')}
+              fill="none" stroke="#f97316" strokeWidth={2} strokeLinejoin="round"
+            />
+            {monthlyData.map((m, i) => (
+              <g key={m.month}>
+                <circle cx={toX(i)} cy={toY_e1rm(m.e1rm)} r={3} fill="#f97316" />
+                {showLabels && (
+                  <text x={toX(i)} y={svgE1rmH - 6} textAnchor="middle" fontSize="8" fill="#6b7280">{m.label}</text>
+                )}
+              </g>
+            ))}
+          </svg>
+
+          {/* Volume bar chart */}
+          <p className="text-[10px] uppercase tracking-[0.14em] text-gray-400 mb-1 mt-3">Volume (monthly, lbs)</p>
+          <svg viewBox={`0 0 ${svgW} ${svgVolH}`} className="w-full" style={{ height: `${svgVolH}px` }}>
+            <line x1={ml} x2={svgW - mr} y1={svgVolH - mb} y2={svgVolH - mb} stroke="#e5e7eb" />
+            <text x={ml - 3} y={mt + 4} textAnchor="end" fontSize="9" fill="#9ca3af">{fmtVol(maxVol)}</text>
+            {monthlyData.map((m, i) => {
+              const bH = Math.max(1, (m.volume / maxVol) * (svgVolH - mt - mb))
+              const x = ml + i * barStep + (barStep - barW) / 2
+              return (
+                <g key={m.month}>
+                  <rect x={x} y={svgVolH - mb - bH} width={barW} height={bH} rx={2} fill="#3b82f6" opacity={0.75} />
+                  {showLabels && (
+                    <text x={x + barW / 2} y={svgVolH - 6} textAnchor="middle" fontSize="8" fill="#6b7280">{m.label}</text>
+                  )}
+                </g>
+              )
+            })}
+          </svg>
+
+          {!showLabels && (
+            <p className="text-[10px] text-gray-400 mt-1">{monthlyData[0]?.label} — {monthlyData[monthlyData.length - 1]?.label} ({n} months)</p>
+          )}
+        </>
       )}
     </div>
   )
@@ -647,9 +730,8 @@ export default function TrainingPage() {
   const [planner, setPlanner] = useState<PlannerTodayResponse | null>(null)
   const [plannerLoading, setPlannerLoading] = useState(true)
 
-  // Strength drill-down
-  const [selectedExerciseId, setSelectedExerciseId] = useState<number | null>(null)
-  const [strengthData, setStrengthData] = useState<ExerciseStrength | null>(null)
+  // Exercise progress
+  const [allExercises, setAllExercises] = useState<WkExercise[]>([])
 
   // Quick data load (regions, routine, check-ins)
   useEffect(() => {
@@ -675,6 +757,7 @@ export default function TrainingPage() {
       setModelSummary(data)
       setModelLoading(false)
     }).catch(() => { if (!cancelled) setModelLoading(false) })
+    getExercises().then(setAllExercises).catch(() => {})
     return () => { cancelled = true }
   }, [])
 
@@ -688,12 +771,6 @@ export default function TrainingPage() {
       setPlannerLoading(false)
     }).catch(() => { if (!cancelled) { setPlanner(null); setPlannerLoading(false) } })
     return () => { cancelled = true }
-  }, [])
-
-  // Strength drill-down
-  const loadStrength = useCallback((exerciseId: number) => {
-    setSelectedExerciseId(exerciseId)
-    getExerciseStrength(exerciseId).then(setStrengthData).catch(() => setStrengthData(null))
   }, [])
 
   const refreshPlanner = useCallback(() => {
@@ -775,24 +852,14 @@ export default function TrainingPage() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Tissue Risk */}
-              <TissueRiskCard tissues={modelSummary.tissues} />
-              {/* Exercise Recommendations */}
-              <ExerciseRecCard exercises={modelSummary.exercises} />
+              {/* Tissue & Exercise Status */}
+              <TissueAndExerciseCard tissues={modelSummary.tissues} exercises={modelSummary.exercises} />
+              {/* Exercise Progress */}
+              <ExerciseProgressCard exercises={allExercises} />
             </div>
 
             {/* Capacity Trends */}
             <CapacityCard tissues={modelSummary.tissues} />
-
-            {/* Strength Trends */}
-            {modelSummary.exercises.length > 0 && (
-              <StrengthCard
-                exercises={modelSummary.exercises}
-                strengthData={strengthData}
-                onSelect={loadStrength}
-                selectedId={selectedExerciseId}
-              />
-            )}
           </>
         ) : (
           <div className="bg-white border border-gray-200 rounded-2xl p-5">

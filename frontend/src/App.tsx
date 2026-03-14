@@ -5,7 +5,6 @@ import DashboardPage from './pages/DashboardPage'
 import FoodsPage from './pages/FoodsPage'
 import RecipesPage from './pages/RecipesPage'
 import MealLogPage from './pages/MealLogPage'
-import WorkoutPage from './pages/WorkoutPage'
 import TissueAdminPage from './pages/TissueAdminPage'
 import TrainingPage from './pages/TrainingPage'
 
@@ -18,7 +17,6 @@ export default function App() {
         <Route path="/foods" element={<FoodsPage />} />
         <Route path="/recipes" element={<RecipesPage />} />
         <Route path="/log" element={<MealLogPage />} />
-        <Route path="/workout" element={<WorkoutPage />} />
         <Route path="/training" element={<TrainingPage />} />
         <Route path="/tissues" element={<TissueAdminPage />} />
       </Route>

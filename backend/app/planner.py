@@ -226,6 +226,97 @@ def save_plan(
     return _serialize_saved_plan(session, planned)
 
 
+def add_exercises_to_plan(
+    session: Session,
+    plan_date: date,
+    exercises: list[dict],
+) -> dict:
+    """Add exercises to an existing saved plan for the given date.
+
+    Each entry in ``exercises`` must have ``exercise_id`` and optionally
+    ``target_sets``, ``target_reps`` (e.g. "8-12"), ``rep_scheme``,
+    ``target_weight``.  Returns the updated serialized plan.
+    """
+    planned = session.exec(
+        select(PlannedSession)
+        .where(PlannedSession.date == plan_date)
+        .order_by(col(PlannedSession.id).desc())
+        .limit(1)
+    ).first()
+    if not planned:
+        raise ValueError(f"No saved plan for {plan_date}")
+
+    day = session.get(ProgramDay, planned.program_day_id)
+    if not day:
+        raise ValueError("Plan day not found")
+
+    # Determine next sort_order
+    existing = session.exec(
+        select(ProgramDayExercise)
+        .where(ProgramDayExercise.program_day_id == day.id)
+        .order_by(col(ProgramDayExercise.sort_order).desc())
+        .limit(1)
+    ).first()
+    next_order = (existing.sort_order + 1) if existing else 0
+
+    for i, ex in enumerate(exercises):
+        rep_range = ex.get("target_reps", "8-12")
+        parts = rep_range.split("-")
+        rep_min = int(parts[0]) if parts else None
+        rep_max = int(parts[-1]) if parts else None
+
+        pde = ProgramDayExercise(
+            program_day_id=day.id,
+            exercise_id=ex["exercise_id"],
+            target_sets=ex.get("target_sets", 3),
+            target_rep_min=rep_min,
+            target_rep_max=rep_max,
+            sort_order=next_order + i,
+            notes=json.dumps({
+                "rep_scheme": ex.get("rep_scheme"),
+                "target_weight": ex.get("target_weight"),
+            }),
+        )
+        session.add(pde)
+
+    session.commit()
+    session.refresh(planned)
+    return _serialize_saved_plan(session, planned)
+
+
+def remove_exercises_from_plan(
+    session: Session,
+    plan_date: date,
+    exercise_ids: list[int],
+) -> dict:
+    """Remove exercises from an existing saved plan by exercise_id."""
+    planned = session.exec(
+        select(PlannedSession)
+        .where(PlannedSession.date == plan_date)
+        .order_by(col(PlannedSession.id).desc())
+        .limit(1)
+    ).first()
+    if not planned:
+        raise ValueError(f"No saved plan for {plan_date}")
+
+    day = session.get(ProgramDay, planned.program_day_id)
+    if not day:
+        raise ValueError("Plan day not found")
+
+    to_remove = session.exec(
+        select(ProgramDayExercise).where(
+            ProgramDayExercise.program_day_id == day.id,
+            col(ProgramDayExercise.exercise_id).in_(exercise_ids),
+        )
+    ).all()
+    for pde in to_remove:
+        session.delete(pde)
+
+    session.commit()
+    session.refresh(planned)
+    return _serialize_saved_plan(session, planned)
+
+
 def get_saved_plan(session: Session, plan_date: date) -> dict | None:
     """Get today's saved plan with progress."""
     planned = session.exec(

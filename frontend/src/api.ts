@@ -865,6 +865,16 @@ export const savePlan = (dayLabel: string, targetRegions: string[], exercises: P
 export const getActivePlan = () =>
   request<SavedPlan>('/planner/active').catch(() => null);
 
+export interface VolumeByRegion {
+  dates: string[];
+  regions: string[];
+  daily: Record<string, Record<string, number>>;
+  totals: Record<string, number>;
+}
+
+export const getVolumeByRegion = (days = 7) =>
+  request<VolumeByRegion>(`/training-model/volume-by-region?days=${days}`);
+
 export const startPlan = () =>
   request<{ workout_session_id: number }>('/planner/start', { method: 'POST' });
 

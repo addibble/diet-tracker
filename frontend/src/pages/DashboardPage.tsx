@@ -4,12 +4,16 @@ import {
   getDailySummary,
   getDashboardTrends,
   getWorkouts,
+  getWorkoutSessions,
+  getVolumeByRegion,
   MACRO_KEYS,
   MACRO_LABELS,
   MACRO_UNITS,
   type DailySummary,
   type DashboardTrends,
   type Workout,
+  type WkSession,
+  type VolumeByRegion,
 } from '../api'
 
 function today() {
@@ -437,12 +441,206 @@ function TargetNormalizedMacroTrendsCard({ trends }: { trends: DashboardTrends }
   )
 }
 
+// ── Helpers shared with workout ──
+
+function repDot(completion: string | null): string {
+  if (completion === 'full') return 'bg-green-500'
+  if (completion === 'partial') return 'bg-yellow-500'
+  if (completion === 'failed') return 'bg-red-500'
+  return 'bg-gray-300'
+}
+
+function groupSetsByExercise(sets: WkSession['sets']) {
+  const map = new Map<string, typeof sets>()
+  for (const s of sets) {
+    const list = map.get(s.exercise_name) || []
+    list.push(s)
+    map.set(s.exercise_name, list)
+  }
+  return map
+}
+
+// ── Recent Sessions ──
+
+function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
+  const [expandedId, setExpandedId] = useState<number | null>(null)
+
+  if (sessions.length === 0) return null
+
+  return (
+    <section className="bg-white border border-gray-200 rounded-2xl p-5">
+      <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400 mb-3">Recent Sessions</p>
+      <div className="space-y-2">
+        {sessions.map((ws) => {
+          const exerciseMap = groupSetsByExercise(ws.sets)
+          const totalVolume = ws.sets.reduce((sum, s) => sum + (s.reps || 0) * (s.weight || 0), 0)
+          const isExpanded = expandedId === ws.id
+          return (
+            <div key={ws.id} className="rounded-xl border border-gray-200">
+              <button
+                onClick={() => setExpandedId(isExpanded ? null : ws.id)}
+                className="w-full text-left px-3 py-2 flex items-center gap-3"
+              >
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-800">
+                    {new Date(ws.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    {exerciseMap.size} exercise{exerciseMap.size !== 1 ? 's' : ''}
+                    {totalVolume > 0 && ` · ${Math.round(totalVolume).toLocaleString()} lbs vol`}
+                  </p>
+                </div>
+                <div className="flex gap-0.5">
+                  {ws.sets.filter(s => s.rep_completion).slice(0, 8).map((s, i) => (
+                    <span key={i} className={`w-2 h-2 rounded-full ${repDot(s.rep_completion)}`} />
+                  ))}
+                </div>
+                <span className="text-gray-400 text-xs">{isExpanded ? '−' : '+'}</span>
+              </button>
+              {isExpanded && (
+                <div className="px-3 pb-3 space-y-2">
+                  {Array.from(exerciseMap.entries()).map(([name, sets]) => (
+                    <div key={name}>
+                      <p className="text-xs font-medium text-gray-700">{name}</p>
+                      <div className="flex flex-wrap gap-1 mt-0.5">
+                        {sets.map((s) => (
+                          <span key={s.id} className="text-[11px] text-gray-500 bg-gray-50 rounded px-1.5 py-0.5">
+                            {s.reps != null && s.weight != null ? `${s.weight}×${s.reps}` : s.duration_secs != null ? `${s.duration_secs}s` : '—'}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                  {ws.notes && <p className="text-xs text-gray-400 italic">{ws.notes}</p>}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
+// ── Muscle Volume Chart ──
+
+const REGION_COLORS: Record<string, string> = {
+  chest: '#f97316', shoulders: '#fb923c', triceps: '#fcd34d',
+  upper_back: '#1d4ed8', biceps: '#3b82f6', forearms: '#93c5fd',
+  quads: '#15803d', hamstrings: '#22c55e', glutes: '#4ade80', calves: '#86efac', tibs: '#d1fae5',
+  core: '#7c3aed', lower_back: '#a855f7', hips: '#d8b4fe',
+  neck: '#6b7280', other: '#9ca3af',
+}
+
+function fmtVol(v: number) {
+  return v >= 10000 ? `${(v / 1000).toFixed(0)}k` : v >= 1000 ? `${(v / 1000).toFixed(1)}k` : Math.round(v).toString()
+}
+
+function MuscleVolumeCard({ data }: { data: VolumeByRegion }) {
+  const { dates, regions, daily, totals } = data
+
+  const dayLabels = dates.map(d => new Date(d + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short' }))
+
+  // Compute max total volume across days for chart scaling
+  const dayTotals = dates.map(d => Object.values(daily[d] || {}).reduce((s, v) => s + v, 0))
+  const maxDayVol = Math.max(...dayTotals, 1)
+  const maxTotal = Math.max(...Object.values(totals), 1)
+
+  // SVG stacked bar chart
+  const svgW = 340, svgH = 140
+  const ml = 36, mr = 8, mt = 8, mb = 24
+  const plotW = svgW - ml - mr
+  const plotH = svgH - mt - mb
+  const barW = Math.max(4, plotW / dates.length - 4)
+  const step = plotW / dates.length
+
+  const yGuides = [0, 0.5, 1].map(f => ({
+    y: mt + (1 - f) * plotH,
+    label: fmtVol(f * maxDayVol),
+  }))
+
+  return (
+    <section className="bg-white border border-gray-200 rounded-2xl p-5">
+      <div className="mb-3">
+        <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">Muscle Volume</p>
+        <h2 className="text-xl font-semibold text-gray-900 mt-1">Last 7 days by region</h2>
+      </div>
+
+      {regions.length === 0 ? (
+        <p className="text-sm text-gray-400">No workout volume logged in the last 7 days.</p>
+      ) : (
+        <>
+          {/* Stacked bar chart */}
+          <svg viewBox={`0 0 ${svgW} ${svgH}`} className="w-full h-36 mb-4">
+            {yGuides.map((g, i) => (
+              <g key={i}>
+                <line x1={ml} x2={svgW - mr} y1={g.y} y2={g.y} stroke="#e5e7eb" strokeDasharray="3 3" />
+                <text x={ml - 3} y={g.y + 3} textAnchor="end" fontSize="9" fill="#9ca3af">{g.label}</text>
+              </g>
+            ))}
+            {dates.map((d, di) => {
+              const dayVol = dayTotals[di]
+              if (dayVol === 0) return null
+              const barH = (dayVol / maxDayVol) * plotH
+              const x = ml + di * step + (step - barW) / 2
+              let yOff = 0
+              return (
+                <g key={d}>
+                  {regions.map(r => {
+                    const vol = (daily[d] || {})[r] || 0
+                    if (vol === 0) return null
+                    const segH = (vol / maxDayVol) * plotH
+                    const y = mt + plotH - barH + yOff
+                    yOff += segH
+                    return <rect key={r} x={x} y={y} width={barW} height={segH} rx={1} fill={REGION_COLORS[r] || '#9ca3af'} />
+                  })}
+                  <text x={x + barW / 2} y={svgH - 4} textAnchor="middle" fontSize="9" fill="#6b7280">{dayLabels[di]}</text>
+                </g>
+              )
+            })}
+          </svg>
+
+          {/* Legend */}
+          <div className="flex flex-wrap gap-x-3 gap-y-1 mb-4">
+            {regions.map(r => (
+              <span key={r} className="flex items-center gap-1 text-[10px] text-gray-600">
+                <span className="w-2 h-2 rounded-full inline-block" style={{ background: REGION_COLORS[r] || '#9ca3af' }} />
+                {r.replace(/_/g, ' ')}
+              </span>
+            ))}
+          </div>
+
+          {/* 7-day totals horizontal bars */}
+          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-400 mb-2">7-Day Totals</p>
+          <div className="space-y-1.5">
+            {regions.map(r => {
+              const vol = totals[r] || 0
+              const pct = (vol / maxTotal) * 100
+              return (
+                <div key={r} className="flex items-center gap-2">
+                  <span className="text-xs text-gray-600 w-20 truncate shrink-0">{r.replace(/_/g, ' ')}</span>
+                  <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
+                    <div className="h-full rounded-full" style={{ width: `${pct}%`, background: REGION_COLORS[r] || '#9ca3af' }} />
+                  </div>
+                  <span className="text-[11px] text-gray-500 tabular-nums w-10 text-right shrink-0">{fmtVol(vol)}</span>
+                </div>
+              )
+            })}
+          </div>
+        </>
+      )}
+    </section>
+  )
+}
+
 export default function DashboardPage() {
   const [date, setDate] = useState(today())
   const [summary, setSummary] = useState<DailySummary | null>(null)
   const [trends, setTrends] = useState<DashboardTrends | null>(null)
   const [workouts, setWorkouts] = useState<Workout[]>([])
   const [loading, setLoading] = useState(true)
+  const [sessions, setSessions] = useState<WkSession[]>([])
+  const [volumeByRegion, setVolumeByRegion] = useState<VolumeByRegion | null>(null)
 
   useEffect(() => {
     const loadDashboard = async () => {
@@ -467,6 +665,16 @@ export default function DashboardPage() {
 
     loadDashboard()
   }, [date])
+
+  useEffect(() => {
+    Promise.all([
+      getWorkoutSessions(undefined, undefined, 10).catch(() => []),
+      getVolumeByRegion(7).catch(() => null),
+    ]).then(([s, v]) => {
+      setSessions(s as WkSession[])
+      setVolumeByRegion(v as VolumeByRegion | null)
+    })
+  }, [])
 
   const activeTarget = summary?.active_macro_target ?? null
 
@@ -569,6 +777,9 @@ export default function DashboardPage() {
           </div>
 
           <TargetNormalizedMacroTrendsCard trends={trends} />
+
+          {volumeByRegion && <MuscleVolumeCard data={volumeByRegion} />}
+          <RecentSessionsCard sessions={sessions} />
 
           {workouts.length > 0 && (
             <section className="bg-white border border-gray-200 rounded-2xl p-5">

@@ -1578,10 +1578,12 @@ SET_WORKOUT_SESSIONS_DEF = {
     "function": {
         "name": "set_workout_sessions",
         "description": (
-            "Create, update, or delete workout sessions. "
-            "Add sets via the sets relation: use mode=append to add sets "
-            "to an existing session, mode=replace to overwrite all sets. "
-            "To update rep_completion, replace sets with updated fields."
+            "Record COMPLETED sets in an active workout. Use ONLY for logging "
+            "sets that the user has actually performed (reps, weight, RPE). "
+            "Do NOT use to add, remove, or reorder planned exercises — "
+            "use modify_workout_plan for that instead. "
+            "Add sets via the sets relation: mode=append to add new sets, "
+            "mode=replace to overwrite all sets for a session."
         ),
         "parameters": {
             "type": "object",
@@ -2481,10 +2483,10 @@ GET_WORKOUT_PLAN_DEF = {
     "function": {
         "name": "get_workout_plan",
         "description": (
-            "Get today's workout plan. If a plan has been saved, returns it with "
-            "progress (which exercises are done). Otherwise generates a new suggestion. "
-            "Call when the user asks what to train, wants to start their workout, or "
-            "asks about today's plan."
+            "Get today's workout plan. If a plan has been saved (via the Training page), "
+            "returns it with progress (which exercises are done). Otherwise generates a "
+            "suggestion. Use modify_workout_plan to add or remove exercises from a saved "
+            "plan. Use set_workout_sessions ONLY to record actual completed sets."
         ),
         "parameters": {
             "type": "object",
@@ -2593,6 +2595,93 @@ def _format_saved_plan(saved: dict) -> dict:
 
 
 # =====================================================================
+#  Modify workout plan tool
+# =====================================================================
+
+MODIFY_WORKOUT_PLAN_DEF = {
+    "type": "function",
+    "function": {
+        "name": "modify_workout_plan",
+        "description": (
+            "Add or remove exercises from today's SAVED workout plan "
+            "(the pre-workout exercise list, not logged sets). "
+            "Use this when the user wants to adjust which exercises are in today's plan "
+            "before or during a workout. "
+            "Do NOT use set_workout_sessions for this purpose."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["add", "remove"],
+                    "description": (
+                        "'add' appends exercises to the plan. "
+                        "'remove' deletes exercises by exercise_id."
+                    ),
+                },
+                "exercises": {
+                    "type": "array",
+                    "description": (
+                        "For 'add': list of exercise objects with exercise_id (required), "
+                        "and optionally target_sets, target_reps (e.g. '8-12'), "
+                        "rep_scheme ('heavy'|'volume'|'light'), target_weight. "
+                        "For 'remove': list of objects with exercise_id."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "required": ["exercise_id"],
+                        "properties": {
+                            "exercise_id": {"type": "integer"},
+                            "target_sets": {"type": "integer", "default": 3},
+                            "target_reps": {"type": "string", "default": "8-12"},
+                            "rep_scheme": {"type": "string", "enum": ["heavy", "volume", "light"]},
+                            "target_weight": {"type": "number"},
+                        },
+                    },
+                },
+                "as_of": {
+                    "type": "string",
+                    "description": "Date (YYYY-MM-DD). Defaults to today.",
+                },
+            },
+            "required": ["action", "exercises"],
+        },
+    },
+}
+
+
+def handle_modify_workout_plan(args: dict, session: "Session") -> dict:
+    from datetime import date as date_type
+
+    from app.planner import add_exercises_to_plan, remove_exercises_from_plan
+
+    as_of = None
+    if args.get("as_of"):
+        as_of = date_type.fromisoformat(args["as_of"])
+    plan_date = as_of or date_type.today()
+
+    action = args.get("action")
+    exercises = args.get("exercises", [])
+
+    try:
+        if action == "add":
+            updated = add_exercises_to_plan(session, plan_date, exercises)
+        elif action == "remove":
+            ids = [e["exercise_id"] for e in exercises]
+            updated = remove_exercises_from_plan(session, plan_date, ids)
+        else:
+            return {"error": f"Unknown action: {action}"}
+    except ValueError as e:
+        return {"error": str(e)}
+
+    names = [e.get("exercise_name") or f"exercise {e.get('exercise_id')}" for e in exercises]
+    verb = "Added" if action == "add" else "Removed"
+    summary = f"{verb}: {', '.join(names)}. Plan now has {len(updated['exercises'])} exercises."
+    return {"result": summary, "plan": _format_saved_plan(updated)}
+
+
+# =====================================================================
 #  Tool registration
 # =====================================================================
 
@@ -2603,7 +2692,7 @@ WORKOUT_TOOL_DEFINITIONS = [
     GET_WORKOUT_SESSIONS_DEF, SET_WORKOUT_SESSIONS_DEF,
     GET_ROUTINE_EXERCISES_DEF, SET_ROUTINE_EXERCISES_DEF,
     GET_WORKOUTS_DEF, SET_WORKOUTS_DEF,
-    GET_WORKOUT_PLAN_DEF,
+    GET_WORKOUT_PLAN_DEF, MODIFY_WORKOUT_PLAN_DEF,
 ]
 
 WORKOUT_TOOL_HANDLERS = {
@@ -2620,4 +2709,5 @@ WORKOUT_TOOL_HANDLERS = {
     "get_workouts": handle_get_workouts,
     "set_workouts": handle_set_workouts,
     "get_workout_plan": handle_get_workout_plan,
+    "modify_workout_plan": handle_modify_workout_plan,
 }

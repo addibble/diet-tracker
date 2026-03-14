@@ -1,12 +1,13 @@
 import datetime
+from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
-from sqlmodel import Session
+from sqlmodel import Session, col, select
 
 from app.auth import get_current_user
 from app.database import get_session
-from app.models import RecoveryCheckIn, Tissue, TissueRecoveryLog, TrainingExclusionWindow
+from app.models import ExerciseTissue, RecoveryCheckIn, Tissue, TissueRecoveryLog, TrainingExclusionWindow, WorkoutSession, WorkoutSet
 from app.training_model import (
     build_exercise_risk_ranking,
     build_exercise_strength,
@@ -206,11 +207,9 @@ def create_check_in(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    from sqlmodel import select as sel
-
     # Upsert: update existing check-in for same date+region if one exists
     existing = session.exec(
-        sel(RecoveryCheckIn)
+        select(RecoveryCheckIn)
         .where(RecoveryCheckIn.date == data.date, RecoveryCheckIn.region == data.region)
         .order_by(RecoveryCheckIn.id.desc())  # type: ignore[union-attr]
         .limit(1)
@@ -256,10 +255,7 @@ def get_check_ins(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    from sqlmodel import col
-    from sqlmodel import select as sel
-
-    stmt = sel(RecoveryCheckIn)
+    stmt = select(RecoveryCheckIn)
     if date is not None:
         stmt = stmt.where(RecoveryCheckIn.date == date)
     else:
@@ -294,11 +290,7 @@ def get_regions(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    from collections import defaultdict
-
-    from sqlmodel import select as sel
-
-    tissues = session.exec(sel(Tissue).order_by(Tissue.name)).all()
+    tissues = session.exec(select(Tissue).order_by(Tissue.name)).all()
     regions: dict[str, list[dict]] = defaultdict(list)
     for tissue in tissues:
         regions[tissue.region].append({
@@ -311,3 +303,60 @@ def get_regions(
         {"region": region, "tissues": tissues_list}
         for region, tissues_list in sorted(regions.items())
     ]
+
+
+@router.get("/volume-by-region")
+def get_volume_by_region(
+    days: int = Query(default=7, ge=1, le=90),
+    as_of: datetime.date | None = Query(default=None),
+    session: Session = Depends(get_session),
+    _user: str = Depends(get_current_user),
+):
+    """Per-day volume broken down by muscle region for the last N days."""
+    today = as_of or datetime.date.today()
+    cutoff = today - datetime.timedelta(days=days - 1)
+
+    stmt = (
+        select(WorkoutSession.date, WorkoutSet.exercise_id, WorkoutSet.reps, WorkoutSet.weight)
+        .join(WorkoutSet, WorkoutSet.session_id == WorkoutSession.id)
+        .where(col(WorkoutSession.date) >= cutoff, col(WorkoutSession.date) <= today)
+    )
+    rows = session.exec(stmt).all()
+
+    region_rows = session.exec(
+        select(ExerciseTissue.exercise_id, Tissue.region, ExerciseTissue.routing_factor)
+        .join(Tissue, Tissue.id == ExerciseTissue.tissue_id)
+        .where(col(ExerciseTissue.role).in_(["primary", "secondary"]))
+    ).all()
+
+    exercise_regions: dict = defaultdict(list)
+    for ex_id, region, routing in region_rows:
+        exercise_regions[ex_id].append((region, routing or 1.0))
+
+    daily: dict = defaultdict(lambda: defaultdict(float))
+    for d, ex_id, reps, weight in rows:
+        if not reps or not weight:
+            continue
+        vol = reps * weight
+        for region, routing in exercise_regions.get(ex_id, []):
+            daily[str(d)][region] += vol * routing
+
+    date_range = []
+    cur = cutoff
+    while cur <= today:
+        date_range.append(str(cur))
+        cur += datetime.timedelta(days=1)
+
+    totals: dict = defaultdict(float)
+    for day_data in daily.values():
+        for region, vol in day_data.items():
+            totals[region] += vol
+
+    all_regions = sorted(totals.keys(), key=lambda r: totals[r], reverse=True)
+
+    return {
+        "dates": date_range,
+        "regions": all_regions,
+        "daily": {d: dict(daily.get(d, {})) for d in date_range},
+        "totals": dict(totals),
+    }
