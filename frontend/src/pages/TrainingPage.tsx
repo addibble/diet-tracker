@@ -72,6 +72,10 @@ const SEVERITY_COLORS = [
   'bg-red-100 text-red-700 border-red-300',
 ] as const
 
+// Reverse-map 0-10 DB value back to 0-3 UI scale
+const dbToSeverity = (v: number): number =>
+  v >= 9 ? 3 : v >= 6 ? 2 : v >= 3 ? 1 : 0
+
 function CheckInCard({
   regions,
   existingCheckIns,
@@ -88,9 +92,26 @@ function CheckInCard({
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState<Set<string>>(new Set())
 
+  // Build lookup map from region → check-in for pre-population
+  const checkInByRegion = Object.fromEntries(existingCheckIns.map(c => [c.region, c]))
+
   useEffect(() => {
     setSaved(new Set(existingCheckIns.map(c => c.region)))
   }, [existingCheckIns])
+
+  const selectRegion = (region: string | null) => {
+    setSelected(region)
+    if (region && checkInByRegion[region]) {
+      const ci = checkInByRegion[region]
+      setSoreness(dbToSeverity(ci.soreness_0_10))
+      setPain(dbToSeverity(ci.pain_0_10))
+      setStiffness(dbToSeverity(ci.stiffness_0_10))
+    } else {
+      setSoreness(0)
+      setPain(0)
+      setStiffness(0)
+    }
+  }
 
   // Auto-calculate readiness: start at 10, subtract for each nonzero category
   const readiness = Math.max(0, 10
@@ -155,7 +176,7 @@ function CheckInCard({
           return (
             <button
               key={r.region}
-              onClick={() => { setSelected(active ? null : r.region); setSoreness(0); setPain(0); setStiffness(0) }}
+              onClick={() => selectRegion(active ? null : r.region)}
               className={`px-2.5 py-1 text-xs rounded-lg border transition-all ${
                 done
                   ? 'bg-emerald-50 border-emerald-200 text-emerald-700'

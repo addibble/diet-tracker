@@ -18,6 +18,7 @@ from sqlmodel import Session, col, select
 from app.models import (
     Exercise,
     ExerciseTissue,
+    RecoveryCheckIn,
     WorkoutSession,
     WorkoutSet,
 )
@@ -69,6 +70,9 @@ def suggest_today(session: Session, *, as_of: date | None = None) -> dict:
             "message": "No training data yet. Log some workouts first.",
         }
 
+    # Load today's check-ins for immediate readiness adjustment
+    todays_checkins = _load_todays_checkins(session, today)
+
     # Build region -> tissue readiness map
     region_readiness: dict[str, list[float]] = defaultdict(list)
     region_risk: dict[str, list[int]] = defaultdict(list)
@@ -95,6 +99,30 @@ def suggest_today(session: Session, *, as_of: date | None = None) -> dict:
         region_readiness[region].append(recovery)
         region_risk[region].append(risk)
         tissue_id_by_region[region].append(tissue_info["id"])
+
+    # Apply today's check-in data as immediate readiness overrides.
+    # The training model's recovery_estimate is based on historical load patterns
+    # and doesn't react to same-day check-ins, so we apply these directly.
+    for region, checkin in todays_checkins.items():
+        pain = checkin["pain_0_10"]
+        soreness = checkin["soreness_0_10"]
+        stiffness = checkin["stiffness_0_10"]
+
+        if pain >= 7:  # substantial or severe pain
+            # Cap readiness at 0.15 — essentially blocked
+            region_readiness[region] = [min(v, 0.15) for v in region_readiness[region]]
+            region_risk[region] = [max(v, 80) for v in region_risk[region]]
+        elif pain >= 4:  # some pain
+            region_readiness[region] = [min(v, 0.4) for v in region_readiness[region]]
+            region_risk[region] = [max(v, 60) for v in region_risk[region]]
+
+        if soreness >= 7:  # substantial or severe soreness
+            region_readiness[region] = [min(v, 0.35) for v in region_readiness[region]]
+        elif soreness >= 4:  # some soreness
+            region_readiness[region] = [v * 0.7 for v in region_readiness[region]]
+
+        if stiffness >= 7:
+            region_readiness[region] = [min(v, 0.5) for v in region_readiness[region]]
 
     # Find when each region was last trained
     region_last_trained = _region_last_trained(session, tissue_id_by_region, today)
@@ -189,6 +217,22 @@ def suggest_today(session: Session, *, as_of: date | None = None) -> dict:
         "alternatives": alternatives,
         "message": None,
     }
+
+
+def _load_todays_checkins(session: Session, today: date) -> dict[str, dict]:
+    """Load today's recovery check-ins keyed by region."""
+    rows = session.exec(
+        select(RecoveryCheckIn).where(RecoveryCheckIn.date == today)
+    ).all()
+    # If multiple check-ins for same region today, use most recent (highest id)
+    result: dict[str, dict] = {}
+    for row in sorted(rows, key=lambda r: r.id or 0):
+        result[row.region] = {
+            "pain_0_10": row.pain_0_10,
+            "soreness_0_10": row.soreness_0_10,
+            "stiffness_0_10": row.stiffness_0_10,
+        }
+    return result
 
 
 def _region_last_trained(
