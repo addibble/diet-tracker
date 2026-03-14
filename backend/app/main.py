@@ -16,6 +16,7 @@ from app.routers.foods import router as foods_router
 from app.routers.macro_targets import router as macro_targets_router
 from app.routers.meals import router as meals_router
 from app.routers.parse import router as parse_router
+from app.routers.planner import router as planner_router
 from app.routers.recipes import router as recipes_router
 from app.routers.routine import router as routine_router
 from app.routers.tissue_readiness import router as tissue_readiness_router
@@ -71,6 +72,7 @@ app.include_router(tissues_router)
 app.include_router(tissue_readiness_router)
 app.include_router(training_model_router)
 app.include_router(routine_router)
+app.include_router(planner_router)
 
 
 @app.get("/api/health")

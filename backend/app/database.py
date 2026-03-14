@@ -49,6 +49,15 @@ def _migrate_add_columns():
             insp,
         )
 
+    if "tissues" in table_names:
+        _ensure_columns(
+            "tissues",
+            {
+                "region": "ALTER TABLE tissues ADD COLUMN region TEXT DEFAULT 'other'",
+            },
+            insp,
+        )
+
     if "foods" in insp.get_table_names():
         cols = {c["name"] for c in insp.get_columns("foods")}
         if "brand" not in cols:
@@ -89,11 +98,13 @@ def _seed_data():
         seed_exercise_tissue_model_defaults,
         seed_hip_machine_tissues,
         seed_tissue_model_configs,
+        seed_tissue_regions,
         seed_tissues,
     )
 
     with Session(engine) as session:
         seed_tissues(session)
+        seed_tissue_regions(session)
         seed_hip_machine_tissues(session)
         seed_exercise_tissue_model_defaults(session)
         seed_tissue_model_configs(session)

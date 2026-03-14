@@ -570,6 +570,8 @@ export interface TrainingModelWindow {
 export interface TrainingModelTissueSummary {
   tissue: WkTissue & Required<Pick<WkTissue, 'model_config'>>;
   current_capacity: number;
+  baseline_capacity: number;
+  capacity_trend_30d_pct: number;
   normalized_load: number;
   acute_fatigue: number;
   chronic_load: number;
@@ -605,6 +607,8 @@ export interface TrainingModelExerciseInsight {
   recommendation_details: string[];
   blocked_tissues: string[];
   favored_tissues: string[];
+  current_e1rm: number | null;
+  peak_e1rm: number | null;
   tissues: {
     tissue_id: number;
     tissue_name: string;
@@ -651,8 +655,95 @@ export interface TrainingModelTissueHistory {
   tissue: WkTissue & Required<Pick<WkTissue, 'model_config'>>;
   as_of: string;
   learned_recovery_days: number;
+  baseline_capacity: number;
+  capacity_trend_30d_pct: number;
   collapse_dates: string[];
+  overload_dates: string[];
   history: TrainingModelHistoryPoint[];
+}
+
+// ── Recovery Check-in Types ──
+
+export interface RecoveryCheckIn {
+  id: number;
+  date: string;
+  region: string;
+  soreness_0_10: number;
+  pain_0_10: number;
+  stiffness_0_10: number;
+  readiness_0_10: number;
+  notes: string | null;
+}
+
+export interface RegionInfo {
+  region: string;
+  tissues: { id: number; name: string; display_name: string }[];
+}
+
+// ── Exercise Strength Types ──
+
+export interface ExerciseStrength {
+  exercise_id: number;
+  exercise_name: string;
+  as_of: string;
+  current_e1rm: number;
+  peak_e1rm: number;
+  trend: 'rising' | 'stable' | 'falling';
+  trend_pct: number;
+  history: { date: string; e1rm: number }[];
+}
+
+// ── Planner Types ──
+
+export interface PlannerSuggestion {
+  program_day_id: number;
+  day_label: string;
+  readiness_score: number;
+  days_since_last: number | null;
+  target_regions: string[];
+  exercises: PlannerExercisePrescription[];
+  rationale: string;
+}
+
+export interface PlannerExercisePrescription {
+  exercise_id: number;
+  exercise_name: string;
+  equipment: string | null;
+  rep_scheme: 'heavy' | 'volume' | 'light';
+  target_sets: number;
+  target_reps: string;
+  target_weight: number | null;
+  rationale: string;
+  last_performance: {
+    date: string;
+    sets: { reps: number | null; weight: number | null; rep_completion: string | null }[];
+  } | null;
+}
+
+export interface PlannerTodayResponse {
+  as_of: string;
+  suggestion: PlannerSuggestion | null;
+  alternatives: PlannerSuggestion[];
+  message: string | null;
+}
+
+export interface TrainingProgram {
+  id: number;
+  name: string;
+  active: number;
+  notes: string | null;
+  days: {
+    id: number;
+    day_label: string;
+    target_regions: string[];
+    exercises: {
+      exercise_id: number;
+      exercise_name: string;
+      target_sets: number;
+      target_rep_min: number | null;
+      target_rep_max: number | null;
+    }[];
+  }[];
 }
 
 // Workout API functions
@@ -735,6 +826,61 @@ export const getTrainingModelTissueHistory = (tissueId: number, days = 90, asOf?
     `/training-model/tissues/${tissueId}/history?${params.join('&')}`,
   );
 };
+
+// ── Exercise Strength ──
+
+export const getExerciseStrength = (exerciseId: number, days = 90, asOf?: string) => {
+  const params = [`days=${days}`];
+  if (asOf) params.push(`as_of=${asOf}`);
+  return request<ExerciseStrength>(
+    `/training-model/exercises/${exerciseId}/strength?${params.join('&')}`,
+  );
+};
+
+// ── Recovery Check-ins ──
+
+export const createRecoveryCheckIn = (data: {
+  date: string;
+  region: string;
+  soreness_0_10?: number;
+  pain_0_10?: number;
+  stiffness_0_10?: number;
+  readiness_0_10?: number;
+  notes?: string;
+}) =>
+  request<RecoveryCheckIn>('/training-model/check-in', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+
+export const getRecoveryCheckIns = (date?: string, startDate?: string, endDate?: string) => {
+  const params: string[] = [];
+  if (date) params.push(`date=${date}`);
+  if (startDate) params.push(`start_date=${startDate}`);
+  if (endDate) params.push(`end_date=${endDate}`);
+  return request<RecoveryCheckIn[]>(
+    `/training-model/check-ins${params.length ? `?${params.join('&')}` : ''}`,
+  );
+};
+
+export const getRegions = () =>
+  request<RegionInfo[]>('/training-model/regions');
+
+// ── Planner ──
+
+export const getPlannerToday = (asOf?: string) => {
+  const params = asOf ? `?as_of=${asOf}` : '';
+  return request<PlannerTodayResponse>(`/planner/today${params}`);
+};
+
+export const getPlannerPrograms = () =>
+  request<TrainingProgram[]>('/planner/programs');
+
+export const acceptPlan = (programDayId: number, date: string) =>
+  request<{ id: number }>('/planner/accept', {
+    method: 'POST',
+    body: JSON.stringify({ program_day_id: programDayId, date }),
+  });
 
 // Parse meal with LLM
 export const parseMeal = (description: string) =>

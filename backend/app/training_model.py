@@ -10,6 +10,7 @@ from sqlmodel import Session, col, select
 from app.models import (
     Exercise,
     ExerciseTissue,
+    RecoveryCheckIn,
     Tissue,
     TissueCondition,
     TissueModelConfig,
@@ -33,6 +34,9 @@ class ExposureRecord:
     raw_load: float = 0.0
     fatigue_load: float = 0.0
     strain_load: float = 0.0
+    strength_load: float = 0.0   # from 1-5 rep sets
+    hypertrophy_load: float = 0.0  # from 6-12 rep sets
+    endurance_load: float = 0.0  # from 13+ rep sets
     failures: int = 0
     exercise_loads: dict[int, float] | None = None
 
@@ -71,10 +75,27 @@ def build_training_model_summary(
         if state is None:
             continue
         collapse_count = sum(1 for item in context["states_by_tissue"][tissue.id] if item.collapse_flag)
+        # Capacity trend over last 30 days
+        states_list = context["states_by_tissue"][tissue.id]
+        capacity_trend = 0.0
+        if len(states_list) >= 2:
+            recent_cap = states_list[-1].capacity_state
+            days_ago = min(30, len(states_list) - 1)
+            earlier_cap = states_list[-1 - days_ago].capacity_state
+            if earlier_cap > 0:
+                capacity_trend = round(((recent_cap - earlier_cap) / earlier_cap) * 100, 2)
+        # Baseline capacity
+        baseline = _baseline_capacity(
+            context["exposures_by_tissue"][tissue.id],
+            context["excluded_days"],
+            context["configs"][tissue.id].capacity_prior,
+        )
         tissues.append(
             {
                 "tissue": _serialize_tissue(tissue, context["configs"][tissue.id]),
                 "current_capacity": round(state.capacity_state, 3),
+                "baseline_capacity": round(baseline, 3),
+                "capacity_trend_30d_pct": capacity_trend,
                 "normalized_load": round(state.normalized_load, 3),
                 "acute_fatigue": round(state.acute_fatigue, 3),
                 "chronic_load": round(state.chronic_load, 3),
@@ -223,6 +244,10 @@ def build_exercise_risk_ranking(
             favored_tissues=favored_tissues,
             weighted_normalized_load=weighted_normalized_load,
         )
+        # e1RM summary for this exercise
+        e1rm_series = context.get("e1rm_by_exercise", {}).get(exercise.id, [])
+        current_e1rm = round(e1rm_series[-1][1], 2) if e1rm_series else None
+        peak_e1rm = round(max((v for _, v in e1rm_series), default=0.0), 2) if e1rm_series else None
         exercise_rows.append(
             {
                 "id": exercise.id,
@@ -240,6 +265,8 @@ def build_exercise_risk_ranking(
                 "recommendation_details": recommendation_details,
                 "blocked_tissues": blocked_tissues[:5],
                 "favored_tissues": favored_tissues[:5],
+                "current_e1rm": current_e1rm,
+                "peak_e1rm": peak_e1rm,
                 "tissues": mappings,
             }
         )
@@ -288,12 +315,87 @@ def build_tissue_history(
         if state.date >= cutoff
     ]
 
+    # Compute baseline capacity for this tissue
+    baseline = _baseline_capacity(
+        context["exposures_by_tissue"][tissue_id],
+        context["excluded_days"],
+        context["configs"][tissue_id].capacity_prior,
+    )
+
+    # Detect overload windows (days where ramp_ratio > 1.3)
+    overload_dates = [
+        item["date"] for item in history if item["ramp_ratio"] > 1.3
+    ]
+
+    # Capacity trend: % change over last 30 days
+    capacity_values = [item["capacity_state"] for item in history]
+    capacity_trend = 0.0
+    if len(capacity_values) >= 2:
+        recent = capacity_values[-1]
+        days_ago = min(30, len(capacity_values) - 1)
+        earlier = capacity_values[-1 - days_ago]
+        if earlier > 0:
+            capacity_trend = round(((recent - earlier) / earlier) * 100, 2)
+
     return {
         "tissue": _serialize_tissue(tissue, context["configs"][tissue.id]),
         "as_of": context["as_of"].isoformat(),
         "learned_recovery_days": round(context["recovery_days"][tissue.id], 2),
+        "baseline_capacity": round(baseline, 3),
+        "capacity_trend_30d_pct": capacity_trend,
         "collapse_dates": [item["date"] for item in history if item["collapse_flag"]],
+        "overload_dates": overload_dates,
         "history": history,
+    }
+
+
+def build_exercise_strength(
+    session: Session,
+    exercise_id: int,
+    *,
+    as_of: date | None = None,
+    days: int = _DEFAULT_WINDOW_DAYS,
+) -> dict:
+    """Return e1RM time series and trend for a single exercise."""
+    context = _build_context(session, as_of=as_of)
+    exercise = None
+    for ex in context["exercises"]:
+        if ex.id == exercise_id:
+            exercise = ex
+            break
+    if exercise is None:
+        raise KeyError(f"Unknown exercise_id {exercise_id}")
+    e1rm_series = context["e1rm_by_exercise"].get(exercise_id, [])
+    cutoff = context["as_of"] - timedelta(days=max(1, days - 1))
+    filtered = [(d.isoformat(), v) for d, v in e1rm_series if d >= cutoff]
+    # Trend: compare last 14 days avg vs prior 14 days avg
+    recent_values = [v for d, v in e1rm_series if d >= context["as_of"] - timedelta(days=14)]
+    prior_values = [
+        v for d, v in e1rm_series
+        if context["as_of"] - timedelta(days=28) <= d < context["as_of"] - timedelta(days=14)
+    ]
+    trend = "stable"
+    trend_pct = 0.0
+    if recent_values and prior_values:
+        recent_avg = _mean(recent_values)
+        prior_avg = _mean(prior_values)
+        if prior_avg > 0:
+            trend_pct = round(((recent_avg - prior_avg) / prior_avg) * 100, 2)
+            if trend_pct > 2:
+                trend = "rising"
+            elif trend_pct < -2:
+                trend = "falling"
+    peak = max((v for _, v in e1rm_series), default=0.0)
+    current = e1rm_series[-1][1] if e1rm_series else 0.0
+    return {
+        "exercise_id": exercise_id,
+        "exercise_name": exercise.name,
+        "as_of": context["as_of"].isoformat(),
+        "current_e1rm": round(current, 2),
+        "peak_e1rm": round(peak, 2),
+        "trend": trend,
+        "trend_pct": trend_pct,
+        "history": [{"date": d, "e1rm": round(v, 2)} for d, v in filtered],
     }
 
 
@@ -303,6 +405,86 @@ def list_exclusion_windows(session: Session) -> list[TrainingExclusionWindow]:
             select(TrainingExclusionWindow).order_by(TrainingExclusionWindow.start_date)
         ).all()
     )
+
+
+def _load_recovery_checkins(
+    session: Session,
+    tissues: list[Tissue],
+    exposures_by_tissue: dict[int, dict[date, ExposureRecord]],
+    as_of: date | None,
+) -> dict[int, dict[date, dict]]:
+    """Load check-ins and distribute to tissues by region.
+
+    Returns: tissue_id -> date -> {soreness, pain, stiffness, readiness}
+    """
+    from app.seed_tissues import tissue_region
+
+    stmt = select(RecoveryCheckIn).order_by(col(RecoveryCheckIn.date).asc())
+    if as_of is not None:
+        stmt = stmt.where(col(RecoveryCheckIn.date) <= as_of)
+    rows = list(session.exec(stmt).all())
+
+    if not rows:
+        return {}
+
+    # Build region -> [tissue] mapping from actual tissue objects
+    region_tissues: dict[str, list[Tissue]] = defaultdict(list)
+    for tissue in tissues:
+        region = tissue.region if tissue.region != "other" else tissue_region(tissue.name)
+        region_tissues[region].append(tissue)
+
+    result: dict[int, dict[date, dict]] = defaultdict(dict)
+
+    for checkin in rows:
+        region = checkin.region
+        target_tissues = region_tissues.get(region, [])
+        if not target_tissues:
+            continue
+
+        checkin_data = {
+            "soreness": checkin.soreness_0_10,
+            "pain": checkin.pain_0_10,
+            "stiffness": checkin.stiffness_0_10,
+            "readiness": checkin.readiness_0_10,
+        }
+
+        # Weight by recent exercise exposure (last 7 days)
+        tissue_weights: dict[int, float] = {}
+        for tissue in target_tissues:
+            exposure_map = exposures_by_tissue.get(tissue.id, {})
+            recent_load = 0.0
+            for day_offset in range(7):
+                check_date = checkin.date - timedelta(days=day_offset)
+                rec = exposure_map.get(check_date)
+                if rec:
+                    recent_load += rec.raw_load
+            tissue_weights[tissue.id] = recent_load
+
+        total_weight = sum(tissue_weights.values())
+        if total_weight <= 0:
+            # Equal distribution when no recent exposure
+            for tissue in target_tissues:
+                result[tissue.id][checkin.date] = checkin_data
+        else:
+            # Weighted distribution: tissues with more recent load get more signal
+            for tissue in target_tissues:
+                weight_fraction = tissue_weights[tissue.id] / total_weight
+                if weight_fraction > 0:
+                    result[tissue.id][checkin.date] = {
+                        "soreness": round(checkin_data["soreness"] * weight_fraction * len(target_tissues)),
+                        "pain": round(checkin_data["pain"] * weight_fraction * len(target_tissues)),
+                        "stiffness": round(checkin_data["stiffness"] * weight_fraction * len(target_tissues)),
+                        "readiness": checkin_data["readiness"],
+                    }
+                else:
+                    result[tissue.id][checkin.date] = {
+                        "soreness": 0,
+                        "pain": 0,
+                        "stiffness": 0,
+                        "readiness": checkin_data["readiness"],
+                    }
+
+    return dict(result)
 
 
 def _build_context(session: Session, *, as_of: date | None) -> dict:
@@ -324,7 +506,7 @@ def _build_context(session: Session, *, as_of: date | None) -> dict:
         ).all()
     )
     condition_events, current_conditions = _load_condition_events(condition_rows, as_of=as_of)
-    all_dates, exposures_by_tissue, sets_by_date = _collect_daily_exposure(
+    all_dates, exposures_by_tissue, sets_by_date, e1rm_by_exercise = _collect_daily_exposure(
         session,
         exercise_by_id,
         exercise_mappings,
@@ -338,12 +520,17 @@ def _build_context(session: Session, *, as_of: date | None) -> dict:
     else:
         all_dates = _date_range(min(all_dates), as_of_date)
 
+    checkin_data = _load_recovery_checkins(
+        session, tissues, exposures_by_tissue, as_of=as_of,
+    )
+
     recovery_days = {
         tissue.id: _learn_recovery_days(
             all_dates,
             exposures_by_tissue[tissue.id],
             excluded_days,
             configs[tissue.id].recovery_tau_days,
+            checkin_data=checkin_data.get(tissue.id),
         )
         for tissue in tissues
     }
@@ -375,6 +562,7 @@ def _build_context(session: Session, *, as_of: date | None) -> dict:
             condition_events=condition_events.get(tissue.id, []),
             collapse_dates=collapse_dates[tissue.id],
             recovery_days=recovery_days[tissue.id],
+            checkin_data=checkin_data.get(tissue.id),
         )
 
     return {
@@ -389,6 +577,12 @@ def _build_context(session: Session, *, as_of: date | None) -> dict:
         "states_by_tissue": states_by_tissue,
         "recovery_days": recovery_days,
         "exclusion_windows": exclusion_windows,
+        "e1rm_by_exercise": e1rm_by_exercise,
+        "exposures_by_tissue": exposures_by_tissue,
+        "all_dates": all_dates,
+        "excluded_days": excluded_days,
+        "collapse_dates": collapse_dates,
+        "checkin_data": checkin_data,
     }
 
 
@@ -400,7 +594,12 @@ def _collect_daily_exposure(
     *,
     as_of: date | None,
     excluded_days: set[date],
-) -> tuple[list[date], dict[int, dict[date, ExposureRecord]], dict[date, list[dict]]]:
+) -> tuple[
+    list[date],
+    dict[int, dict[date, ExposureRecord]],
+    dict[date, list[dict]],
+    dict[int, list[tuple[date, float]]],  # e1rm_by_exercise
+]:
     weight_rows = list(
         session.exec(select(WeightLog).order_by(col(WeightLog.logged_at).asc())).all()
     )
@@ -421,6 +620,10 @@ def _collect_daily_exposure(
 
     exposures_by_tissue: dict[int, dict[date, ExposureRecord]] = defaultdict(dict)
     sets_by_date: dict[date, list[dict]] = defaultdict(list)
+    # Per-exercise best e1RM per day: exercise_id -> [(date, e1rm)]
+    e1rm_by_exercise: dict[int, list[tuple[date, float]]] = defaultdict(list)
+    # Track best e1RM per exercise per day during collection
+    _daily_e1rm: dict[tuple[int, date], float] = {}
     seen_signatures: set[tuple] = set()
     all_dates: set[date] = set()
     for workout_session in session_rows:
@@ -467,13 +670,21 @@ def _collect_daily_exposure(
                 continue
             all_dates.add(workout_session.date)
             failure_flag = 1 if workout_set.rep_completion == "failed" else 0
+            channel = _rep_range_channel(workout_set.reps)
             sets_by_date[workout_session.date].append(
                 {
                     "exercise_id": workout_set.exercise_id,
                     "effective_load": effective_load,
                     "failure": failure_flag,
+                    "channel": channel,
                 }
             )
+            # Track best estimated 1RM per exercise per day
+            if effective_weight > 0 and workout_set.reps and workout_set.reps >= 1:
+                e1rm = _estimated_1rm(effective_weight, workout_set.reps)
+                key = (workout_set.exercise_id, workout_session.date)
+                if e1rm > _daily_e1rm.get(key, 0.0):
+                    _daily_e1rm[key] = e1rm
             for mapping in exercise_mappings.get(workout_set.exercise_id, []):
                 tissue = tissue_by_id.get(mapping.tissue_id)
                 factors = _mapping_factors(mapping, tissue.type if tissue else None)
@@ -482,7 +693,8 @@ def _collect_daily_exposure(
                     ExposureRecord(date=workout_session.date),
                 )
                 routing_factor = factors["routing"]
-                record.raw_load += effective_load * routing_factor
+                routed_load = effective_load * routing_factor
+                record.raw_load += routed_load
                 record.fatigue_load += effective_load * factors["fatigue"]
                 if exercise_by_id[workout_set.exercise_id].load_input_mode == "timed":
                     record.strain_load += effective_load * 0.5
@@ -491,13 +703,24 @@ def _collect_daily_exposure(
                         factors["joint_strain"],
                         factors["tendon_strain"],
                     )
+                # Route into stimulus channels
+                if channel == "strength":
+                    record.strength_load += routed_load
+                elif channel == "hypertrophy":
+                    record.hypertrophy_load += routed_load
+                else:
+                    record.endurance_load += routed_load
                 record.failures += failure_flag
                 record.exercise_loads[workout_set.exercise_id] = (
                     record.exercise_loads.get(workout_set.exercise_id, 0.0)
-                    + effective_load * routing_factor
+                    + routed_load
                 )
 
-    return sorted(all_dates), exposures_by_tissue, sets_by_date
+    # Flatten daily e1RM tracking into sorted time series per exercise
+    for (exercise_id, workout_date), e1rm_val in sorted(_daily_e1rm.items(), key=lambda x: x[0][1]):
+        e1rm_by_exercise[exercise_id].append((workout_date, e1rm_val))
+
+    return sorted(all_dates), exposures_by_tissue, sets_by_date, e1rm_by_exercise
 
 
 def _compute_tissue_states(
@@ -510,6 +733,7 @@ def _compute_tissue_states(
     condition_events: list[tuple[date, int, str]],
     collapse_dates: set[date],
     recovery_days: float,
+    checkin_data: dict[date, dict] | None = None,
 ) -> list[TissueState]:
     baseline_capacity = _baseline_capacity(exposure_by_date, excluded_days, config.capacity_prior)
     fatigue_tau = max(1.0, config.fatigue_tau_days)
@@ -580,6 +804,16 @@ def _compute_tissue_states(
             baseline_capacity,
             prior_collapse_loads,
         )
+        # Look up most recent check-in data for this tissue
+        current_soreness = 0
+        current_pain = 0
+        if checkin_data:
+            for day_offset in range(7):
+                ci = checkin_data.get(current_date - timedelta(days=day_offset))
+                if ci:
+                    current_soreness = ci["soreness"]
+                    current_pain = ci["pain"]
+                    break
         risk_7d, contributors_7d = _score_risk(
             normalized_load=recent_7 / max(current_capacity, 1.0),
             acute_fatigue=acute_fatigue,
@@ -588,6 +822,8 @@ def _compute_tissue_states(
             condition_severity=condition_severity,
             prior_event_signal=prior_event_signal,
             learned_coefficients=event_coeffs_7,
+            current_soreness=current_soreness,
+            current_pain=current_pain,
         )
         risk_14d, contributors_14d = _score_risk(
             normalized_load=(recent_28 / 4.0) / max(current_capacity, 1.0),
@@ -597,6 +833,8 @@ def _compute_tissue_states(
             condition_severity=condition_severity,
             prior_event_signal=prior_event_signal,
             learned_coefficients=event_coeffs_14,
+            current_soreness=current_soreness,
+            current_pain=current_pain,
         )
         risk_7d, contributors_7d = _apply_condition_floor(
             risk=risk_7d,
@@ -692,6 +930,27 @@ def _effective_set_load(workout_set: WorkoutSet, effective_weight: float) -> flo
     return max(0.0, workout_set.reps * effective_weight * effort_factor * completion_factor)
 
 
+def _estimated_1rm(weight: float, reps: int) -> float:
+    """Epley formula for estimated 1RM. Only reliable for reps <= 10."""
+    if weight <= 0 or reps <= 0:
+        return 0.0
+    if reps == 1:
+        return weight
+    capped_reps = min(reps, 10)
+    return round(weight * (1.0 + capped_reps / 30.0), 2)
+
+
+def _rep_range_channel(reps: int | None) -> str:
+    """Classify a set into a stimulus channel by rep count."""
+    if reps is None:
+        return "endurance"
+    if reps <= 5:
+        return "strength"
+    if reps <= 12:
+        return "hypertrophy"
+    return "endurance"
+
+
 def _effective_weight(
     exercise: Exercise,
     workout_set: WorkoutSet,
@@ -741,6 +1000,7 @@ def _learn_recovery_days(
     exposure_by_date: dict[date, ExposureRecord],
     excluded_days: set[date],
     seed: float,
+    checkin_data: dict[date, dict] | None = None,
 ) -> float:
     exposures = [exposure_by_date.get(day, ExposureRecord(day)).raw_load for day in all_dates]
     prefix = _build_prefix_sums(exposures)
@@ -763,10 +1023,63 @@ def _learn_recovery_days(
                 rebound_days.append((rebound_date - current_date).days)
                 break
     if not rebound_days:
-        return seed
-    rebound_days.sort()
-    midpoint = rebound_days[len(rebound_days) // 2]
-    return round((seed + midpoint) / 2.0, 3)
+        volume_rebound = seed
+    else:
+        rebound_days.sort()
+        midpoint = rebound_days[len(rebound_days) // 2]
+        volume_rebound = round((seed + midpoint) / 2.0, 3)
+
+    # Blend with subjective recovery from check-in data when available
+    if checkin_data:
+        subjective_days = _subjective_recovery_days(
+            all_dates, exposure_by_date, excluded_days, checkin_data,
+        )
+        if subjective_days is not None:
+            return round(0.6 * subjective_days + 0.4 * volume_rebound, 3)
+
+    return volume_rebound
+
+
+def _subjective_recovery_days(
+    all_dates: list[date],
+    exposure_by_date: dict[date, ExposureRecord],
+    excluded_days: set[date],
+    checkin_data: dict[date, dict],
+) -> float | None:
+    """Find subjective recovery duration from check-in soreness data.
+
+    For each training day, look for the soreness peak (day+1 or +2) then
+    find when soreness returns to <= 2/10.  Return the median duration.
+    """
+    recovery_durations: list[int] = []
+    for current_date in all_dates:
+        if current_date in excluded_days:
+            continue
+        record = exposure_by_date.get(current_date)
+        if not record or record.raw_load <= 0:
+            continue
+        # Look for soreness peak in days +1 to +3
+        peak_soreness = 0
+        peak_day = None
+        for offset in range(1, 4):
+            check = current_date + timedelta(days=offset)
+            ci = checkin_data.get(check)
+            if ci and ci["soreness"] > peak_soreness:
+                peak_soreness = ci["soreness"]
+                peak_day = check
+        if peak_soreness <= 2 or peak_day is None:
+            continue
+        # Find when soreness returns to <= 2
+        for offset in range(1, 15):
+            check = peak_day + timedelta(days=offset)
+            ci = checkin_data.get(check)
+            if ci and ci["soreness"] <= 2:
+                recovery_durations.append((check - current_date).days)
+                break
+    if not recovery_durations:
+        return None
+    recovery_durations.sort()
+    return float(recovery_durations[len(recovery_durations) // 2])
 
 
 def _detect_collapse_dates(
@@ -866,6 +1179,8 @@ def _score_risk(
     condition_severity: int,
     prior_event_signal: float,
     learned_coefficients: dict[str, float],
+    current_soreness: int = 0,
+    current_pain: int = 0,
 ) -> tuple[int, list[str]]:
     features = {
         "normalized_load": max(0.0, normalized_load - 0.7),
@@ -874,14 +1189,18 @@ def _score_risk(
         "condition": condition_severity / 4.0,
         "prior": prior_event_signal,
         "failures": min(failures, 2) / 2.0,
+        "soreness": min(current_soreness, 10) / 10.0,
+        "pain": min(current_pain, 10) / 10.0,
     }
     weights = {
-        "normalized_load": 0.32,
-        "acute_ratio": 0.25,
-        "ramp_ratio": 0.22,
-        "condition": 0.12,
-        "prior": 0.09,
-        "failures": 0.08,
+        "normalized_load": 0.28,
+        "acute_ratio": 0.22,
+        "ramp_ratio": 0.19,
+        "condition": 0.10,
+        "prior": 0.07,
+        "failures": 0.06,
+        "soreness": 0.04,
+        "pain": 0.04,
     }
     score = 0.0
     contributions = []
@@ -897,6 +1216,8 @@ def _score_risk(
                 "condition": "recent tissue condition",
                 "prior": "historical collapse proximity",
                 "failures": "recent failed reps",
+                "soreness": "reported soreness",
+                "pain": "reported pain",
             }[name]
             contributions.append((contribution, label))
     risk = int(round(_clamp(100.0 / (1.0 + math.exp(-4.0 * (score - 0.45))), 0.0, 100.0)))

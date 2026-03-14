@@ -112,6 +112,7 @@ class Tissue(SQLModel, table=True):
     name: str = Field(unique=True, index=True)
     display_name: str
     type: str = "muscle"  # "muscle", "tendon", "joint"
+    region: str = "other"  # shoulders, upper_back, lower_back, chest, hips, knees, quads, hamstrings, calves, arms, core, neck, ankles, other
     recovery_hours: float = 48.0
     notes: str | None = None
     updated_at: datetime = Field(default_factory=_utcnow)
@@ -206,6 +207,7 @@ class TissueRecoveryLog(SQLModel, table=True):
     tissue_id: int = Field(foreign_key="tissues.id", index=True)
     soreness_0_10: int = 0
     pain_0_10: int = 0
+    stiffness_0_10: int = 0
     readiness_0_10: int = 5
     source_session_id: int | None = Field(default=None, foreign_key="workout_sessions.id")
     created_at: datetime = Field(default_factory=_utcnow)
@@ -220,6 +222,66 @@ class TrainingExclusionWindow(SQLModel, table=True):
     kind: str
     notes: str | None = None
     exclude_from_model: bool = True
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class RecoveryCheckIn(SQLModel, table=True):
+    __tablename__ = "recovery_check_ins"
+    id: int | None = Field(default=None, primary_key=True)
+    date: dt.date = Field(index=True)
+    region: str = Field(index=True)  # body region
+    soreness_0_10: int = 0
+    pain_0_10: int = 0
+    stiffness_0_10: int = 0
+    readiness_0_10: int = 5
+    notes: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class TrainingProgram(SQLModel, table=True):
+    __tablename__ = "training_programs"
+    id: int | None = Field(default=None, primary_key=True)
+    name: str
+    active: int = 1  # 0 = inactive
+    notes: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class ProgramDay(SQLModel, table=True):
+    __tablename__ = "program_days"
+    id: int | None = Field(default=None, primary_key=True)
+    program_id: int = Field(foreign_key="training_programs.id")
+    day_label: str  # "A", "B", "Push", "Pull", "Upper", "Lower"
+    target_regions: str | None = None  # JSON list: ["chest", "shoulders", "arms"]
+    sort_order: int = 0
+    notes: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class ProgramDayExercise(SQLModel, table=True):
+    __tablename__ = "program_day_exercises"
+    __table_args__ = (UniqueConstraint("program_day_id", "exercise_id"),)
+    id: int | None = Field(default=None, primary_key=True)
+    program_day_id: int = Field(foreign_key="program_days.id")
+    exercise_id: int = Field(foreign_key="exercises.id")
+    target_sets: int = 3
+    target_rep_min: int | None = None
+    target_rep_max: int | None = None
+    sort_order: int = 0
+    notes: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class PlannedSession(SQLModel, table=True):
+    __tablename__ = "planned_sessions"
+    id: int | None = Field(default=None, primary_key=True)
+    program_day_id: int = Field(foreign_key="program_days.id")
+    date: dt.date = Field(index=True)
+    status: str = "planned"  # planned, completed, skipped
+    workout_session_id: int | None = Field(
+        default=None, foreign_key="workout_sessions.id"
+    )
+    notes: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
 
 

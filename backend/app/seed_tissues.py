@@ -144,6 +144,140 @@ TISSUES: list[dict] = [
 ]
 
 
+# Region mapping: tissue name -> body region
+TISSUE_REGION_MAP: dict[str, str] = {
+    # shoulders
+    "anterior_deltoid": "shoulders",
+    "lateral_deltoid": "shoulders",
+    "posterior_deltoid": "shoulders",
+    "deltoid_anterior": "shoulders",
+    "deltoid_lateral": "shoulders",
+    "deltoid_posterior": "shoulders",
+    "rotator_cuff": "shoulders",
+    "supraspinatus": "shoulders",
+    "infraspinatus": "shoulders",
+    "teres_minor": "shoulders",
+    "subscapularis": "shoulders",
+    "supraspinatus_tendon": "shoulders",
+    "shoulder_joint": "shoulders",
+    # upper_back
+    "upper_trapezius": "upper_back",
+    "mid_trapezius": "upper_back",
+    "middle_trapezius": "upper_back",
+    "lower_trapezius": "upper_back",
+    "rhomboids": "upper_back",
+    "rhomboid_major": "upper_back",
+    "rhomboid_minor": "upper_back",
+    "latissimus_dorsi": "upper_back",
+    "teres_major": "upper_back",
+    "levator_scapulae": "upper_back",
+    "thoracic_spine": "upper_back",
+    # lower_back
+    "erector_spinae": "lower_back",
+    "iliocostalis": "lower_back",
+    "longissimus": "lower_back",
+    "spinalis": "lower_back",
+    "lumbar_spine": "lower_back",
+    "multifidus": "lower_back",
+    "quadratus_lumborum": "lower_back",
+    # chest
+    "pectoralis_major": "chest",
+    "pec_sternal_head": "chest",
+    "pec_clavicular_head": "chest",
+    "pectoralis_minor": "chest",
+    "serratus_anterior": "chest",
+    # arms
+    "biceps_brachii": "arms",
+    "biceps_long_head": "arms",
+    "biceps_short_head": "arms",
+    "biceps_long_head_tendon": "arms",
+    "triceps_brachii": "arms",
+    "triceps_long_head": "arms",
+    "triceps_lateral_head": "arms",
+    "triceps_medial_head": "arms",
+    "brachialis": "arms",
+    "brachioradialis": "arms",
+    "wrist_flexors": "arms",
+    "wrist_extensors": "arms",
+    "flexor_carpi_radialis": "arms",
+    "flexor_carpi_ulnaris": "arms",
+    "palmaris_longus": "arms",
+    "flexor_digitorum_superficialis": "arms",
+    "flexor_digitorum_profundus": "arms",
+    "extensor_carpi_radialis_longus": "arms",
+    "extensor_carpi_radialis_brevis": "arms",
+    "extensor_carpi_ulnaris": "arms",
+    "extensor_digitorum": "arms",
+    "pronator_teres": "arms",
+    "supinator": "arms",
+    "common_extensor_tendon": "arms",
+    "common_flexor_tendon": "arms",
+    "elbow_joint": "arms",
+    "wrist_joint": "arms",
+    # core
+    "rectus_abdominis": "core",
+    "external_oblique": "core",
+    "internal_oblique": "core",
+    "transverse_abdominis": "core",
+    "diaphragm": "core",
+    "pelvic_floor": "core",
+    # hips
+    "gluteus_maximus": "hips",
+    "gluteus_medius": "hips",
+    "gluteus_minimus": "hips",
+    "hip_flexors": "hips",
+    "psoas_major": "hips",
+    "iliacus": "hips",
+    "sartorius": "hips",
+    "piriformis": "hips",
+    "hip_joint": "hips",
+    "adductors": "hips",
+    "adductor_magnus": "hips",
+    "adductor_longus": "hips",
+    "adductor_brevis": "hips",
+    "gracilis": "hips",
+    "pectineus": "hips",
+    "tensor_fasciae_latae": "hips",
+    # quads
+    "rectus_femoris": "quads",
+    "vastus_lateralis": "quads",
+    "vastus_medialis": "quads",
+    "vastus_intermedius": "quads",
+    "knee_joint": "quads",
+    "patellar_tendon": "quads",
+    # hamstrings
+    "biceps_femoris": "hamstrings",
+    "biceps_femoris_long_head": "hamstrings",
+    "biceps_femoris_short_head": "hamstrings",
+    "semitendinosus": "hamstrings",
+    "semimembranosus": "hamstrings",
+    "hamstring_tendons": "hamstrings",
+    # calves
+    "gastrocnemius": "calves",
+    "gastrocnemius_medial_head": "calves",
+    "gastrocnemius_lateral_head": "calves",
+    "soleus": "calves",
+    "achilles_tendon": "calves",
+    "tibialis_anterior": "calves",
+    "tibialis_posterior": "calves",
+    "fibularis_longus": "calves",
+    "fibularis_brevis": "calves",
+    "peroneus_longus": "calves",
+    "peroneus_brevis": "calves",
+    "popliteus": "calves",
+    "ankle_joint": "calves",
+    # neck
+    "sternocleidomastoid": "neck",
+    "cervical_spine": "neck",
+    "scalenes": "neck",
+}
+
+
+def tissue_region(name: str) -> str:
+    """Return the body region for a tissue name, defaulting to 'other'."""
+    return TISSUE_REGION_MAP.get(name, "other")
+
+
 def _name_to_display(name: str) -> str:
     """Convert snake_case name to Title Case display name."""
     return name.replace("_", " ").title()
@@ -159,6 +293,7 @@ def seed_tissues(session: Session) -> None:
             name=info["name"],
             display_name=info.get("display_name", _name_to_display(info["name"])),
             type=info["type"],
+            region=tissue_region(info["name"]),
             recovery_hours=info.get("recovery_hours", 48),
             notes=info.get("notes"),
         )
@@ -187,6 +322,17 @@ _HIP_MACHINE_MAPPINGS: dict[str, list[dict]] = {
         {"name": "pelvic_floor",         "role": "stabilizer", "loading_factor": 0.4},
     ],
 }
+
+
+def seed_tissue_regions(session: Session) -> None:
+    """Backfill region field for existing tissues that still have 'other'."""
+    tissues = session.exec(select(Tissue)).all()
+    for t in tissues:
+        expected = tissue_region(t.name)
+        if t.region != expected:
+            t.region = expected
+            session.add(t)
+    session.commit()
 
 
 def seed_hip_machine_tissues(session: Session) -> None:
