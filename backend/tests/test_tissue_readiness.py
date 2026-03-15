@@ -1,6 +1,6 @@
 from datetime import UTC, date, datetime
 
-from app.models import Exercise, ExerciseTissue, Tissue, WorkoutSession, WorkoutSet
+from app.models import Exercise, ExerciseTissue, Tissue, WeightLog, WorkoutSession, WorkoutSet
 
 
 def test_tissue_readiness_uses_session_time_not_session_id(client, session):
@@ -76,3 +76,53 @@ def test_tissue_readiness_uses_session_time_not_session_id(client, session):
 
     assert readiness["tensor_fasciae_latae"]["last_trained"].startswith("2026-03-12T12:00:00")
     assert readiness["sartorius"]["last_trained"].startswith("2026-03-12T12:00:00")
+
+
+def test_tissue_readiness_counts_timed_mixed_bodyweight_volume(client, session):
+    core = Tissue(
+        name="transverse_abdominis",
+        display_name="Transverse Abdominis",
+        recovery_hours=36.0,
+    )
+    exercise = Exercise(
+        name="Weighted Plank",
+        load_input_mode="mixed",
+        bodyweight_fraction=0.6,
+    )
+    session.add(core)
+    session.add(exercise)
+    session.commit()
+
+    session.add(
+        ExerciseTissue(
+            exercise_id=exercise.id,
+            tissue_id=core.id,
+            role="primary",
+            loading_factor=1.0,
+            routing_factor=1.0,
+        )
+    )
+    session.add(WeightLog(weight_lb=200.0, logged_at=datetime(2026, 3, 1, 12, 0, tzinfo=UTC)))
+    session.commit()
+
+    workout_session = WorkoutSession(
+        date=date.today(),
+        started_at=datetime.now(UTC),
+    )
+    session.add(workout_session)
+    session.commit()
+    session.add(
+        WorkoutSet(
+            session_id=workout_session.id,
+            exercise_id=exercise.id,
+            set_order=1,
+            weight=25.0,
+            duration_secs=60,
+        )
+    )
+    session.commit()
+
+    resp = client.get("/api/tissue-readiness")
+    assert resp.status_code == 200
+    readiness = {row["tissue"]["name"]: row for row in resp.json()}
+    assert readiness["transverse_abdominis"]["volume_7d"] == 1740

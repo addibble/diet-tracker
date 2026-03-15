@@ -146,6 +146,11 @@ def resolve_exercises(
 
         if create_missing:
             created_name = CREATE_NAME_MAP.get(normalized, key)
+            existing_id = exact.get(created_name)
+            if existing_id is not None:
+                resolved_ids[key] = existing_id
+                resolved_names[key] = created_name
+                continue
             created_at = dt.datetime.now(dt.UTC).replace(tzinfo=None).isoformat(sep=" ")
             cursor = conn.execute(
                 """

@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+from datetime import date
+
+from app.models import Exercise, WeightLog, WorkoutSet
+
+REP_COMPLETION_FACTORS = {
+    "full": 1.0,
+    "partial": 0.9,
+    "failed": 1.05,
+}
+
+
+def bodyweight_by_date(weights: list[WeightLog]) -> dict[date, float]:
+    result: dict[date, float] = {}
+    for row in weights:
+        result[row.logged_at.date()] = row.weight_lb
+    return result
+
+
+def latest_bodyweight(bodyweight_lookup: dict[date, float], workout_date: date) -> float:
+    available = [day for day in bodyweight_lookup if day <= workout_date]
+    if not available:
+        return 0.0
+    return bodyweight_lookup[max(available)]
+
+
+def effective_weight(
+    exercise: Exercise,
+    workout_set: WorkoutSet,
+    bodyweight_lookup: dict[date, float],
+    workout_date: date,
+) -> float:
+    external_multiplier = exercise.external_load_multiplier or 1.0
+    external = (workout_set.weight or 0.0) * external_multiplier
+    bodyweight = latest_bodyweight(bodyweight_lookup, workout_date)
+    bodyweight_component = bodyweight * (exercise.bodyweight_fraction or 0.0)
+    mode = exercise.load_input_mode or "external_weight"
+    if mode == "bodyweight":
+        return bodyweight_component
+    if mode == "mixed":
+        return external + bodyweight_component
+    if mode == "assisted_bodyweight":
+        return max(0.0, bodyweight_component - external)
+    if mode == "carry":
+        return external
+    return external
+
+
+def effective_set_units(exercise: Exercise, workout_set: WorkoutSet) -> float:
+    del exercise
+    reps = float(workout_set.reps or 0)
+    if workout_set.distance_steps is not None and workout_set.distance_steps > 0:
+        return max(1.0, workout_set.distance_steps / 2.0)
+    if workout_set.duration_secs is not None and workout_set.duration_secs > 0:
+        timed_units = workout_set.duration_secs / 5.0
+        return max(reps, timed_units)
+    return reps
+
+
+def effective_set_load(
+    exercise: Exercise,
+    workout_set: WorkoutSet,
+    effective_weight_lb: float,
+) -> float:
+    units = effective_set_units(exercise, workout_set)
+    if units <= 0 or effective_weight_lb <= 0:
+        return 0.0
+    effort_factor = 1.0
+    if workout_set.rpe is not None:
+        effort_factor = max(0.85, min(1.15, 1.0 + 0.05 * (workout_set.rpe - 7.0)))
+    completion_factor = REP_COMPLETION_FACTORS.get(
+        workout_set.rep_completion or "full",
+        1.0,
+    )
+    return max(0.0, units * effective_weight_lb * effort_factor * completion_factor)
+
+
+def supports_strength_estimate(exercise: Exercise, workout_set: WorkoutSet) -> bool:
+    if workout_set.reps is None or workout_set.reps < 1:
+        return False
+    if workout_set.duration_secs is not None:
+        return False
+    if workout_set.distance_steps is not None:
+        return False
+    return (exercise.load_input_mode or "external_weight") != "carry"

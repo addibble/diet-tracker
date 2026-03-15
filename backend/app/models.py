@@ -101,6 +101,7 @@ class Exercise(SQLModel, table=True):
     equipment: str | None = None  # dumbbell, cable, barbell, machine, bodyweight, etc.
     load_input_mode: str = "external_weight"
     bodyweight_fraction: float = 0.0
+    external_load_multiplier: float = 1.0
     estimated_minutes_per_set: float = 2.0
     notes: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
@@ -185,19 +186,6 @@ class TissueModelConfig(SQLModel, table=True):
     ramp_sensitivity: float = 1.0
     risk_sensitivity: float = 1.0
     updated_at: datetime = Field(default_factory=_utcnow)
-
-
-class TissueRecoveryLog(SQLModel, table=True):
-    __tablename__ = "tissue_recovery_logs"
-    id: int | None = Field(default=None, primary_key=True)
-    date: dt.date = Field(index=True)
-    tissue_id: int = Field(foreign_key="tissues.id", index=True)
-    soreness_0_10: int = 0
-    pain_0_10: int = 0
-    stiffness_0_10: int = 0
-    readiness_0_10: int = 5
-    source_session_id: int | None = Field(default=None, foreign_key="workout_sessions.id")
-    created_at: datetime = Field(default_factory=_utcnow)
 
 
 class TrainingExclusionWindow(SQLModel, table=True):

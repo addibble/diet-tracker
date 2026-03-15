@@ -449,6 +449,7 @@ def _load_todays_checkins(session: Session, today: date) -> dict[str, dict]:
             "pain_0_10": row.pain_0_10,
             "soreness_0_10": row.soreness_0_10,
             "stiffness_0_10": row.stiffness_0_10,
+            "readiness_0_10": row.readiness_0_10,
         }
     return result
 
@@ -484,7 +485,10 @@ def _build_region_state(
     for region, ci in checkins.items():
         if region not in region_recovery:
             continue
-        pain, sore = ci["pain_0_10"], ci["soreness_0_10"]
+        pain = ci["pain_0_10"]
+        sore = ci["soreness_0_10"]
+        stiffness = ci["stiffness_0_10"]
+        readiness = ci.get("readiness_0_10", 5)
         if pain >= 7:
             region_recovery[region] = [min(v, 0.15) for v in region_recovery[region]]
             region_risk[region] = [max(v, 80) for v in region_risk[region]]
@@ -495,6 +499,20 @@ def _build_region_state(
             region_recovery[region] = [min(v, 0.35) for v in region_recovery[region]]
         elif sore >= 4:
             region_recovery[region] = [v * 0.7 for v in region_recovery[region]]
+        if stiffness >= 7:
+            region_recovery[region] = [min(v, 0.45) for v in region_recovery[region]]
+            region_risk[region] = [max(v, 70) for v in region_risk[region]]
+        elif stiffness >= 4:
+            region_recovery[region] = [v * 0.8 for v in region_recovery[region]]
+            region_risk[region] = [max(v, 50) for v in region_risk[region]]
+        if readiness <= 2:
+            region_recovery[region] = [min(v, 0.25) for v in region_recovery[region]]
+            region_risk[region] = [max(v, 75) for v in region_risk[region]]
+        elif readiness <= 4:
+            region_recovery[region] = [min(v, 0.55) for v in region_recovery[region]]
+            region_risk[region] = [max(v, 55) for v in region_risk[region]]
+        elif readiness >= 8:
+            region_recovery[region] = [min(1.0, v * 1.05) for v in region_recovery[region]]
 
     result = {}
     for region in region_recovery:
@@ -517,7 +535,11 @@ def _blocked_regions(
         if state["readiness"] <= 0.15:  # injured or severe pain
             blocked.add(region)
     for region, ci in checkins.items():
-        if ci["pain_0_10"] >= 7 or ci["soreness_0_10"] >= 7:
+        if (
+            ci["pain_0_10"] >= 7
+            or ci["soreness_0_10"] >= 7
+            or ci.get("readiness_0_10", 5) <= 2
+        ):
             blocked.add(region)
     return blocked
 
@@ -746,11 +768,18 @@ def _prescribe_all(
         except Exception:
             pass
 
-        # Use model suitability if available, else default readiness
-        suitability = ex.get("suitability", 0.7)
+        suitability_value = ex.get("suitability_score", ex.get("suitability", 70))
+        suitability = suitability_value / 100 if suitability_value > 1 else suitability_value
+        recommendation = ex.get("recommendation", "good")
+        weighted_risk = ex.get("weighted_risk_7d", 0.0)
+        if recommendation == "caution":
+            suitability = min(suitability, 0.74)
         days_since_heavy = _days_since_heavy_work(session, exercise_id, today)
         rep_scheme, target_reps, intensity_range, rationale = _select_rep_scheme(
-            suitability, days_since_heavy
+            suitability,
+            days_since_heavy,
+            recommendation=recommendation,
+            weighted_risk_7d=weighted_risk,
         )
 
         target_weight = None
@@ -778,7 +807,12 @@ def _prescribe_all(
                 target_weight = last_weight
                 overload_note = "Same weight, aim for full completion"
 
-        target_sets = 3 if rep_scheme == "heavy" else 4 if rep_scheme == "volume" else 3
+        if rep_scheme == "heavy":
+            target_sets = 3
+        elif rep_scheme == "volume":
+            target_sets = 3 if recommendation == "caution" else 4
+        else:
+            target_sets = 2 if weighted_risk >= 55 else 3
 
         results.append({
             "exercise_id": exercise.id,
@@ -798,9 +832,17 @@ def _prescribe_all(
 
 
 def _select_rep_scheme(
-    suitability: float, days_since_heavy: int
+    suitability: float,
+    days_since_heavy: int,
+    *,
+    recommendation: str = "good",
+    weighted_risk_7d: float = 0.0,
 ) -> tuple[str, str, tuple[float, float], str]:
-    if suitability >= 0.8 and days_since_heavy >= 5:
+    if recommendation == "avoid":
+        return ("light", "15-20", (0.50, 0.60), "Exercise is currently in the avoid band.")
+    if recommendation == "caution" and weighted_risk_7d >= 50:
+        return ("light", "12-15", (0.50, 0.60), "Caution flag and elevated risk; use a light dose.")
+    if suitability >= 0.8 and days_since_heavy >= 5 and recommendation == "good":
         return ("heavy", "3-5", (0.80, 0.85), "Well-recovered; strength focus.")
     elif suitability >= 0.6:
         return ("volume", "8-12", (0.65, 0.75), "Moderate recovery; hypertrophy.")

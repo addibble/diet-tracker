@@ -1,17 +1,18 @@
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.auth import get_current_user
 from app.database import get_session
+from app.exercise_loads import bodyweight_by_date, effective_set_load, effective_weight
 from app.models import (
     Exercise,
     ExerciseTissue,
     ProgramDay,
     ProgramDayExercise,
     TrainingProgram,
+    WeightLog,
     WorkoutSession,
     WorkoutSet,
 )
@@ -46,27 +47,36 @@ def get_tissue_readiness(
 
     # Compute 7-day volume per tissue
     cutoff = now - timedelta(days=7)
+    exercises = {
+        exercise.id: exercise
+        for exercise in session.exec(select(Exercise)).all()
+    }
+    weight_lookup = bodyweight_by_date(
+        list(session.exec(select(WeightLog).order_by(WeightLog.logged_at)).all())
+    )
     volume_rows = session.exec(
-        select(
-            WorkoutSet.exercise_id,
-            func.sum(WorkoutSet.reps * WorkoutSet.weight).label("vol"),
-        )
+        select(WorkoutSession.date, WorkoutSet)
         .join(WorkoutSession, WorkoutSet.session_id == WorkoutSession.id)
         .where(WorkoutSession.date >= cutoff.date())
-        .where(WorkoutSet.reps.isnot(None))  # type: ignore[union-attr]
-        .where(WorkoutSet.weight.isnot(None))  # type: ignore[union-attr]
-        .group_by(WorkoutSet.exercise_id)
     ).all()
-
-    volume_by_exercise: dict[int, float] = {}
-    for row in volume_rows:
-        volume_by_exercise[row[0]] = float(row[1] or 0)
 
     # Roll up volume to each tissue
     tissue_volume_7d: dict[int, float] = {}
-    for exercise_id, vol in volume_by_exercise.items():
-        for tissue_id in exercise_tissues.get(exercise_id, []):
-            tissue_volume_7d[tissue_id] = tissue_volume_7d.get(tissue_id, 0.0) + vol
+    routing_by_exercise: dict[int, list[tuple[int, float]]] = {}
+    for et in current_ets:
+        routing_by_exercise.setdefault(et.exercise_id, []).append(
+            (et.tissue_id, et.routing_factor or et.loading_factor or 1.0)
+        )
+    for workout_date, workout_set in volume_rows:
+        exercise = exercises.get(workout_set.exercise_id)
+        if not exercise:
+            continue
+        set_weight = effective_weight(exercise, workout_set, weight_lookup, workout_date)
+        vol = effective_set_load(exercise, workout_set, set_weight)
+        if vol <= 0:
+            continue
+        for tissue_id, routing in routing_by_exercise.get(workout_set.exercise_id, []):
+            tissue_volume_7d[tissue_id] = tissue_volume_7d.get(tissue_id, 0.0) + (vol * routing)
 
     # Get active program exercises for "exercises_available"
     active_program = session.exec(

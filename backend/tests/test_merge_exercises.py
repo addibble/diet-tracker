@@ -5,7 +5,7 @@ import datetime as dt
 import pytest
 from sqlmodel import select
 
-from app.llm_tools.workout import handle_set_exercises
+from app.llm_tools.workout import SET_EXERCISES_DEF, handle_get_exercises, handle_set_exercises
 from app.models import (
     Exercise,
     ExerciseTissue,
@@ -157,3 +157,66 @@ def test_merge_source_not_found(two_exercises, session):
     _, tgt = two_exercises
     result = _merge(session, "Nonexistent Exercise", tgt.name)
     assert "error" in result
+
+
+def test_get_exercises_omits_load_model_fields(session):
+    exercise = Exercise(
+        name="Push-ups",
+        load_input_mode="bodyweight",
+        bodyweight_fraction=0.64,
+        external_load_multiplier=2.0,
+    )
+    session.add(exercise)
+    session.commit()
+
+    payload = handle_get_exercises({"match": {"name": {"eq": "Push-ups"}}}, session)
+    match = payload["matches"][0]
+
+    assert "load_input_mode" not in match
+    assert "bodyweight_fraction" not in match
+    assert "external_load_multiplier" not in match
+    set_fields = (
+        SET_EXERCISES_DEF["function"]["parameters"]["properties"]["changes"]["items"]["properties"]["set"][
+            "properties"
+        ]
+    )
+    assert "load_input_mode" not in set_fields
+    assert "bodyweight_fraction" not in set_fields
+    assert "external_load_multiplier" not in set_fields
+
+
+def test_set_exercises_ignores_load_model_fields(session):
+    exercise = Exercise(
+        name="Push-ups",
+        load_input_mode="external_weight",
+        bodyweight_fraction=0.0,
+        external_load_multiplier=1.0,
+        notes="Original",
+    )
+    session.add(exercise)
+    session.commit()
+
+    result = handle_set_exercises(
+        {
+            "changes": [
+                {
+                    "operation": "update",
+                    "match": {"name": {"eq": "Push-ups"}},
+                    "set": {
+                        "notes": "Updated note",
+                        "load_input_mode": "bodyweight",
+                        "bodyweight_fraction": 0.64,
+                        "external_load_multiplier": 2.0,
+                    },
+                }
+            ]
+        },
+        session,
+    )
+    session.refresh(exercise)
+
+    assert result["warnings"] == ["Exercise load-model fields are not writable through chat tools."]
+    assert exercise.notes == "Updated note"
+    assert exercise.load_input_mode == "external_weight"
+    assert exercise.bodyweight_fraction == 0.0
+    assert exercise.external_load_multiplier == 1.0

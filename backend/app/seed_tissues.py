@@ -11,6 +11,11 @@ from app.models import (
     TissueModelConfig,
     TrainingExclusionWindow,
 )
+from app.reference_exercises import (
+    REFERENCE_EXERCISE_FIXUPS,
+    TISSUE_RECOVERY_HOURS_FIXUPS,
+    normalize_reference_name,
+)
 
 # Flat tissue list: {name: {type, recovery_hours, display_name?}}
 # display_name is auto-generated from name if not provided.
@@ -339,6 +344,88 @@ def seed_tissue_regions(session: Session) -> None:
     session.commit()
 
 
+def seed_tissue_recovery_hours(session: Session) -> None:
+    """Apply curated recovery-hour defaults for tissues with updated modeling."""
+    tissues = session.exec(select(Tissue)).all()
+    changed = False
+    for tissue in tissues:
+        target = TISSUE_RECOVERY_HOURS_FIXUPS.get(
+            normalize_reference_name(tissue.name).replace(" ", "_")
+        )
+        if target is None:
+            target = TISSUE_RECOVERY_HOURS_FIXUPS.get(
+                normalize_reference_name(tissue.display_name).replace(" ", "_")
+            )
+        if target is None or tissue.recovery_hours == target:
+            continue
+        tissue.recovery_hours = target
+        session.add(tissue)
+        changed = True
+    if changed:
+        session.commit()
+
+
+def seed_reference_exercises(session: Session) -> None:
+    """Upsert curated exercise metadata/mappings that the model depends on."""
+    tissue_lookup = _reference_tissue_lookup(session)
+    changed = False
+    for exercise_name, spec in REFERENCE_EXERCISE_FIXUPS.items():
+        exercise = session.exec(
+            select(Exercise).where(Exercise.name == exercise_name)
+        ).first()
+        if not exercise:
+            exercise = Exercise(name=exercise_name)
+            session.add(exercise)
+            session.flush()
+            changed = True
+
+        metadata_fields = (
+            "load_input_mode",
+            "bodyweight_fraction",
+            "external_load_multiplier",
+            "estimated_minutes_per_set",
+        )
+        for field_name in metadata_fields:
+            if field_name not in spec:
+                continue
+            target_value = spec[field_name]
+            if getattr(exercise, field_name) != target_value:
+                setattr(exercise, field_name, target_value)
+                changed = True
+        session.add(exercise)
+        session.flush()
+
+        mappings = spec.get("mappings")
+        if mappings is None:
+            continue
+
+        existing = session.exec(
+            select(ExerciseTissue).where(ExerciseTissue.exercise_id == exercise.id)
+        ).all()
+        for row in existing:
+            session.delete(row)
+        session.flush()
+
+        for mapping_spec in mappings:
+            tissue = tissue_lookup.get(
+                normalize_reference_name(str(mapping_spec["tissue"]))
+            )
+            if not tissue:
+                continue
+            session.add(
+                ExerciseTissue(
+                    exercise_id=exercise.id,
+                    tissue_id=tissue.id,
+                    role=str(mapping_spec["role"]),
+                    loading_factor=float(mapping_spec["loading_factor"]),
+                )
+            )
+        changed = True
+
+    if changed:
+        session.commit()
+
+
 def seed_hip_machine_tissues(session: Session) -> None:
     """Apply tissue mappings for Hip Abduction/Adduction Machine exercises.
 
@@ -500,3 +587,11 @@ def _should_backfill_model_factors(session: Session, mapping: ExerciseTissue) ->
         if _is_joint_tissue(session, mapping.tissue_id) or _is_tendon_tissue(session, mapping.tissue_id):
             return True
     return False
+
+
+def _reference_tissue_lookup(session: Session) -> dict[str, Tissue]:
+    lookup: dict[str, Tissue] = {}
+    for tissue in session.exec(select(Tissue)).all():
+        lookup[normalize_reference_name(tissue.name)] = tissue
+        lookup[normalize_reference_name(tissue.display_name)] = tissue
+    return lookup

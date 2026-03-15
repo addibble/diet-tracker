@@ -258,8 +258,6 @@ def _build_exercise_detail(
         "id": exercise.id,
         "name": exercise.name,
         "equipment": exercise.equipment,
-        "load_input_mode": exercise.load_input_mode,
-        "bodyweight_fraction": exercise.bodyweight_fraction,
         "notes": exercise.notes,
         "tissues": tissues,
     }
@@ -468,38 +466,11 @@ SET_EXERCISES_DEF = {
                             },
                             "set": {
                                 "type": "object",
-                                "description": (
-                                    "name, equipment, notes, "
-                                    "load_input_mode, bodyweight_fraction."
-                                ),
+                                "description": "name, equipment, notes.",
                                 "properties": {
                                     "name": {"type": "string"},
                                     "equipment": {"type": "string"},
                                     "notes": {"type": "string"},
-                                    "load_input_mode": {
-                                        "type": "string",
-                                        "enum": [
-                                            "external_weight",
-                                            "bodyweight",
-                                            "mixed",
-                                            "timed",
-                                        ],
-                                        "description": (
-                                            "How to interpret set weight. "
-                                            "'bodyweight' = bodyweight × bodyweight_fraction (pushups, pull-ups). "
-                                            "'mixed' = external load + bodyweight component (weighted dips). "
-                                            "'external_weight' = logged weight only (default). "
-                                            "'timed' = duration-based."
-                                        ),
-                                    },
-                                    "bodyweight_fraction": {
-                                        "type": "number",
-                                        "description": (
-                                            "Fraction of bodyweight used as load (0.0-1.0). "
-                                            "Common values: pushup=0.64, pull-up=1.0, dip=1.0, "
-                                            "inverted row=0.6, plank=0.5, lunge=0.5."
-                                        ),
-                                    },
                                 },
                             },
                             "merge_into": {
@@ -785,6 +756,19 @@ def handle_set_exercises(args: dict, session: Session) -> dict:
     for change in args.get("changes", []):
         op = change["operation"]
         set_fields = change.get("set", {})
+        unsupported_load_fields = [
+            field_name
+            for field_name in (
+                "load_input_mode",
+                "bodyweight_fraction",
+                "external_load_multiplier",
+            )
+            if field_name in set_fields
+        ]
+        if unsupported_load_fields:
+            all_warnings.append(
+                "Exercise load-model fields are not writable through chat tools."
+            )
         # Accept "where" as alias for "match", plus top-level id/name
         match_spec = change.get("match") or change.get("where")
         if not match_spec and "id" in change and change["id"] is not None:
@@ -807,10 +791,6 @@ def handle_set_exercises(args: dict, session: Session) -> dict:
                 equipment=set_fields.get("equipment"),
                 notes=set_fields.get("notes"),
             )
-            if "load_input_mode" in set_fields:
-                exercise.load_input_mode = set_fields["load_input_mode"]
-            if "bodyweight_fraction" in set_fields:
-                exercise.bodyweight_fraction = set_fields["bodyweight_fraction"]
             session.add(exercise)
             session.flush()
             if relations.get("current_tissues"):
@@ -855,10 +835,6 @@ def handle_set_exercises(args: dict, session: Session) -> dict:
                     equipment=set_fields.get("equipment"),
                     notes=set_fields.get("notes"),
                 )
-                if "load_input_mode" in set_fields:
-                    exercise.load_input_mode = set_fields["load_input_mode"]
-                if "bodyweight_fraction" in set_fields:
-                    exercise.bodyweight_fraction = set_fields["bodyweight_fraction"]
                 session.add(exercise)
                 session.flush()
                 if relations.get("current_tissues"):
@@ -882,10 +858,6 @@ def handle_set_exercises(args: dict, session: Session) -> dict:
                         rec.equipment = set_fields["equipment"]
                     if "notes" in set_fields:
                         rec.notes = set_fields["notes"]
-                    if "load_input_mode" in set_fields:
-                        rec.load_input_mode = set_fields["load_input_mode"]
-                    if "bodyweight_fraction" in set_fields:
-                        rec.bodyweight_fraction = set_fields["bodyweight_fraction"]
                     session.add(rec)
                     if relations.get("current_tissues"):
                         w = _set_exercise_tissues(

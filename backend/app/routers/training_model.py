@@ -7,7 +7,17 @@ from sqlmodel import Session, col, select
 
 from app.auth import get_current_user
 from app.database import get_session
-from app.models import ExerciseTissue, RecoveryCheckIn, Tissue, TissueRecoveryLog, TrainingExclusionWindow, WorkoutSession, WorkoutSet
+from app.exercise_loads import bodyweight_by_date, effective_set_load, effective_weight
+from app.models import (
+    Exercise,
+    ExerciseTissue,
+    RecoveryCheckIn,
+    Tissue,
+    TrainingExclusionWindow,
+    WeightLog,
+    WorkoutSession,
+    WorkoutSet,
+)
 from app.training_model import (
     build_exercise_risk_ranking,
     build_exercise_strength,
@@ -25,16 +35,6 @@ class ExclusionWindowCreate(BaseModel):
     kind: str
     notes: str | None = None
     exclude_from_model: bool = True
-
-
-class RecoveryLogCreate(BaseModel):
-    date: datetime.date
-    tissue_id: int
-    soreness_0_10: int = 0
-    pain_0_10: int = 0
-    stiffness_0_10: int = 0
-    readiness_0_10: int = 5
-    source_session_id: int | None = None
 
 
 @router.get("/summary")
@@ -153,39 +153,6 @@ def delete_exclusion_window(
     session.delete(row)
     session.commit()
     return Response(status_code=204)
-
-
-@router.post("/recovery-log", status_code=201)
-def create_recovery_log(
-    data: RecoveryLogCreate,
-    session: Session = Depends(get_session),
-    _user: str = Depends(get_current_user),
-):
-    tissue = session.get(Tissue, data.tissue_id)
-    if not tissue:
-        raise HTTPException(status_code=404, detail="Tissue not found")
-    row = TissueRecoveryLog(
-        date=data.date,
-        tissue_id=data.tissue_id,
-        soreness_0_10=data.soreness_0_10,
-        pain_0_10=data.pain_0_10,
-        stiffness_0_10=data.stiffness_0_10,
-        readiness_0_10=data.readiness_0_10,
-        source_session_id=data.source_session_id,
-    )
-    session.add(row)
-    session.commit()
-    session.refresh(row)
-    return {
-        "id": row.id,
-        "date": row.date.isoformat(),
-        "tissue_id": row.tissue_id,
-        "soreness_0_10": row.soreness_0_10,
-        "pain_0_10": row.pain_0_10,
-        "stiffness_0_10": row.stiffness_0_10,
-        "readiness_0_10": row.readiness_0_10,
-        "source_session_id": row.source_session_id,
-    }
 
 
 # ── Recovery Check-In Endpoints ──
@@ -316,30 +283,46 @@ def get_volume_by_region(
     today = as_of or datetime.date.today()
     cutoff = today - datetime.timedelta(days=days - 1)
 
+    exercises = {
+        exercise.id: exercise
+        for exercise in session.exec(select(Exercise)).all()
+    }
+    weight_lookup = bodyweight_by_date(
+        list(session.exec(select(WeightLog).order_by(WeightLog.logged_at)).all())
+    )
     stmt = (
-        select(WorkoutSession.date, WorkoutSet.exercise_id, WorkoutSet.reps, WorkoutSet.weight)
+        select(WorkoutSession.date, WorkoutSet)
         .join(WorkoutSet, WorkoutSet.session_id == WorkoutSession.id)
         .where(col(WorkoutSession.date) >= cutoff, col(WorkoutSession.date) <= today)
     )
     rows = session.exec(stmt).all()
 
     region_rows = session.exec(
-        select(ExerciseTissue.exercise_id, Tissue.region, ExerciseTissue.routing_factor)
+        select(
+            ExerciseTissue.exercise_id,
+            Tissue.region,
+            ExerciseTissue.routing_factor,
+            ExerciseTissue.loading_factor,
+        )
         .join(Tissue, Tissue.id == ExerciseTissue.tissue_id)
         .where(col(ExerciseTissue.role).in_(["primary", "secondary"]))
     ).all()
 
     exercise_regions: dict = defaultdict(list)
-    for ex_id, region, routing in region_rows:
-        exercise_regions[ex_id].append((region, routing or 1.0))
+    for ex_id, region, routing, loading in region_rows:
+        exercise_regions[ex_id].append((region, routing or loading or 1.0))
 
     daily: dict = defaultdict(lambda: defaultdict(float))
-    for d, ex_id, reps, weight in rows:
-        if not reps or not weight:
+    for workout_date, workout_set in rows:
+        exercise = exercises.get(workout_set.exercise_id)
+        if not exercise:
             continue
-        vol = reps * weight
-        for region, routing in exercise_regions.get(ex_id, []):
-            daily[str(d)][region] += vol * routing
+        set_weight = effective_weight(exercise, workout_set, weight_lookup, workout_date)
+        vol = effective_set_load(exercise, workout_set, set_weight)
+        if vol <= 0:
+            continue
+        for region, routing in exercise_regions.get(workout_set.exercise_id, []):
+            daily[str(workout_date)][region] += vol * routing
 
     date_range = []
     cur = cutoff

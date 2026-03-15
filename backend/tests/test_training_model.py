@@ -1,5 +1,7 @@
 from datetime import UTC, date, datetime
 
+from sqlmodel import select
+
 from app.models import (
     Exercise,
     ExerciseTissue,
@@ -11,7 +13,7 @@ from app.models import (
     WorkoutSession,
     WorkoutSet,
 )
-from app.seed_tissues import seed_exercise_tissue_model_defaults
+from app.seed_tissues import seed_exercise_tissue_model_defaults, seed_reference_exercises
 
 
 def _seed_leg_press_fixture(session):
@@ -199,6 +201,55 @@ def test_training_model_ignores_future_weight_logs_for_bodyweight_exposure(clien
     assert jan2["raw_load"] == 2000.0
 
 
+def test_training_model_uses_assistance_as_negative_bodyweight_load(client, session):
+    tissue = Tissue(name="latissimus_dorsi", display_name="Latissimus Dorsi", type="muscle", recovery_hours=72.0)
+    exercise = Exercise(
+        name="Assisted Pull-Ups",
+        load_input_mode="assisted_bodyweight",
+        bodyweight_fraction=1.0,
+    )
+    session.add(tissue)
+    session.add(exercise)
+    session.commit()
+
+    session.add(
+        ExerciseTissue(
+            exercise_id=exercise.id,
+            tissue_id=tissue.id,
+            role="primary",
+            loading_factor=1.0,
+            routing_factor=1.0,
+            fatigue_factor=1.0,
+            joint_strain_factor=0.5,
+            tendon_strain_factor=0.5,
+        )
+    )
+    session.add(TissueModelConfig(tissue_id=tissue.id, capacity_prior=1000.0))
+    session.add(WeightLog(weight_lb=200.0, logged_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC)))
+    session.commit()
+
+    workout_session = WorkoutSession(date=date(2026, 1, 2))
+    session.add(workout_session)
+    session.commit()
+    session.add(
+        WorkoutSet(
+            session_id=workout_session.id,
+            exercise_id=exercise.id,
+            set_order=1,
+            reps=10,
+            weight=40.0,
+            rep_completion="full",
+        )
+    )
+    session.commit()
+
+    history = client.get(f"/api/training-model/tissues/{tissue.id}/history?days=10&as_of=2026-01-05")
+    assert history.status_code == 200
+    points = history.json()["history"]
+    jan2 = next(point for point in points if point["date"] == "2026-01-02")
+    assert jan2["raw_load"] == 1600.0
+
+
 def test_training_model_exclusion_window_crud(client):
     listed = client.get("/api/training-model/exclusion-windows")
     assert listed.status_code == 200
@@ -271,6 +322,49 @@ def test_seed_exercise_tissue_model_defaults_repairs_legacy_defaulted_factors(se
     assert mapping.fatigue_factor == 0.4095
     assert mapping.joint_strain_factor == 0.455
     assert mapping.tendon_strain_factor == 0.455
+
+
+def test_seed_reference_exercises_repairs_single_leg_extension_mapping(session):
+    tissue_specs = [
+        ("rectus_femoris", "Rectus Femoris", "muscle"),
+        ("vastus_lateralis", "Vastus Lateralis", "muscle"),
+        ("vastus_medialis", "Vastus Medialis", "muscle"),
+        ("vastus_intermedius", "Vastus Intermedius", "muscle"),
+        ("patellar_tendon", "Patellar Tendon", "tendon"),
+        ("knee_joint", "Knee Joint", "joint"),
+        ("hip_joint", "Hip Joint", "joint"),
+    ]
+    tissues = []
+    for name, display_name, tissue_type in tissue_specs:
+        tissue = Tissue(name=name, display_name=display_name, type=tissue_type)
+        session.add(tissue)
+        tissues.append(tissue)
+    exercise = Exercise(name="Single Leg Extension")
+    session.add(exercise)
+    session.commit()
+
+    legacy = ExerciseTissue(
+        exercise_id=exercise.id,
+        tissue_id=tissues[0].id,
+        role="primary",
+        loading_factor=0.75,
+    )
+    session.add(legacy)
+    session.commit()
+
+    seed_reference_exercises(session)
+
+    mappings = session.exec(
+        select(ExerciseTissue).where(ExerciseTissue.exercise_id == exercise.id)
+    ).all()
+    by_tissue = {session.get(Tissue, row.tissue_id).name: row for row in mappings}
+
+    assert by_tissue["rectus_femoris"].role == "secondary"
+    assert by_tissue["rectus_femoris"].loading_factor == 0.4
+    assert by_tissue["vastus_lateralis"].role == "primary"
+    assert by_tissue["vastus_lateralis"].loading_factor == 0.8
+    assert by_tissue["patellar_tendon"].role == "secondary"
+    assert by_tissue["patellar_tendon"].loading_factor == 0.65
 
 
 def test_training_model_respects_active_tissue_condition_in_exercise_ranking(client, session):

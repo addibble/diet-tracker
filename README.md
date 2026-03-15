@@ -35,7 +35,7 @@ backend/
   app/
     main.py              # FastAPI app + route registration
     models.py            # SQLModel table definitions (diet + workout)
-    database.py          # Engine, session management, migrations, seeding
+    database.py          # Engine, session management, startup bootstrap
     config.py            # Pydantic settings (loads .env)
     auth.py              # Cookie-based auth
     macros.py            # 8-macro field definitions and helpers
@@ -137,6 +137,19 @@ This runs:
 3. `npm run build` -- Frontend TypeScript check + production build
 
 The pre-commit hook runs this automatically and blocks commits on failure.
+
+### Manual DB Updates
+
+App startup only ensures that declared tables exist. Schema/data backfills and
+reference-data updates run manually, not on boot.
+
+To apply the repository's current DB updates to a SQLite file:
+
+```bash
+cd backend
+source .venv/bin/activate
+python ../tools/apply_db_updates.py --db ../diet_tracker.db
+```
 
 ## Environment Variables
 

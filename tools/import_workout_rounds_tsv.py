@@ -20,13 +20,16 @@ ALIAS_MAP: dict[str, str] = {
     "abductor machine": "Hip Abduction Machine",
     "adduction": "Hip Adduction Machine",
     "adductor machine": "Hip Adduction Machine",
-    "cable curl": "Straight-Bar Cable Curl",
+    "cable curl": "Cable Bar Curl",
+    "cable curl with drop set": "Cable Bar Curl",
     "calf raises": "Seated Calf Raise",
+    "chest flys": "Pec Deck",
     "glute drive": "Glute Drive Machine",
     "leg extension": "Single Leg Extension",
     "overhead cable triceps extension": "Overhead Rope Triceps Extension",
     "rear delt machine": "Pec Deck (Rear Delt)",
     "rope pushdowns": "Triceps Rope Pushdown",
+    "seated row": "Seated Cable Row",
     "seated hamstring curl": "Seated Leg Curl",
     "seated overhead db press": "Seated DB Shoulder Press",
     "shrugs": "Dumbbell Shrugs",
@@ -36,7 +39,6 @@ ALIAS_MAP: dict[str, str] = {
 
 CREATE_NAME_MAP: dict[str, str] = {
     "arnold press": "Arnold Press",
-    "cable curl with drop set": "Cable Curl with Drop Set",
     "incline hammer curl": "Incline Hammer Curl",
     "preacher curl": "Preacher Curl",
     "rear delt machine": "Pec Deck (Rear Delt)",
@@ -166,6 +168,12 @@ def resolve_exercise_names(
 def create_exercise(conn: sqlite3.Connection, raw_name: str) -> int:
     normalized = normalize_name(raw_name)
     exercise_name = CREATE_NAME_MAP.get(normalized, raw_name)
+    existing = conn.execute(
+        "SELECT id FROM exercises WHERE name = ?",
+        (exercise_name,),
+    ).fetchone()
+    if existing is not None:
+        return int(existing[0])
     created_at = dt.datetime.now(dt.UTC).replace(tzinfo=None).isoformat(sep=" ")
     cursor = conn.execute(
         """

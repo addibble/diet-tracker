@@ -23,6 +23,8 @@ from pathlib import Path
 DEFAULT_DB = Path(__file__).resolve().parents[1] / "diet_tracker.db"
 
 ALIAS_MAP: dict[str, str] = {
+    "ab crunches": "Laying Down Crunches",
+    "abdominal curls": "Ab Crunch Machine",
     "incl db press heavy": "Incline Dumbbell Press",
     "incl db press": "Incline Dumbbell Press",
     "chest supported row heavy": "Chest-Supported Row",
@@ -41,17 +43,16 @@ ALIAS_MAP: dict[str, str] = {
     "overhead press": "Overhead Press Machine",
     "face pulls cable band": "Face Pulls",
     "lateral raise light controlled": "Lateral Raise",
-    "rear delt row": "Rear Delt Cable Row",
+    "rear delt row": "Pec Deck (Rear Delt)",
     "back extensions": "Back Extension Machine",
     "single leg ham curl": "Single Leg Hamstring Curl",
     "dumbbell press heavy": "Flat Dumbbell Press",
     "dumbbell press": "Flat Dumbbell Press",
     "calf raises": "Seated Calf Raise",
+    "hanging knee raises": "Hanging Leg Raises",
 }
 
-CREATE_NAME_MAP: dict[str, str] = {
-    "ab crunches": "Laying Down Crunches",
-}
+CREATE_NAME_MAP: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -166,6 +167,12 @@ def resolve_exercise_names(
 
 
 def create_exercise(conn: sqlite3.Connection, name: str) -> int:
+    existing = conn.execute(
+        "SELECT id FROM exercises WHERE name = ?",
+        (name,),
+    ).fetchone()
+    if existing is not None:
+        return int(existing[0])
     created_at = dt.datetime.now(dt.UTC).replace(tzinfo=None).isoformat(sep=" ")
     cursor = conn.execute(
         """

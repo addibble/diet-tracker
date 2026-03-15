@@ -30,7 +30,7 @@ BREAK_END = dt.date(2026, 1, 1)
 ALIAS_MAP: dict[str, str] = {
     "barbell curls": "Barbell Curl",
     "cable woodchoppers": "Cable Woodchoppers (Abs)",
-    "cable curl": "Straight-Bar Cable Curl",
+    "cable curl": "Cable Bar Curl",
     "db lateral raise": "Lateral Raise",
     "hammer curls": "Hammer Curl",
     "heavy lat pulldown": "Lat Pulldown",
@@ -39,7 +39,7 @@ ALIAS_MAP: dict[str, str] = {
     "machine shoulder press": "Overhead Press Machine",
     "pec deck machine": "Pec Deck",
     "rear delt machine": "Pec Deck (Rear Delt)",
-    "seated cable row": "Seated Row",
+    "seated cable row": "Seated Cable Row",
     "seated hamstring curl": "Seated Leg Curl",
     "single arm cable lateral raise": "Single-Arm Cable Lateral Raise (Left Only)",
     "tricep rope pushdowns": "Triceps Rope Pushdown",
@@ -158,6 +158,11 @@ def resolve_exercises(
 
         if create_missing:
             created_name = CREATE_NAME_MAP.get(normalized, key)
+            existing_id = exact.get(created_name)
+            if existing_id is not None:
+                resolved_ids[key] = existing_id
+                resolved_names[key] = created_name
+                continue
             created_at = dt.datetime.now(dt.UTC).replace(tzinfo=None).isoformat(sep=" ")
             cursor = conn.execute(
                 """

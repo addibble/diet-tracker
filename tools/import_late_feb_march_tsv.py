@@ -31,13 +31,13 @@ ALIAS_MAP: dict[str, str] = {
     "abductor machine": "Hip Abduction Machine",
     "adductor machine": "Hip Adduction Machine",
     "cable crunch": "Cable Crunch",
-    "cable row": "Seated Row",
+    "cable row": "Seated Cable Row",
     "cable woodchopper": "Cable Woodchoppers (Abs)",
     "ham curl": "Seated Leg Curl",
     "ham curl machine": "Seated Leg Curl",
     "hanging leg raise": "Hanging Leg Raises",
     "rear delt control mini sets": "Pec Deck (Rear Delt)",
-    "straight bar cable curl burnout": "Straight-Bar Cable Curl",
+    "straight bar cable curl burnout": "Cable Bar Curl",
     "tib raise": "Seated Tib DB Lift",
     "triceps rope pushdown": "Triceps Rope Pushdown",
 }
@@ -45,6 +45,7 @@ ALIAS_MAP: dict[str, str] = {
 CREATE_NAME_MAP: dict[str, str] = {
     "rear delt control mini sets": "Pec Deck (Rear Delt)",
 }
+BARE_NUMERIC_REP_EXERCISES = {"Reverse Crunch + isometric crunch"}
 
 PAREN_RE = re.compile(r"^(?P<name>.*?)\s*\((?P<note>[^)]*)\)\s*$")
 
@@ -145,6 +146,11 @@ def resolve_exercises(
             continue
         if create_missing:
             created_name = CREATE_NAME_MAP.get(normalized, key)
+            existing_id = exact.get(created_name)
+            if existing_id is not None:
+                resolved_ids[key] = existing_id
+                resolved_names[key] = created_name
+                continue
             created_at = dt.datetime.now(dt.UTC).replace(tzinfo=None).isoformat(sep=" ")
             cursor = conn.execute(
                 "INSERT INTO exercises (name, equipment, notes, created_at) VALUES (?, NULL, NULL, ?)",
@@ -173,6 +179,7 @@ def parse_rep_range(text: str) -> tuple[int, int | None]:
 def parse_cell(
     raw_value: str,
     *,
+    exercise_name: str,
     default_sets: int,
     default_reps: int | None,
     note_suffix: str | None,
@@ -181,6 +188,8 @@ def parse_cell(
     lower = value.lower()
 
     if re.fullmatch(r"\d+(?:\.\d+)?", value):
+        if exercise_name in BARE_NUMERIC_REP_EXERCISES:
+            return [(int(float(value)), 0.0, None, note_suffix)] * default_sets
         return [(default_reps, float(value), None, note_suffix)] * default_sets
 
     if re.fullmatch(r"\d+\s*no hold", lower):
@@ -235,6 +244,7 @@ def build_sessions(rows: list[ExerciseRow], resolved_ids: dict[str, int]) -> dic
             default_sets, default_reps = parse_rep_range(row.rep_range)
             for reps, weight, duration, notes in parse_cell(
                 raw_value,
+                exercise_name=row.base_name,
                 default_sets=default_sets,
                 default_reps=default_reps,
                 note_suffix=row.note_suffix,

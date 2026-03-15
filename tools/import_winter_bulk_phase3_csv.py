@@ -20,10 +20,10 @@ GROUP_SPLIT = 3
 ALIAS_MAP: dict[str, str] = {
     "abductor machine": "Hip Abduction Machine",
     "adductor machine": "Hip Adduction Machine",
-    "cable bar curl": "Straight-Bar Cable Curl",
+    "cable bar curl": "Cable Bar Curl",
     "cable fly": "Cable Fly",
     "cable lateral raise": "Single-Arm Cable Lateral Raise (Left Only)",
-    "cable row": "Seated Row",
+    "cable row": "Seated Cable Row",
     "cable woodchopper heavy": "Cable Woodchoppers (Abs)",
     "cable woodchoppers burnout": "Cable Woodchoppers (Abs)",
     "face pull": "Face Pulls",
@@ -40,10 +40,10 @@ ALIAS_MAP: dict[str, str] = {
 CREATE_NAME_MAP: dict[str, str] = {
     "high to low cable fly": "High-to-Low Cable Fly",
     "hanging leg raises": "Hanging Leg Raises",
-    "incline neutral grip db press": "Incline Neutral-Grip DB Press",
-    "low cable chest fly burnout": "Low Cable Chest Fly Burnout",
+    "incline neutral grip db press": "Incline Dumbbell Press",
+    "low cable chest fly burnout": "Low-High Cable Fly",
     "machine chest press": "Machine Chest Press",
-    "rope cable curl burnout": "Rope Cable Curl Burnout",
+    "rope cable curl burnout": "Rope Cable Curl",
     "single arm cable curl": "Single-Arm Cable Curl",
 }
 
@@ -148,6 +148,11 @@ def resolve_exercises(
             continue
         if create_missing:
             created_name = CREATE_NAME_MAP.get(normalized, key)
+            existing_id = exact.get(created_name)
+            if existing_id is not None:
+                resolved_ids[key] = existing_id
+                resolved_names[key] = created_name
+                continue
             created_at = dt.datetime.now(dt.UTC).replace(tzinfo=None).isoformat(sep=" ")
             cursor = conn.execute(
                 "INSERT INTO exercises (name, equipment, notes, created_at) VALUES (?, NULL, NULL, ?)",
