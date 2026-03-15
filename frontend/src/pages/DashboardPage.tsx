@@ -6,6 +6,7 @@ import {
   getWorkouts,
   getWorkoutSessions,
   getVolumeByRegion,
+  putTodayWeight,
   MACRO_KEYS,
   MACRO_LABELS,
   MACRO_UNITS,
@@ -52,7 +53,84 @@ function formatSigned(value: number) {
   return `${value > 0 ? '+' : ''}${value.toFixed(2)}`
 }
 
-function WeightTrendCard({ trends }: { trends: DashboardTrends }) {
+function TodayWeightInput({
+  trends,
+  onSaved,
+}: {
+  trends: DashboardTrends
+  onSaved: () => void
+}) {
+  const todayStr = today()
+  const todayDay = trends.days.find((d) => d.date === todayStr)
+  const initialWeight = todayDay?.weight_lb != null ? todayDay.weight_lb.toFixed(1) : ''
+
+  const [value, setValue] = useState(initialWeight)
+  const [saving, setSaving] = useState(false)
+  const [dirty, setDirty] = useState(false)
+
+  useEffect(() => {
+    const w = todayDay?.weight_lb != null ? todayDay.weight_lb.toFixed(1) : ''
+    setValue(w)
+    setDirty(false)
+  }, [todayDay?.weight_lb])
+
+  const handleSave = async () => {
+    const parsed = parseFloat(value)
+    if (isNaN(parsed) || parsed <= 0) return
+    setSaving(true)
+    try {
+      await putTodayWeight(parsed)
+      setDirty(false)
+      onSaved()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2">
+      <label className="text-xs font-medium text-gray-500 whitespace-nowrap">
+        Today&apos;s Weight
+      </label>
+      <input
+        type="number"
+        step="0.1"
+        min="0"
+        placeholder="e.g. 165.0"
+        value={value}
+        onChange={(e) => {
+          setValue(e.target.value)
+          setDirty(true)
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') handleSave()
+        }}
+        className="w-20 px-2 py-1 text-sm border border-gray-300 rounded-lg bg-white
+                   text-gray-900 tabular-nums focus:outline-none focus:ring-2
+                   focus:ring-teal-500 focus:border-teal-500"
+      />
+      <span className="text-xs text-gray-400">lb</span>
+      <button
+        onClick={handleSave}
+        disabled={saving || !dirty || !value}
+        className="px-2.5 py-1 text-xs font-medium rounded-lg
+                   bg-teal-600 text-white hover:bg-teal-700
+                   disabled:opacity-40 disabled:cursor-not-allowed
+                   transition-colors"
+      >
+        {saving ? '…' : 'Save'}
+      </button>
+    </div>
+  )
+}
+
+function WeightTrendCard({
+  trends,
+  onWeightSaved,
+}: {
+  trends: DashboardTrends
+  onWeightSaved: () => void
+}) {
   const chart = useMemo(() => {
     const width = 340
     const height = 190
@@ -138,6 +216,8 @@ function WeightTrendCard({ trends }: { trends: DashboardTrends }) {
           )}
         </div>
       </div>
+
+      <TodayWeightInput trends={trends} onSaved={onWeightSaved} />
 
       {chart.actualPoints.length > 0 ? (
         <div>
@@ -659,6 +739,9 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [sessions, setSessions] = useState<WkSession[]>([])
   const [volumeByRegion, setVolumeByRegion] = useState<VolumeByRegion | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
+
+  const refreshTrends = () => setRefreshKey((k) => k + 1)
 
   useEffect(() => {
     const loadDashboard = async () => {
@@ -682,7 +765,7 @@ export default function DashboardPage() {
     }
 
     loadDashboard()
-  }, [date])
+  }, [date, refreshKey])
 
   useEffect(() => {
     Promise.all([
@@ -790,7 +873,7 @@ export default function DashboardPage() {
           </section>
 
           <div className="grid grid-cols-1 xl:grid-cols-[1.15fr_0.85fr] gap-6">
-            <WeightTrendCard trends={trends} />
+            <WeightTrendCard trends={trends} onWeightSaved={refreshTrends} />
             <DailyTargetsBreakdownCard trends={trends} />
           </div>
 

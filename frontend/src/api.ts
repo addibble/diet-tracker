@@ -420,6 +420,12 @@ export const getDailySummary = (date: string) =>
 export const getDashboardTrends = (endDate: string) =>
   request<DashboardTrends>(`/dashboard/trends?end_date=${encodeURIComponent(endDate)}`);
 
+export const putTodayWeight = (weightLb: number) =>
+  request<{ id: number; weight_lb: number; logged_at: string }>('/dashboard/weight', {
+    method: 'PUT',
+    body: JSON.stringify({ weight_lb: weightLb }),
+  });
+
 export const upsertMacroTarget = (
   data: { day: string } & Macros,
 ) => request<MacroTarget>('/macro-targets', {

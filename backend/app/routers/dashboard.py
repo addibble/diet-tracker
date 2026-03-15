@@ -1,6 +1,7 @@
 from datetime import UTC, date, datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.auth import get_current_user
@@ -9,6 +10,10 @@ from app.models import MacroTarget, WeightLog
 from app.routers.daily import build_daily_summary
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
+
+
+class WeightInput(BaseModel):
+    weight_lb: float
 
 
 def _macro_calorie_breakdown(summary: dict) -> tuple[dict[str, float], dict[str, float]]:
@@ -172,4 +177,40 @@ def dashboard_trends(
         "days": days,
         "weight_days": weight_days,
         "weight_regression": _weight_regression(weight_days),
+    }
+
+
+@router.put("/weight")
+def put_today_weight(
+    body: WeightInput,
+    session: Session = Depends(get_session),
+    _user: str = Depends(get_current_user),
+):
+    """Create or update today's weight log entry."""
+    today = date.today()
+    day_start = datetime.combine(today, time.min, tzinfo=UTC)
+    day_end = datetime.combine(today + timedelta(days=1), time.min, tzinfo=UTC)
+
+    existing = session.exec(
+        select(WeightLog)
+        .where(WeightLog.logged_at >= day_start)
+        .where(WeightLog.logged_at < day_end)
+        .order_by(WeightLog.logged_at.desc())
+    ).first()
+
+    now = datetime.now(UTC)
+    if existing:
+        existing.weight_lb = body.weight_lb
+        existing.logged_at = now
+        session.add(existing)
+    else:
+        existing = WeightLog(weight_lb=body.weight_lb, logged_at=now)
+        session.add(existing)
+
+    session.commit()
+    session.refresh(existing)
+    return {
+        "id": existing.id,
+        "weight_lb": round(existing.weight_lb, 2),
+        "logged_at": existing.logged_at.isoformat(),
     }
