@@ -133,11 +133,11 @@ function WeightTrendCard({
 }) {
   const chart = useMemo(() => {
     const width = 340
-    const height = 190
+    const height = 210
     const left = 22
     const right = 18
     const top = 16
-    const bottom = 34
+    const bottom = 50
     const weightDays = trends.weight_days
     const step = (width - left - right) / Math.max(weightDays.length - 1, 1)
     const actualWeights = weightDays.map((day) => day.weight_lb)
@@ -181,8 +181,8 @@ function WeightTrendCard({
       label: value.toFixed(1),
     }))
 
-    // Auto-detect label spacing: target ~40px between labels
-    const minLabelGap = 40
+    // Auto-detect label spacing: rotated labels need less horizontal room
+    const minLabelGap = 20
     const labelStep = Math.max(1, Math.ceil(minLabelGap / step))
 
     const dateLabels = weightDays.map((day, index) => {
@@ -292,9 +292,10 @@ function WeightTrendCard({
               key={dl.x}
               x={dl.x}
               y={chart.height - 10}
-              textAnchor="middle"
+              textAnchor="end"
               fontSize="10"
               fill="#6b7280"
+              transform={`rotate(-45 ${dl.x} ${chart.height - 10})`}
             >
               {dl.label}
             </text>
