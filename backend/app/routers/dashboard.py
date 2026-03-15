@@ -266,6 +266,15 @@ def dashboard_trends(
     daily_cals = [cal_by_day.get(d, 0.0) for d in sorted(logged_dates)]
     calorie_stats = _calorie_stats(daily_cals)
 
+    weight_reg = _weight_regression(weight_days)
+
+    # TDEE estimate: intake minus estimated surplus/deficit from weight change
+    # 3500 kcal ≈ 1 lb body weight
+    tdee_estimate = None
+    if weight_reg and calorie_stats:
+        surplus_per_day = weight_reg["slope_lb_per_day"] * 3500
+        tdee_estimate = round(calorie_stats["avg_calories_per_day"] - surplus_per_day)
+
     return {
         "start_date": str(seven_day_start),
         "end_date": str(resolved_end_date),
@@ -275,8 +284,9 @@ def dashboard_trends(
         ),
         "days": days,
         "weight_days": weight_days,
-        "weight_regression": _weight_regression(weight_days),
+        "weight_regression": weight_reg,
         "calorie_stats": calorie_stats,
+        "tdee_estimate": tdee_estimate,
     }
 
 

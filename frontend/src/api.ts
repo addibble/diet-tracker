@@ -320,6 +320,7 @@ export interface DashboardTrends {
   weight_days: WeightDay[];
   weight_regression: WeightRegression | null;
   calorie_stats: CalorieStats | null;
+  tdee_estimate: number | null;
 }
 
 export interface MacroTarget extends Macros {

@@ -221,6 +221,11 @@ function WeightTrendCard({
               <span className="text-gray-400 ml-1">({cs.days_counted}d)</span>
             </p>
           )}
+          {trends.tdee_estimate !== null && (
+            <p className="text-sm font-medium text-teal-700 mt-1">
+              Est. TDEE {trends.tdee_estimate} kcal/day
+            </p>
+          )}
         </div>
         <div className="text-left sm:text-right">
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">
