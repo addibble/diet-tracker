@@ -1,4 +1,5 @@
 from datetime import UTC, date, datetime, time, timedelta
+from math import sqrt
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -6,7 +7,16 @@ from sqlmodel import Session, select
 
 from app.auth import get_current_user
 from app.database import get_session
-from app.models import MacroTarget, WeightLog
+from app.macros import compute_food_macros
+from app.models import (
+    Food,
+    MacroTarget,
+    MealItem,
+    MealLog,
+    Recipe,
+    RecipeComponent,
+    WeightLog,
+)
 from app.routers.daily import build_daily_summary
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
@@ -104,6 +114,79 @@ def _weight_regression(weight_days: list[dict]) -> dict | None:
     }
 
 
+def _daily_calories_bulk(
+    session: Session,
+    start_day: date,
+    end_day: date,
+) -> dict[date, float]:
+    """Compute total calories per day over a date range in bulk."""
+    meals = session.exec(
+        select(MealLog)
+        .where(MealLog.date >= start_day)
+        .where(MealLog.date <= end_day)
+    ).all()
+    if not meals:
+        return {}
+
+    meal_ids = [m.id for m in meals]
+    items = session.exec(
+        select(MealItem).where(MealItem.meal_log_id.in_(meal_ids))  # type: ignore[union-attr]
+    ).all()
+
+    # Batch-load all referenced foods and recipes
+    food_ids = {i.food_id for i in items if i.food_id}
+    recipe_ids = {i.recipe_id for i in items if i.recipe_id}
+    foods = {f.id: f for f in session.exec(select(Food).where(Food.id.in_(food_ids))).all()} if food_ids else {}
+    recipes = {}
+    if recipe_ids:
+        for rid in recipe_ids:
+            recipe = session.get(Recipe, rid)
+            if not recipe:
+                continue
+            comps = session.exec(
+                select(RecipeComponent).where(RecipeComponent.recipe_id == rid)
+            ).all()
+            total_g = sum(c.amount_grams for c in comps)
+            total_cal = 0.0
+            for c in comps:
+                f = foods.get(c.food_id) or session.get(Food, c.food_id)
+                if f:
+                    if f.id not in foods:
+                        foods[f.id] = f
+                    total_cal += compute_food_macros(f, c.amount_grams)["calories"]
+            recipes[rid] = (total_g, total_cal)
+
+    meal_id_to_day = {m.id: m.date for m in meals}
+    cal_by_day: dict[date, float] = {}
+    for item in items:
+        day = meal_id_to_day[item.meal_log_id]
+        cal = 0.0
+        if item.food_id and item.food_id in foods:
+            cal = compute_food_macros(foods[item.food_id], item.amount_grams)["calories"]
+        elif item.recipe_id and item.recipe_id in recipes:
+            total_g, total_cal = recipes[item.recipe_id]
+            if total_g > 0:
+                cal = total_cal * (item.amount_grams / total_g)
+        cal_by_day[day] = cal_by_day.get(day, 0.0) + cal
+    return cal_by_day
+
+
+def _calorie_stats(
+    daily_cals: list[float],
+) -> dict | None:
+    """Compute mean and standard deviation of daily calories."""
+    if not daily_cals:
+        return None
+    n = len(daily_cals)
+    avg = sum(daily_cals) / n
+    variance = sum((c - avg) ** 2 for c in daily_cals) / n
+    return {
+        "avg_calories_per_day": round(avg),
+        "std_calories_per_day": round(sqrt(variance)),
+        "days_counted": n,
+    }
+
+
 def _macro_target_window_start(end_day: date, session: Session) -> date:
     target = session.exec(
         select(MacroTarget)
@@ -167,6 +250,16 @@ def dashboard_trends(
     ]
 
     latest_weight = weight_days[-1] if weight_days else None
+
+    # Calorie stats over the regression window, excluding today (partial day)
+    yesterday = resolved_end_date - timedelta(days=1)
+    cal_by_day = _daily_calories_bulk(session, weight_start, yesterday)
+    # Include all days in the window (zero-calorie days count as 0)
+    window_days = (yesterday - weight_start).days + 1
+    daily_cals = [cal_by_day.get(weight_start + timedelta(days=i), 0.0)
+                  for i in range(window_days)]
+    calorie_stats = _calorie_stats(daily_cals)
+
     return {
         "start_date": str(seven_day_start),
         "end_date": str(resolved_end_date),
@@ -177,6 +270,7 @@ def dashboard_trends(
         "days": days,
         "weight_days": weight_days,
         "weight_regression": _weight_regression(weight_days),
+        "calorie_stats": calorie_stats,
     }
 
 

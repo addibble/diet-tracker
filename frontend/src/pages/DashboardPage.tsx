@@ -152,6 +152,7 @@ function WeightTrendCard({
         actualPoints: [] as { x: number; y: number; value: number; date: string }[],
         regressionPoints: [] as { x: number; y: number }[],
         guides: [] as { y: number; label: string }[],
+        dateLabels: [] as { x: number; label: string }[],
       }
     }
 
@@ -180,8 +181,24 @@ function WeightTrendCard({
       label: value.toFixed(1),
     }))
 
-    return { width, height, weightDays, actualPoints, regressionPoints, guides }
+    // Auto-detect label spacing: target ~40px between labels
+    const minLabelGap = 40
+    const labelStep = Math.max(1, Math.ceil(minLabelGap / step))
+
+    const dateLabels = weightDays.map((day, index) => {
+      if (index % labelStep !== 0 && index !== weightDays.length - 1) return null
+      return {
+        x: left + step * index,
+        label: shortDateLabel(day.date),
+      }
+    }).filter(Boolean) as { x: number; label: string }[]
+
+    return {
+      width, height, weightDays, actualPoints, regressionPoints, guides, dateLabels,
+    }
   }, [trends])
+
+  const cs = trends.calorie_stats
 
   return (
     <section className="bg-white border border-gray-200 rounded-2xl p-5">
@@ -198,6 +215,12 @@ function WeightTrendCard({
               ? `Last logged ${formatTimestamp(trends.latest_weight_logged_at)}`
               : 'Log your weight in chat to start the regression line.'}
           </p>
+          {cs && (
+            <p className="text-sm text-gray-500 mt-1">
+              Avg {cs.avg_calories_per_day} ± {cs.std_calories_per_day} kcal/day
+              <span className="text-gray-400 ml-1">({cs.days_counted}d)</span>
+            </p>
+          )}
         </div>
         <div className="text-left sm:text-right">
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">
@@ -220,84 +243,58 @@ function WeightTrendCard({
       <TodayWeightInput trends={trends} onSaved={onWeightSaved} />
 
       {chart.actualPoints.length > 0 ? (
-        <div>
-          <svg viewBox={`0 0 ${chart.width} ${chart.height}`} className="w-full h-52">
-            {chart.guides.map((guide) => (
-              <g key={guide.label}>
-                <line
-                  x1="18"
-                  x2={chart.width - 14}
-                  y1={guide.y}
-                  y2={guide.y}
-                  stroke="#e5e7eb"
-                  strokeWidth="1"
-                  strokeDasharray="4 4"
-                />
-                <text x="0" y={guide.y + 4} fontSize="10" fill="#9ca3af">
-                  {guide.label}
-                </text>
-              </g>
-            ))}
-            {chart.regressionPoints.length > 1 && (
-              <polyline
-                fill="none"
-                stroke="#94a3b8"
-                strokeWidth="2"
-                strokeDasharray="6 6"
-                points={chart.regressionPoints.map((point) => `${point.x},${point.y}`).join(' ')}
+        <svg viewBox={`0 0 ${chart.width} ${chart.height}`} className="w-full h-52">
+          {chart.guides.map((guide) => (
+            <g key={guide.label}>
+              <line
+                x1="18"
+                x2={chart.width - 14}
+                y1={guide.y}
+                y2={guide.y}
+                stroke="#e5e7eb"
+                strokeWidth="1"
+                strokeDasharray="4 4"
               />
-            )}
-            {chart.actualPoints.length > 1 && (
-              <polyline
-                fill="none"
-                stroke="#0f766e"
-                strokeWidth="3"
-                strokeLinejoin="round"
-                strokeLinecap="round"
-                points={chart.actualPoints.map((point) => `${point.x},${point.y}`).join(' ')}
-              />
-            )}
-            {chart.actualPoints.map((point) => (
-              <g key={point.date}>
-                <circle cx={point.x} cy={point.y} r="4.5" fill="#0f766e" />
-                <text
-                  x={point.x}
-                  y={point.y - 10}
-                  textAnchor="middle"
-                  fontSize="10"
-                  fill="#0f766e"
-                >
-                  {point.value.toFixed(1)}
-                </text>
-              </g>
-            ))}
-            {(chart.weightDays ?? []).map((day, index) => {
-              const x = 22 + ((chart.width - 22 - 18) / Math.max((chart.weightDays ?? []).length - 1, 1)) * index
-              return (
-                <text
-                  key={day.date}
-                  x={x}
-                  y={chart.height - 10}
-                  textAnchor="middle"
-                  fontSize="10"
-                  fill="#6b7280"
-                >
-                  {weekdayLabel(day.date)}
-                </text>
-              )
-            })}
-          </svg>
-          <div className="grid grid-cols-2 sm:grid-cols-7 gap-2 mt-2">
-            {trends.days.map((day) => (
-              <div key={day.date} className="rounded-xl bg-gray-50 px-3 py-2 border border-gray-100">
-                <p className="text-xs text-gray-500">{shortDateLabel(day.date)}</p>
-                <p className="text-sm font-medium text-gray-900 mt-1">
-                  {day.weight_lb !== null ? `${day.weight_lb.toFixed(1)} lb` : 'No entry'}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
+              <text x="0" y={guide.y + 4} fontSize="10" fill="#9ca3af">
+                {guide.label}
+              </text>
+            </g>
+          ))}
+          {chart.regressionPoints.length > 1 && (
+            <polyline
+              fill="none"
+              stroke="#94a3b8"
+              strokeWidth="2"
+              strokeDasharray="6 6"
+              points={chart.regressionPoints.map((point) => `${point.x},${point.y}`).join(' ')}
+            />
+          )}
+          {chart.actualPoints.length > 1 && (
+            <polyline
+              fill="none"
+              stroke="#0f766e"
+              strokeWidth="3"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              points={chart.actualPoints.map((point) => `${point.x},${point.y}`).join(' ')}
+            />
+          )}
+          {chart.actualPoints.map((point) => (
+            <circle key={point.date} cx={point.x} cy={point.y} r="4.5" fill="#0f766e" />
+          ))}
+          {chart.dateLabels.map((dl) => (
+            <text
+              key={dl.x}
+              x={dl.x}
+              y={chart.height - 10}
+              textAnchor="middle"
+              fontSize="10"
+              fill="#6b7280"
+            >
+              {dl.label}
+            </text>
+          ))}
+        </svg>
       ) : (
         <div className="rounded-2xl border border-dashed border-gray-300 bg-gray-50 px-4 py-8 text-center text-sm text-gray-500">
           No weights logged yet.

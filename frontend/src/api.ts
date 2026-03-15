@@ -305,6 +305,12 @@ export interface WeightDay {
   weight_logged_at: string;
 }
 
+export interface CalorieStats {
+  avg_calories_per_day: number;
+  std_calories_per_day: number;
+  days_counted: number;
+}
+
 export interface DashboardTrends {
   start_date: string;
   end_date: string;
@@ -313,6 +319,7 @@ export interface DashboardTrends {
   days: DashboardTrendDay[];
   weight_days: WeightDay[];
   weight_regression: WeightRegression | null;
+  calorie_stats: CalorieStats | null;
 }
 
 export interface MacroTarget extends Macros {
