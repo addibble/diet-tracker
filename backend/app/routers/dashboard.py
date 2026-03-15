@@ -252,12 +252,18 @@ def dashboard_trends(
     latest_weight = weight_days[-1] if weight_days else None
 
     # Calorie stats over the regression window, excluding today (partial day)
+    # Only count days that have at least one meal logged (untracked ≠ 0 cal)
     yesterday = resolved_end_date - timedelta(days=1)
     cal_by_day = _daily_calories_bulk(session, weight_start, yesterday)
-    # Include all days in the window (zero-calorie days count as 0)
-    window_days = (yesterday - weight_start).days + 1
-    daily_cals = [cal_by_day.get(weight_start + timedelta(days=i), 0.0)
-                  for i in range(window_days)]
+    logged_dates = set(
+        session.exec(
+            select(MealLog.date)
+            .where(MealLog.date >= weight_start)
+            .where(MealLog.date <= yesterday)
+            .distinct()
+        ).all()
+    )
+    daily_cals = [cal_by_day.get(d, 0.0) for d in sorted(logged_dates)]
     calorie_stats = _calorie_stats(daily_cals)
 
     return {
