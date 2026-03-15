@@ -71,16 +71,11 @@ npm ci
 cd ..
 ```
 
-At the end of each cycle, run validation, then commit locally.
+At the end of each cycle, commit locally. The pre-commit hook runs `./tools/run_test_cycle.sh` automatically and blocks on failure.
 
 ```bash
-# Validation before check-in (same checks used in CI)
-./tools/run_test_cycle.sh
-
-# Local check-in
 git add -A
 git commit -m "Describe the completed cycle"
-# pre-commit hook runs ./tools/run_test_cycle.sh automatically
 ```
 
 ### Integration Cycle (Merge to Main, Then Push Main)
@@ -90,17 +85,15 @@ When a branch is ready, integrate it into local `main`, then push `main`.
 # 1) Ensure branch is up to date and committed
 git fetch origin main
 git rebase origin/main
-./tools/run_test_cycle.sh
 git add -A
-git commit -m "Final branch updates"   # if there are unstaged changes
+git commit -m "Final branch updates"   # if there are unstaged changes; hook validates
 
 # 2) Merge branch into local main
 git switch main
 git pull --ff-only origin main
 git merge --ff-only <feature-branch>
 
-# 3) Validate on main and push main
-./tools/run_test_cycle.sh
+# 3) Push main
 git push origin main
 ```
 
@@ -137,45 +130,17 @@ docker compose down                        # Stop
 docker compose logs -f backend             # Tail backend logs
 ```
 
-## Pre-commit Requirements
+## Pre-commit Hook
 
-**Before staging, committing, or pushing**, always run these checks and confirm they pass.
-If working on a branch/worktree, first rebase on latest `origin/main` and resolve conflicts:
+The repository pre-commit hook (`.githooks/pre-commit`) runs `./tools/run_test_cycle.sh` on every `git commit` and blocks on failures. This covers backend lint, backend tests, and frontend build — the same checks as CI.
 
-```bash
-git fetch origin main
-git rebase origin/main
-```
-
-Then run:
-
-```bash
-./tools/run_test_cycle.sh
-```
-
-All tests must pass and there must be no lint or build errors before committing. Do not skip this step.
-
-Commit locally at the end of each development cycle. Integration should happen by merging into local `main` and pushing `main`; avoid direct feature development on `main`.
-
-### Hook Setup
-
-Use versioned hooks in each worktree:
+Enable it once per worktree:
 
 ```bash
 git config core.hooksPath .githooks
 ```
 
-The repository pre-commit hook runs `./tools/run_test_cycle.sh` on every `git commit` and blocks the commit on failures.
-
-## Agent Validation Checklist
-
-For any new feature, bug fix, or refactor, agents must run the same checks as `.github/workflows/ci.yml` before handoff:
-
-```bash
-cd backend && source .venv/bin/activate && ruff check app/ tests/
-cd backend && source .venv/bin/activate && pytest -v
-cd frontend && npm ci && npm run build
-```
+Do not use `--no-verify` to skip the hook. Commit locally at the end of each development cycle; avoid direct feature development on `main`.
 
 ## LLM Tool System
 
