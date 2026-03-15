@@ -11,7 +11,6 @@ from app.models import (
     ExerciseTissue,
     ProgramDay,
     ProgramDayExercise,
-    RoutineExercise,
     Tissue,
     TrainingProgram,
     WorkoutSession,
@@ -146,22 +145,6 @@ def test_merge_moves_program_day_exercises_and_dedupes(
     assert len(remaining) == 2
     day_ids = {r.program_day_id for r in remaining}
     assert day_ids == {day_a.id, day_b.id}
-
-
-def test_merge_moves_routine_exercises(two_exercises, session):
-    src, tgt = two_exercises
-    session.add(RoutineExercise(exercise_id=src.id, target_sets=3))
-    session.commit()
-
-    result = _merge(session, src.name, tgt.name)
-
-    assert result["matches"][0]["routines_moved"] == 1
-    res = session.exec(
-        select(RoutineExercise).where(
-            RoutineExercise.exercise_id == tgt.id
-        )
-    ).all()
-    assert len(res) == 1
 
 
 def test_merge_same_exercise_errors(two_exercises, session):

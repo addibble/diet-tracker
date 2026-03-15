@@ -1,4 +1,7 @@
+import logging
+import shutil
 from collections.abc import Generator
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import inspect, text
@@ -6,7 +9,22 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from app.config import settings
 
+logger = logging.getLogger(__name__)
+
 engine = create_engine(settings.database_url, echo=False)
+
+
+def _backup_database():
+    """Copy the SQLite file to a timestamped backup before migrations."""
+    if not settings.database_url.startswith("sqlite"):
+        return
+    db_path = Path(settings.database_url.split("///")[-1])
+    if not db_path.exists():
+        return
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = db_path.with_name(f"{db_path.name}.{ts}")
+    shutil.copy2(db_path, backup_path)
+    logger.info("Database backup: %s", backup_path)
 
 
 def create_db_and_tables():
@@ -16,8 +34,10 @@ def create_db_and_tables():
     if settings.database_url.startswith("sqlite"):
         db_path = settings.database_url.split("///")[-1]
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    _backup_database()
     SQLModel.metadata.create_all(engine)
     _migrate_add_columns()
+    _backfill_rep_completion()
     _seed_data()
 
 
@@ -89,6 +109,46 @@ def _migrate_add_columns():
                 "GROUP BY exercise_id, tissue_id)"
             ))
             conn.commit()
+
+
+def _backfill_rep_completion():
+    """Backfill rep_completion on workout_sets using program_day_exercises targets.
+
+    For each set with reps but NULL rep_completion, trace:
+    workout_set → workout_session → planned_session → program_day_exercises
+    to find the target rep range and compute completion status.
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT ws.id, ws.reps, pde.target_rep_min, pde.target_rep_max "
+            "FROM workout_sets ws "
+            "JOIN workout_sessions wses ON wses.id = ws.session_id "
+            "JOIN planned_sessions ps ON ps.workout_session_id = wses.id "
+            "JOIN program_day_exercises pde "
+            "  ON pde.program_day_id = ps.program_day_id "
+            "  AND pde.exercise_id = ws.exercise_id "
+            "WHERE ws.reps IS NOT NULL "
+            "  AND ws.rep_completion IS NULL "
+            "  AND pde.target_rep_min IS NOT NULL "
+            "  AND pde.target_rep_max IS NOT NULL"
+        )).fetchall()
+        if not rows:
+            return
+        for ws_id, reps, rep_min, rep_max in rows:
+            if reps >= rep_max:
+                status = "full"
+            elif reps >= rep_min:
+                status = "partial"
+            else:
+                status = "failed"
+            conn.execute(
+                text(
+                    "UPDATE workout_sets SET rep_completion = :status "
+                    "WHERE id = :id"
+                ),
+                {"status": status, "id": ws_id},
+            )
+        conn.commit()
 
 
 def _seed_data():

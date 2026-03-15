@@ -499,23 +499,6 @@ export interface WkSession {
   sets: WkSetDetail[];
 }
 
-export interface WkRoutineExercise {
-  id: number;
-  exercise_id: number;
-  exercise_name: string;
-  equipment: string | null;
-  target_sets: number;
-  target_rep_min: number | null;
-  target_rep_max: number | null;
-  sort_order: number;
-  active: number;
-  notes: string | null;
-  last_performance: {
-    date: string;
-    sets: { reps: number | null; weight: number | null; rep_completion: string | null }[];
-  } | null;
-}
-
 export interface WkTissue {
   id: number;
   name: string;
@@ -611,6 +594,7 @@ export interface TrainingModelExerciseInsight {
   equipment: string | null;
   load_input_mode: string;
   estimated_minutes_per_set: number;
+  in_active_program: boolean;
   weighted_risk_7d: number;
   weighted_risk_14d: number;
   max_tissue_risk_7d: number;
@@ -779,9 +763,6 @@ export const getWorkoutSession = (id: number) =>
 
 export const getTissueReadiness = () =>
   request<WkTissueReadiness[]>('/tissue-readiness');
-
-export const getRoutine = () =>
-  request<WkRoutineExercise[]>('/routine');
 
 export const getExerciseHistory = (id: number, limit?: number) =>
   request<WkExerciseHistory>(`/exercises/${id}/history${limit ? `?limit=${limit}` : ''}`);

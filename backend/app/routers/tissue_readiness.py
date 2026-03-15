@@ -9,7 +9,9 @@ from app.database import get_session
 from app.models import (
     Exercise,
     ExerciseTissue,
-    RoutineExercise,
+    ProgramDay,
+    ProgramDayExercise,
+    TrainingProgram,
     WorkoutSession,
     WorkoutSet,
 )
@@ -66,13 +68,19 @@ def get_tissue_readiness(
         for tissue_id in exercise_tissues.get(exercise_id, []):
             tissue_volume_7d[tissue_id] = tissue_volume_7d.get(tissue_id, 0.0) + vol
 
-    # Get routine exercises for "exercises_available"
-    routine_exercises = session.exec(
-        select(RoutineExercise).where(RoutineExercise.active == 1)
-    ).all()
-    routine_by_exercise: dict[int, RoutineExercise] = {
-        re.exercise_id: re for re in routine_exercises
-    }
+    # Get active program exercises for "exercises_available"
+    active_program = session.exec(
+        select(TrainingProgram).where(TrainingProgram.active == 1)
+    ).first()
+    program_by_exercise: dict[int, ProgramDayExercise] = {}
+    if active_program:
+        pdes = session.exec(
+            select(ProgramDayExercise)
+            .join(ProgramDay)
+            .where(ProgramDay.program_id == active_program.id)
+        ).all()
+        for pde in pdes:
+            program_by_exercise.setdefault(pde.exercise_id, pde)
 
     # Build readiness for each tissue
     result = []
@@ -103,17 +111,17 @@ def get_tissue_readiness(
         # Find routine exercises that target this tissue
         available = []
         for et in current_ets:
-            if et.tissue_id == t.id and et.exercise_id in routine_by_exercise:
+            if et.tissue_id == t.id and et.exercise_id in program_by_exercise:
                 exercise = session.get(Exercise, et.exercise_id)
                 if exercise:
-                    re = routine_by_exercise[et.exercise_id]
+                    pde = program_by_exercise[et.exercise_id]
                     available.append({
                         "exercise_id": exercise.id,
                         "exercise_name": exercise.name,
                         "role": et.role,
-                        "target_sets": re.target_sets,
-                        "target_rep_min": re.target_rep_min,
-                        "target_rep_max": re.target_rep_max,
+                        "target_sets": pde.target_sets,
+                        "target_rep_min": pde.target_rep_min,
+                        "target_rep_max": pde.target_rep_max,
                     })
 
         result.append({

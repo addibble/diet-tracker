@@ -611,7 +611,6 @@ WORKOUT LOGGING:
 READINESS & SUGGESTIONS:
 - Use get_tissues with include=["readiness"] to check what is ready to train.
 - Use get_exercises with include=["training_risk"] to rank exercises by current tissue risk.
-- Use get_routine_exercises to see the planned routine with last performance.
 - Show which exercises are available and which are excluded (and why).
 - Include rehab work for any tissues in tender/rehabbing status.
 - Prefer exercises where training_risk.recommendation="good".

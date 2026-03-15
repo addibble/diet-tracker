@@ -1,9 +1,9 @@
 """Table-driven LLM tool system.
 
-Provides 22 tools (11 get/set pairs) organized by domain:
+Provides tools organized by domain:
 - Nutrition: foods, recipes, meal_logs, weight_logs, macro_targets
 - Workout: exercises, tissues, tissue_conditions, workout_sessions,
-  routine_exercises, workouts
+  workouts
 
 Usage:
     from app.llm_tools import TOOL_HANDLERS, select_tools

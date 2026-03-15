@@ -195,7 +195,7 @@ def delete_exercise(
     exercise = session.get(Exercise, exercise_id)
     if not exercise:
         raise HTTPException(status_code=404, detail="Exercise not found")
-    # Delete related sets, exercise_tissues, routine_exercises
+    # Delete related sets, exercise_tissues, program_day_exercises
     for s in session.exec(select(WorkoutSet).where(WorkoutSet.exercise_id == exercise_id)).all():
         session.delete(s)
     ex_tissues = session.exec(

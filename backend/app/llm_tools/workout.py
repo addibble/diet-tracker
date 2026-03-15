@@ -1,5 +1,5 @@
 """Workout domain LLM tools: exercises, tissues, tissue_conditions,
-workout_sessions, routine_exercises, workouts.
+workout_sessions, workouts.
 
 Each table gets a get_<table> getter and a set_<table> setter following
 the shared contract.
@@ -15,10 +15,12 @@ from sqlmodel import Session, col, select
 from app.models import (
     Exercise,
     ExerciseTissue,
+    PlannedSession,
+    ProgramDay,
     ProgramDayExercise,
-    RoutineExercise,
     Tissue,
     TissueCondition,
+    TrainingProgram,
     Workout,
     WorkoutSession,
     WorkoutSet,
@@ -645,11 +647,18 @@ def _include_exercise_stats(
         if weights:
             recent_weights.append(max(weights))
 
-    routine_entry = session.exec(
-        select(RoutineExercise).where(
-            RoutineExercise.exercise_id == exercise.id
-        )
+    # Find target from active program's ProgramDayExercise
+    active_program = session.exec(
+        select(TrainingProgram).where(TrainingProgram.active == 1)
     ).first()
+    pde_entry = None
+    if active_program:
+        pde_entry = session.exec(
+            select(ProgramDayExercise)
+            .join(ProgramDay)
+            .where(ProgramDay.program_id == active_program.id)
+            .where(ProgramDayExercise.exercise_id == exercise.id)
+        ).first()
 
     current_weight = recent_weights[0] if recent_weights else None
     consecutive_full = 0
@@ -686,10 +695,10 @@ def _include_exercise_stats(
         "recent_completions": recent_completions,
         "suggestion": suggestion,
         "routine_target": {
-            "sets": routine_entry.target_sets,
-            "rep_min": routine_entry.target_rep_min,
-            "rep_max": routine_entry.target_rep_max,
-        } if routine_entry else None,
+            "sets": pde_entry.target_sets,
+            "rep_min": pde_entry.target_rep_min,
+            "rep_max": pde_entry.target_rep_max,
+        } if pde_entry else None,
     }
 
 
@@ -930,17 +939,6 @@ def handle_set_exercises(args: dict, session: Session) -> dict:
                 session.add(s)
                 sets_moved += 1
 
-            # routine_exercises — move all
-            routines_moved = 0
-            for re_ in session.exec(
-                select(RoutineExercise).where(
-                    RoutineExercise.exercise_id == source.id
-                )
-            ).all():
-                re_.exercise_id = target.id
-                session.add(re_)
-                routines_moved += 1
-
             # program_day_exercises — move; delete dupes where target
             # already exists in the same program_day
             target_pde_days = {
@@ -994,7 +992,6 @@ def handle_set_exercises(args: dict, session: Session) -> dict:
                 "merged": source.name,
                 "into": target.name,
                 "sets_moved": sets_moved,
-                "routines_moved": routines_moved,
                 "program_days_moved": pde_moved,
                 "program_days_dupes_removed": pde_dupes,
                 "tissues_moved": tissues_moved,
@@ -1023,12 +1020,12 @@ def handle_set_exercises(args: dict, session: Session) -> dict:
                     )
                 ).all():
                     session.delete(et)
-                for re in session.exec(
-                    select(RoutineExercise).where(
-                        RoutineExercise.exercise_id == rec.id
+                for pde in session.exec(
+                    select(ProgramDayExercise).where(
+                        ProgramDayExercise.exercise_id == rec.id
                     )
                 ).all():
-                    session.delete(re)
+                    session.delete(pde)
                 session.delete(rec)
                 results.append({"id": rec.id, "deleted": rec.name})
                 deleted += 1
@@ -1748,6 +1745,56 @@ SET_WORKOUT_SESSIONS_DEF = {
 }
 
 
+def _compute_rep_completion(
+    reps: int | None,
+    target_rep_min: int | None,
+    target_rep_max: int | None,
+) -> str | None:
+    """Derive rep_completion from reps vs target range. Returns None if
+    reps or target range is missing."""
+    if reps is None or target_rep_min is None or target_rep_max is None:
+        return None
+    if reps >= target_rep_max:
+        return "full"
+    if reps >= target_rep_min:
+        return "partial"
+    return "failed"
+
+
+def _get_pde_targets_for_session(
+    ws: WorkoutSession, session: Session
+) -> dict[int, ProgramDayExercise]:
+    """Return {exercise_id: ProgramDayExercise} for a workout session
+    linked via PlannedSession. Falls back to active program if no
+    planned session link."""
+    planned = session.exec(
+        select(PlannedSession).where(
+            PlannedSession.workout_session_id == ws.id
+        )
+    ).first()
+    if planned:
+        pdes = session.exec(
+            select(ProgramDayExercise).where(
+                ProgramDayExercise.program_day_id
+                == planned.program_day_id
+            )
+        ).all()
+        return {pde.exercise_id: pde for pde in pdes}
+
+    # Fallback: use the active program's exercises across all days
+    active_program = session.exec(
+        select(TrainingProgram).where(TrainingProgram.active == 1)
+    ).first()
+    if not active_program:
+        return {}
+    pdes = session.exec(
+        select(ProgramDayExercise)
+        .join(ProgramDay)
+        .where(ProgramDay.program_id == active_program.id)
+    ).all()
+    return {pde.exercise_id: pde for pde in pdes}
+
+
 def _write_session_sets(
     ws: WorkoutSession,
     records: list[dict],
@@ -1774,11 +1821,11 @@ def _write_session_sets(
         ).first() or 0
         set_order = max_order + 1
 
-    # Group records by exercise for rep_check
+    pde_map = _get_pde_targets_for_session(ws, session)
+
     exercises_seen: dict[int, dict] = {}
 
     for rec in records:
-        # Resolve exercise
         exercise_id = rec.get("exercise_id")
         exercise_name = rec.get("exercise_name")
         if not exercise_id and exercise_name:
@@ -1787,6 +1834,17 @@ def _write_session_sets(
         if not exercise_id:
             warnings.append("Set missing exercise, skipped")
             continue
+
+        # Auto-compute rep_completion if not explicitly provided
+        rep_completion = rec.get("rep_completion")
+        if rep_completion is None:
+            pde = pde_map.get(exercise_id)
+            if pde:
+                rep_completion = _compute_rep_completion(
+                    rec.get("reps"),
+                    pde.target_rep_min,
+                    pde.target_rep_max,
+                )
 
         order = rec.get("set_order", set_order)
         session.add(WorkoutSet(
@@ -1798,7 +1856,7 @@ def _write_session_sets(
             duration_secs=rec.get("duration_secs"),
             distance_steps=rec.get("distance_steps"),
             rpe=rec.get("rpe"),
-            rep_completion=rec.get("rep_completion"),
+            rep_completion=rep_completion,
             notes=rec.get("notes"),
         ))
         set_order = max(set_order, order) + 1
@@ -1806,21 +1864,17 @@ def _write_session_sets(
         if exercise_id not in exercises_seen:
             exercises_seen[exercise_id] = rec
 
-    # Build rep_check for exercises in active routine
+    # Build rep_check for exercises in active program
     for eid, first_rec in exercises_seen.items():
-        routine_entry = session.exec(
-            select(RoutineExercise)
-            .where(RoutineExercise.exercise_id == eid)
-            .where(RoutineExercise.active == 1)
-        ).first()
-        if routine_entry and routine_entry.target_rep_min is not None:
+        pde = pde_map.get(eid)
+        if pde and pde.target_rep_min is not None:
             exercise = session.get(Exercise, eid)
             rep_check_exercises.append({
                 "exercise_name": exercise.name if exercise else f"id:{eid}",
                 "weight": first_rec.get("weight"),
-                "target_sets": routine_entry.target_sets,
-                "target_rep_min": routine_entry.target_rep_min,
-                "target_rep_max": routine_entry.target_rep_max,
+                "target_sets": pde.target_sets,
+                "target_rep_min": pde.target_rep_min,
+                "target_rep_max": pde.target_rep_max,
             })
 
     return warnings, rep_check_exercises
@@ -1987,306 +2041,6 @@ def handle_set_workout_sessions(
         changed_count=changed,
         deleted_count=deleted,
         warnings=all_warnings or None,
-    )
-
-
-# =====================================================================
-#  Routine Exercises
-# =====================================================================
-
-GET_ROUTINE_EXERCISES_DEF = {
-    "type": "function",
-    "function": {
-        "name": "get_routine_exercises",
-        "description": (
-            "Get routine exercise entries with linked exercise "
-            "details and last performance data."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "filters": {
-                    "type": "object",
-                    "description": (
-                        "active({eq}: true/false), "
-                        "exercise_name({fuzzy})."
-                    ),
-                },
-                "include": {
-                    "type": "array",
-                    "items": {
-                        "type": "string",
-                        "enum": [
-                            "exercise",
-                            "last_performance",
-                        ],
-                    },
-                    "default": ["exercise", "last_performance"],
-                },
-            },
-        },
-    },
-}
-
-SET_ROUTINE_EXERCISES_DEF = {
-    "type": "function",
-    "function": {
-        "name": "set_routine_exercises",
-        "description": (
-            "Add, update, or remove exercises from the training "
-            "routine. Each exercise appears at most once."
-        ),
-        "parameters": {
-            "type": "object",
-            "required": ["changes"],
-            "properties": {
-                "changes": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "required": ["operation"],
-                        "properties": {
-                            "operation": {
-                                "type": "string",
-                                "enum": [
-                                    "create",
-                                    "update",
-                                    "delete",
-                                ],
-                            },
-                            "match": {
-                                "type": "object",
-                                "description": (
-                                    "exercise_name({eq,fuzzy})."
-                                ),
-                            },
-                            "set": {
-                                "type": "object",
-                                "description": (
-                                    "exercise_name, target_sets, "
-                                    "target_rep_min, target_rep_max, "
-                                    "sort_order, active (bool), "
-                                    "notes."
-                                ),
-                            },
-                        },
-                    },
-                },
-            },
-        },
-    },
-}
-
-
-def handle_get_routine_exercises(
-    args: dict, session: Session
-) -> dict:
-    filters = args.get("filters") or {}
-    includes = args.get("include", ["exercise", "last_performance"])
-
-    stmt = select(RoutineExercise).order_by(RoutineExercise.sort_order)
-
-    # Filter by active
-    active_filter = filters.get("active")
-    if active_filter is not None:
-        if isinstance(active_filter, dict) and "eq" in active_filter:
-            val = 1 if active_filter["eq"] else 0
-        else:
-            val = 1 if active_filter else 0
-        stmt = stmt.where(RoutineExercise.active == val)
-
-    routine = list(session.exec(stmt).all())
-
-    # Filter by exercise name
-    exercise_name = filters.get("exercise_name")
-    if exercise_name:
-        en = (
-            exercise_name.get("fuzzy")
-            if isinstance(exercise_name, dict)
-            else exercise_name
-        )
-        if en:
-            ex = _fuzzy_match_exercise(en, session)
-            if ex:
-                routine = [
-                    r for r in routine if r.exercise_id == ex.id
-                ]
-            else:
-                routine = []
-
-    results = []
-    for re in routine:
-        exercise = session.get(Exercise, re.exercise_id)
-        d: dict = {
-            "id": re.id,
-            "exercise_id": re.exercise_id,
-            "exercise_name": (
-                exercise.name if exercise else f"id:{re.exercise_id}"
-            ),
-            "target_sets": re.target_sets,
-            "target_rep_min": re.target_rep_min,
-            "target_rep_max": re.target_rep_max,
-            "sort_order": re.sort_order,
-            "active": bool(re.active),
-            "notes": re.notes,
-        }
-        if "last_performance" in includes and exercise:
-            last_set = session.exec(
-                select(WorkoutSet)
-                .where(WorkoutSet.exercise_id == exercise.id)
-                .order_by(col(WorkoutSet.created_at).desc())
-                .limit(1)
-            ).first()
-            d["last_performance"] = {
-                "weight": last_set.weight if last_set else None,
-                "reps": last_set.reps if last_set else None,
-                "rep_completion": (
-                    last_set.rep_completion if last_set else None
-                ),
-            }
-        results.append(d)
-
-    return getter_response(
-        "routine_exercises", results, filters_applied=filters or None
-    )
-
-
-def handle_set_routine_exercises(
-    args: dict, session: Session
-) -> dict:
-    results = []
-    created = deleted = changed = 0
-
-    for change in args.get("changes", []):
-        op = change["operation"]
-        set_fields = change.get("set", {})
-        match_spec = change.get("match")
-
-        if op == "create":
-            ex_name = set_fields.get("exercise_name", "")
-            if not ex_name:
-                return error_response(
-                    "routine_exercises", "exercise_name required"
-                )
-            exercise = _get_or_create_exercise(ex_name, session)
-            existing = session.exec(
-                select(RoutineExercise).where(
-                    RoutineExercise.exercise_id == exercise.id
-                )
-            ).first()
-            if existing:
-                return error_response(
-                    "routine_exercises",
-                    f"'{exercise.name}' already in routine",
-                )
-            re = RoutineExercise(
-                exercise_id=exercise.id,
-                target_sets=set_fields.get("target_sets", 3),
-                target_rep_min=set_fields.get("target_rep_min"),
-                target_rep_max=set_fields.get("target_rep_max"),
-                sort_order=set_fields.get("sort_order", 0),
-                active=1 if set_fields.get("active", True) else 0,
-                notes=set_fields.get("notes"),
-            )
-            session.add(re)
-            session.flush()
-            results.append({
-                "id": re.id,
-                "exercise_name": exercise.name,
-            })
-            created += 1
-
-        elif op == "update":
-            # Resolve exercise from match
-            ex_name = None
-            if match_spec and "exercise_name" in match_spec:
-                en = match_spec["exercise_name"]
-                ex_name = (
-                    en.get("fuzzy") or en.get("eq")
-                    if isinstance(en, dict) else en
-                )
-            if not ex_name:
-                return error_response(
-                    "routine_exercises",
-                    "exercise_name required in match",
-                )
-            exercise = _fuzzy_match_exercise(ex_name, session)
-            if not exercise:
-                return error_response(
-                    "routine_exercises",
-                    f"Exercise '{ex_name}' not found",
-                )
-            re = session.exec(
-                select(RoutineExercise).where(
-                    RoutineExercise.exercise_id == exercise.id
-                )
-            ).first()
-            if not re:
-                return error_response(
-                    "routine_exercises",
-                    f"'{exercise.name}' not in routine",
-                )
-            if "target_sets" in set_fields:
-                re.target_sets = set_fields["target_sets"]
-            if "target_rep_min" in set_fields:
-                re.target_rep_min = set_fields["target_rep_min"]
-            if "target_rep_max" in set_fields:
-                re.target_rep_max = set_fields["target_rep_max"]
-            if "sort_order" in set_fields:
-                re.sort_order = set_fields["sort_order"]
-            if "active" in set_fields:
-                re.active = 1 if set_fields["active"] else 0
-            if "notes" in set_fields:
-                re.notes = set_fields["notes"]
-            session.add(re)
-            results.append({
-                "id": re.id,
-                "exercise_name": exercise.name,
-            })
-            changed += 1
-
-        elif op == "delete":
-            ex_name = None
-            if match_spec and "exercise_name" in match_spec:
-                en = match_spec["exercise_name"]
-                ex_name = (
-                    en.get("fuzzy") or en.get("eq")
-                    if isinstance(en, dict) else en
-                )
-            if not ex_name:
-                return error_response(
-                    "routine_exercises",
-                    "exercise_name required in match",
-                )
-            exercise = _fuzzy_match_exercise(ex_name, session)
-            if not exercise:
-                return error_response(
-                    "routine_exercises",
-                    f"Exercise '{ex_name}' not found",
-                )
-            re = session.exec(
-                select(RoutineExercise).where(
-                    RoutineExercise.exercise_id == exercise.id
-                )
-            ).first()
-            if not re:
-                return error_response(
-                    "routine_exercises",
-                    f"'{exercise.name}' not in routine",
-                )
-            session.delete(re)
-            results.append({"removed": exercise.name})
-            deleted += 1
-
-    session.commit()
-    return setter_response(
-        "routine_exercises",
-        op if args.get("changes") else "noop",
-        results,
-        matched_count=len(results),
-        created_count=created,
-        changed_count=changed,
-        deleted_count=deleted,
     )
 
 
@@ -2483,25 +2237,42 @@ def get_workout_context(session: Session) -> dict[str, str]:
         separators=(",", ":"),
     ) if exercises else "[]"
 
-    routine = session.exec(
-        select(RoutineExercise)
-        .where(RoutineExercise.active == 1)
-        .order_by(RoutineExercise.sort_order)
-    ).all()
+    active_program = session.exec(
+        select(TrainingProgram).where(TrainingProgram.active == 1)
+    ).first()
     routine_lines = []
-    for re in routine:
-        exercise = session.get(Exercise, re.exercise_id)
-        name = exercise.name if exercise else f"id:{re.exercise_id}"
-        if re.target_rep_min and re.target_rep_max:
-            rep_range = (
-                f"{re.target_sets}x{re.target_rep_min}"
-                f"-{re.target_rep_max}"
-            )
-        elif re.target_rep_min:
-            rep_range = f"{re.target_sets}x{re.target_rep_min}+"
-        else:
-            rep_range = f"{re.target_sets} sets"
-        routine_lines.append(f"  - {name}: {rep_range}")
+    if active_program:
+        program_days = session.exec(
+            select(ProgramDay)
+            .where(ProgramDay.program_id == active_program.id)
+            .order_by(ProgramDay.sort_order)
+        ).all()
+        for pd in program_days:
+            pdes = session.exec(
+                select(ProgramDayExercise)
+                .where(ProgramDayExercise.program_day_id == pd.id)
+                .order_by(ProgramDayExercise.sort_order)
+            ).all()
+            for pde in pdes:
+                exercise = session.get(Exercise, pde.exercise_id)
+                name = (
+                    exercise.name if exercise
+                    else f"id:{pde.exercise_id}"
+                )
+                if pde.target_rep_min and pde.target_rep_max:
+                    rep_range = (
+                        f"{pde.target_sets}x{pde.target_rep_min}"
+                        f"-{pde.target_rep_max}"
+                    )
+                elif pde.target_rep_min:
+                    rep_range = (
+                        f"{pde.target_sets}x{pde.target_rep_min}+"
+                    )
+                else:
+                    rep_range = f"{pde.target_sets} sets"
+                routine_lines.append(
+                    f"  - {name}: {rep_range} ({pd.day_label})"
+                )
     routine_summary = (
         "\n".join(routine_lines) if routine_lines
         else "  (no routine set)"
@@ -2750,7 +2521,6 @@ WORKOUT_TOOL_DEFINITIONS = [
     GET_TISSUES_DEF, SET_TISSUES_DEF,
     GET_TISSUE_CONDITIONS_DEF, SET_TISSUE_CONDITIONS_DEF,
     GET_WORKOUT_SESSIONS_DEF, SET_WORKOUT_SESSIONS_DEF,
-    GET_ROUTINE_EXERCISES_DEF, SET_ROUTINE_EXERCISES_DEF,
     GET_WORKOUTS_DEF, SET_WORKOUTS_DEF,
     GET_WORKOUT_PLAN_DEF, MODIFY_WORKOUT_PLAN_DEF,
 ]
@@ -2764,8 +2534,6 @@ WORKOUT_TOOL_HANDLERS = {
     "set_tissue_conditions": handle_set_tissue_conditions,
     "get_workout_sessions": handle_get_workout_sessions,
     "set_workout_sessions": handle_set_workout_sessions,
-    "get_routine_exercises": handle_get_routine_exercises,
-    "set_routine_exercises": handle_set_routine_exercises,
     "get_workouts": handle_get_workouts,
     "set_workouts": handle_set_workouts,
     "get_workout_plan": handle_get_workout_plan,

@@ -161,19 +161,6 @@ class WorkoutSet(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utcnow)
 
 
-class RoutineExercise(SQLModel, table=True):
-    __tablename__ = "routine_exercises"
-    id: int | None = Field(default=None, primary_key=True)
-    exercise_id: int = Field(foreign_key="exercises.id")
-    target_sets: int
-    target_rep_min: int | None = None
-    target_rep_max: int | None = None
-    sort_order: int = 0
-    active: int = 1  # 0 = temporarily disabled
-    notes: str | None = None
-    created_at: datetime = Field(default_factory=_utcnow)
-
-
 class TissueCondition(SQLModel, table=True):
     """LOG TABLE: append-only. Query latest per tissue_id for current state."""
     __tablename__ = "tissue_conditions"

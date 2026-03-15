@@ -10,11 +10,14 @@ from sqlmodel import Session, col, select
 from app.models import (
     Exercise,
     ExerciseTissue,
+    ProgramDay,
+    ProgramDayExercise,
     RecoveryCheckIn,
     Tissue,
     TissueCondition,
     TissueModelConfig,
     TrainingExclusionWindow,
+    TrainingProgram,
     WeightLog,
     WorkoutSession,
     WorkoutSet,
@@ -255,6 +258,9 @@ def build_exercise_risk_ranking(
                 "equipment": exercise.equipment,
                 "load_input_mode": exercise.load_input_mode,
                 "estimated_minutes_per_set": exercise.estimated_minutes_per_set,
+                "in_active_program": exercise.id in context.get(
+                    "active_program_exercise_ids", set()
+                ),
                 "weighted_risk_7d": round(weighted_risk_7d, 2),
                 "weighted_risk_14d": round(weighted_risk_14d, 2),
                 "max_tissue_risk_7d": max_tissue_risk,
@@ -598,6 +604,28 @@ def _build_context(session: Session, *, as_of: date | None) -> dict:
             checkin_data=checkin_data.get(tissue.id),
         )
 
+    # Active program exercise IDs for "in_active_program" flag
+    active_program = session.exec(
+        select(TrainingProgram).where(TrainingProgram.active == 1)
+    ).first()
+    active_program_exercise_ids: set[int] = set()
+    if active_program:
+        days = session.exec(
+            select(ProgramDay).where(
+                ProgramDay.program_id == active_program.id
+            )
+        ).all()
+        day_ids = [d.id for d in days]
+        if day_ids:
+            pdes = session.exec(
+                select(ProgramDayExercise).where(
+                    col(ProgramDayExercise.program_day_id).in_(day_ids)
+                )
+            ).all()
+            active_program_exercise_ids = {
+                pde.exercise_id for pde in pdes
+            }
+
     return {
         "as_of": as_of_date,
         "tissues": tissues,
@@ -616,6 +644,7 @@ def _build_context(session: Session, *, as_of: date | None) -> dict:
         "excluded_days": excluded_days,
         "collapse_dates": collapse_dates,
         "checkin_data": checkin_data,
+        "active_program_exercise_ids": active_program_exercise_ids,
     }
 
 

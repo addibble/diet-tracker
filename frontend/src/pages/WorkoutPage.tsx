@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import {
   getTrainingModelSummary,
-  getRoutine,
   getWorkoutSessions,
   getExerciseHistory,
   getExercises,
@@ -9,7 +8,6 @@ import {
   type TrainingModelSummary,
   type TrainingModelTissueHistory,
   type WkTissueReadiness,
-  type WkRoutineExercise,
   type WkSession,
   type WkExerciseHistory,
   type WkExercise,
@@ -187,27 +185,17 @@ function TissueRow({
 // ── Today's Suggested Workout ──
 
 function SuggestedWorkoutCard({
-  routine,
   trainingExercises,
 }: {
-  routine: WkRoutineExercise[]
   trainingExercises: TrainingModelExerciseInsight[]
 }) {
-  const recommendationByExerciseId = new Map(
-    trainingExercises.map((item) => [item.id, item] as const),
-  )
-  const active = [...routine]
-    .filter((r) => r.active)
+  const active = [...trainingExercises]
+    .filter((e) => e.in_active_program)
     .sort((a, b) => {
-      const left = recommendationByExerciseId.get(a.exercise_id)
-      const right = recommendationByExerciseId.get(b.exercise_id)
-      const leftRank = recommendationSortRank(left?.recommendation)
-      const rightRank = recommendationSortRank(right?.recommendation)
+      const leftRank = recommendationSortRank(a.recommendation)
+      const rightRank = recommendationSortRank(b.recommendation)
       if (leftRank !== rightRank) return leftRank - rightRank
-      const leftSuitability = left?.suitability_score ?? -1
-      const rightSuitability = right?.suitability_score ?? -1
-      if (leftSuitability !== rightSuitability) return rightSuitability - leftSuitability
-      return a.sort_order - b.sort_order
+      return b.suitability_score - a.suitability_score
     })
 
   if (active.length === 0) {
@@ -217,7 +205,7 @@ function SuggestedWorkoutCard({
           Today's Workout
         </p>
         <p className="text-sm text-gray-500 mt-2">
-          No routine set. Use the chat to set up your training routine.
+          No program exercises. Use the chat to set up your training program.
         </p>
       </section>
     )
@@ -229,66 +217,40 @@ function SuggestedWorkoutCard({
         Today's Workout
       </p>
       <div className="mt-3 space-y-2">
-        {active.map((re) => {
-          const repRange = re.target_rep_min && re.target_rep_max
-            ? `${re.target_sets}x${re.target_rep_min}-${re.target_rep_max}`
-            : `${re.target_sets} sets`
-          const lastWeight = re.last_performance?.sets?.[0]?.weight
-          const trainingRisk = recommendationByExerciseId.get(re.exercise_id)
-          return (
-            <div
-              key={re.id}
-              className="rounded-xl bg-gray-50 border border-gray-100 px-3 py-2"
-            >
-              <div className="flex items-center gap-3">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <p className="text-sm font-medium text-gray-800 truncate">
-                      {re.exercise_name}
-                    </p>
-                    {trainingRisk && (
-                      <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${recommendationClass(trainingRisk.recommendation)}`}>
-                        {trainingRisk.recommendation}
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-gray-500">
-                    {repRange}
-                    {lastWeight != null && ` @ ${lastWeight} lbs`}
-                    {re.notes && ` — ${re.notes}`}
+        {active.map((e) => (
+          <div
+            key={e.id}
+            className="rounded-xl bg-gray-50 border border-gray-100 px-3 py-2"
+          >
+            <div className="flex items-center gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-medium text-gray-800 truncate">
+                    {e.name}
                   </p>
-                  {trainingRisk && (
-                    <p className="mt-1 text-[11px] text-gray-600">
-                      {trainingRisk.recommendation_reason}
-                    </p>
-                  )}
+                  <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${recommendationClass(e.recommendation)}`}>
+                    {e.recommendation}
+                  </span>
                 </div>
-                {re.last_performance && (
-                  <div className="flex gap-0.5">
-                    {re.last_performance.sets.map((s, i) => (
-                      <span
-                        key={i}
-                        className={`w-2 h-2 rounded-full ${repDot(s.rep_completion)}`}
-                      />
-                    ))}
-                  </div>
-                )}
+                <p className="mt-1 text-[11px] text-gray-600">
+                  {e.recommendation_reason}
+                </p>
               </div>
-              {trainingRisk && trainingRisk.recommendation_details.length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-1">
-                  {trainingRisk.recommendation_details.slice(0, 3).map((detail) => (
-                    <span
-                      key={detail}
-                      className="rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[10px] font-medium text-gray-600"
-                    >
-                      {detail}
-                    </span>
-                  ))}
-                </div>
-              )}
             </div>
-          )
-        })}
+            {e.recommendation_details.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {e.recommendation_details.slice(0, 3).map((detail) => (
+                  <span
+                    key={detail}
+                    className="rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[10px] font-medium text-gray-600"
+                  >
+                    {detail}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
       </div>
     </section>
   )
@@ -511,11 +473,9 @@ function recommendationSortRank(value: TrainingModelExerciseInsight['recommendat
 function ExerciseRiskBoard({
   summary,
   exercises,
-  routine,
 }: {
   summary: TrainingModelSummary | null
   exercises: TrainingModelExerciseInsight[]
-  routine: WkRoutineExercise[]
 }) {
   if (!summary) {
     return (
@@ -528,20 +488,19 @@ function ExerciseRiskBoard({
     )
   }
 
-  const activeRoutineIds = new Set(routine.filter((item) => item.active).map((item) => item.exercise_id))
-  const routineFirst = [
-    ...exercises.filter((item) => activeRoutineIds.has(item.id)),
-    ...exercises.filter((item) => !activeRoutineIds.has(item.id)),
+  const programFirst = [
+    ...exercises.filter((item) => item.in_active_program),
+    ...exercises.filter((item) => !item.in_active_program),
   ]
-  const avoid = [...routineFirst]
+  const avoid = [...programFirst]
     .filter((item) => item.recommendation === 'avoid')
     .sort((a, b) => b.weighted_risk_7d - a.weighted_risk_7d)
     .slice(0, 6)
-  const caution = [...routineFirst]
+  const caution = [...programFirst]
     .filter((item) => item.recommendation === 'caution')
     .sort((a, b) => b.weighted_risk_7d - a.weighted_risk_7d)
     .slice(0, 6)
-  const good = [...routineFirst]
+  const good = [...programFirst]
     .filter((item) => item.recommendation === 'good')
     .sort((a, b) => b.suitability_score - a.suitability_score)
     .slice(0, 6)
@@ -953,7 +912,6 @@ function VolumeBarChart({
 export default function WorkoutPage() {
   const [trainingModel, setTrainingModel] = useState<TrainingModelSummary | null>(null)
   const [trainingExercises, setTrainingExercises] = useState<TrainingModelExerciseInsight[]>([])
-  const [routine, setRoutine] = useState<WkRoutineExercise[]>([])
   const [sessions, setSessions] = useState<WkSession[]>([])
   const [exercises, setExercises] = useState<WkExercise[]>([])
   const [loading, setLoading] = useState(true)
@@ -962,14 +920,12 @@ export default function WorkoutPage() {
     const load = async () => {
       setLoading(true)
       try {
-        const [tm, rt, s, ex] = await Promise.all([
+        const [tm, s, ex] = await Promise.all([
           getTrainingModelSummary(undefined, true),
-          getRoutine(),
           getWorkoutSessions(undefined, undefined, 10),
           getExercises(),
         ])
         setTrainingModel(tm)
-        setRoutine(rt)
         setSessions(s)
         setExercises(ex)
         const ranked = [...tm.exercises].sort((a, b) => b.suitability_score - a.suitability_score)
@@ -993,8 +949,8 @@ export default function WorkoutPage() {
 
   return (
     <div className="space-y-4 pb-4 overflow-y-auto h-full">
-      <ExerciseRiskBoard summary={trainingModel} exercises={trainingExercises} routine={routine} />
-      <SuggestedWorkoutCard routine={routine} trainingExercises={trainingExercises} />
+      <ExerciseRiskBoard summary={trainingModel} exercises={trainingExercises} />
+      <SuggestedWorkoutCard trainingExercises={trainingExercises} />
       <RecentSessionsCard sessions={sessions} />
       <ExerciseProgressCard exercises={exercises} />
     </div>
