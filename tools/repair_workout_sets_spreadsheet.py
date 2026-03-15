@@ -111,7 +111,7 @@ GROUP_SPECS: dict[int, list[BlockSpec]] = {
         BlockSpec("Landmine Press", 3, (80, 75, 80, 85, 85, 90, 75)),
         BlockSpec("Landmine Row", 3, (100, 100, 105, 110, 110, 115, 100)),
         BlockSpec(
-            "Cable bar curl burnout 50-60%",
+            "Straight-Bar Cable Curl",
             1,
             (None, None, None, None, None, 0, 0),
             reps=(None, None, None, None, None, 23, 25),

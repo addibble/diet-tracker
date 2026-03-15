@@ -20,7 +20,7 @@ GROUP_SPLIT = 3
 ALIAS_MAP: dict[str, str] = {
     "abductor machine": "Hip Abduction Machine",
     "adductor machine": "Hip Adduction Machine",
-    "cable bar curl": "Cable Bar Curl",
+    "cable bar curl": "Straight-Bar Cable Curl",
     "cable fly": "Cable Fly",
     "cable lateral raise": "Single-Arm Cable Lateral Raise (Left Only)",
     "cable row": "Seated Cable Row",

@@ -30,7 +30,8 @@ BREAK_END = dt.date(2026, 1, 1)
 ALIAS_MAP: dict[str, str] = {
     "barbell curls": "Barbell Curl",
     "cable woodchoppers": "Cable Woodchoppers (Abs)",
-    "cable curl": "Cable Bar Curl",
+    "cable curl": "Straight-Bar Cable Curl",
+    "cable bar curl burnout 50 60": "Straight-Bar Cable Curl",
     "db lateral raise": "Lateral Raise",
     "hammer curls": "Hammer Curl",
     "heavy lat pulldown": "Lat Pulldown",

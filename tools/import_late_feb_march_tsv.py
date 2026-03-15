@@ -37,7 +37,7 @@ ALIAS_MAP: dict[str, str] = {
     "ham curl machine": "Seated Leg Curl",
     "hanging leg raise": "Hanging Leg Raises",
     "rear delt control mini sets": "Pec Deck (Rear Delt)",
-    "straight bar cable curl burnout": "Cable Bar Curl",
+    "straight bar cable curl burnout": "Straight-Bar Cable Curl",
     "tib raise": "Seated Tib DB Lift",
     "triceps rope pushdown": "Triceps Rope Pushdown",
 }

@@ -30,7 +30,7 @@ class ProposedExercise:
 
 CLONE_MAP: dict[str, str] = {
     "Laying Down Crunches": "Abdominal Curls",
-    "Cable Curl with Drop Set": "Cable bar curl burnout 50-60%",
+    "Cable Curl with Drop Set": "Straight-Bar Cable Curl",
     "Chest Flys": "Pec Deck",
     "Landmine Row": "Landmine Row (Opposite Stance)",
     "Low Cable Chest Fly Burnout": "Low-High Cable Fly",
@@ -167,7 +167,7 @@ CUSTOM_MAPS: dict[str, tuple[MappingSpec, ...]] = {
 SOURCE_NOTES: dict[str, str] = {
     "Laying Down Crunches": "clone of Abdominal Curls",
     "Arnold Press": "between Seated DB Shoulder Press and Overhead Press Machine, with more lateral delt and cuff demand",
-    "Cable Curl with Drop Set": "clone of cable bar curl burnout profile",
+    "Cable Curl with Drop Set": "clone of Straight-Bar Cable Curl",
     "Chest Flys": "clone of Pec Deck",
     "Incline Hammer Curl": "hybrid of Hammer Curl and Incline Dumbbell Curl",
     "Landmine Row": "clone of Landmine Row (Opposite Stance)",

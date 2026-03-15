@@ -208,7 +208,7 @@ REFERENCE_EXERCISE_FIXUPS: dict[str, dict[str, object]] = {
             mapping("shoulder_joint", "stabilizer", 0.1),
         ],
     },
-    "Cable Bar Curl": {
+    "Straight-Bar Cable Curl": {
         "mappings": [
             mapping("biceps_long_head", "primary", 0.7),
             mapping("biceps_short_head", "primary", 0.7),
