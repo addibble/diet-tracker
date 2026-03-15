@@ -601,7 +601,7 @@ function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
           f1Statuses.set(name, thisMax > 0 && histMax > 0 && thisMax > histMax ? 'pr' : 'complete')
         }
 
-        return { date, exerciseMap, totalVolume, notes, allSets, f1Statuses }
+        return { date, exerciseMap, totalVolume, notes, f1Statuses }
       })
   }, [sessions])
 
@@ -611,7 +611,7 @@ function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
     <section className="bg-white border border-gray-200 rounded-2xl p-5">
       <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400 mb-3">Recent Sessions</p>
       <div className="space-y-2">
-        {byDate.map(({ date, exerciseMap, totalVolume, notes, allSets, f1Statuses }) => {
+        {byDate.map(({ date, exerciseMap, totalVolume, notes, f1Statuses }) => {
           const isExpanded = expandedDate === date
           return (
             <div key={date} className="rounded-xl border border-gray-200">

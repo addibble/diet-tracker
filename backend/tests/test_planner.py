@@ -1,10 +1,5 @@
-from app.models import Exercise, Tissue
-from app.planner import (
-    _TISSUE_FATIGUE_HARD_FLOOR,
-    _TISSUE_FATIGUE_SOFT_FLOOR,
-    _prescribe_all,
-    _select_exercises,
-)
+from app.models import Exercise
+from app.planner import _prescribe_all, _select_exercises
 
 
 def test_prescribe_all_normalizes_suitability_score(session):
