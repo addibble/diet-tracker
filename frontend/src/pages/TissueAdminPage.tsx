@@ -2,9 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   getTissues,
   getExercises,
+  getTissueReadiness,
   updateExercise,
   type WkTissue,
   type WkExercise,
+  type WkTissueReadiness,
 } from '../api'
 
 // ── Types ──
@@ -33,6 +35,22 @@ const ROLE_COLORS: Record<string, string> = {
   primary: 'bg-emerald-100 text-emerald-800',
   secondary: 'bg-sky-100 text-sky-800',
   stabilizer: 'bg-gray-100 text-gray-600',
+}
+
+const CONDITION_COLORS: Record<string, string> = {
+  healthy: 'bg-green-100 text-green-700',
+  tender: 'bg-yellow-100 text-yellow-700',
+  injured: 'bg-red-100 text-red-700',
+  rehabbing: 'bg-purple-100 text-purple-700',
+}
+
+function formatLastWorked(isoDate: string | null, hoursSince: number | null): string {
+  if (!isoDate || hoursSince == null) return 'never'
+  if (hoursSince < 1) return '<1h ago'
+  if (hoursSince < 24) return `${Math.round(hoursSince)}h ago`
+  const days = hoursSince / 24
+  if (days < 1.5) return '1d ago'
+  return `${Math.round(days)}d ago`
 }
 
 // ── Components ──
@@ -146,10 +164,12 @@ function LoadingEditor({
 function TissueView({
   tissues,
   exercises,
+  readinessMap,
   onSave,
 }: {
   tissues: TissueWithExercises[]
   exercises: WkExercise[]
+  readinessMap: Map<number, WkTissueReadiness>
   onSave: () => void
 }) {
   const [search, setSearch] = useState('')
@@ -180,6 +200,10 @@ function TissueView({
           <span key={type} className={`px-1.5 py-px rounded font-medium ${cls}`}>{type}</span>
         ))}
         <span className="text-gray-400 ml-2">|</span>
+        {Object.entries(CONDITION_COLORS).map(([status, cls]) => (
+          <span key={status} className={`px-1.5 py-px rounded font-medium ${cls}`}>{status}</span>
+        ))}
+        <span className="text-gray-400 ml-2">|</span>
         {Object.entries(ROLE_COLORS).map(([role, cls]) => (
           <span key={role} className={`px-1.5 py-px rounded font-medium ${cls}`}>{role}</span>
         ))}
@@ -197,6 +221,23 @@ function TissueView({
               <span className={`text-[10px] px-1.5 py-px rounded font-medium ${TYPE_BADGE[t.type] ?? 'bg-gray-100 text-gray-600'}`}>
                 {t.type}
               </span>
+              {(() => {
+                const r = readinessMap.get(t.id)
+                const cond = r?.condition
+                return cond ? (
+                  <span className={`text-[10px] px-1.5 py-px rounded font-medium ${CONDITION_COLORS[cond.status] ?? 'bg-gray-100 text-gray-600'}`}>
+                    {cond.status}{cond.severity > 0 ? ` (${cond.severity})` : ''}
+                  </span>
+                ) : null
+              })()}
+              {(() => {
+                const r = readinessMap.get(t.id)
+                return (
+                  <span className="text-[10px] text-gray-400" title={r?.last_trained ?? 'never'}>
+                    ⏱ {formatLastWorked(r?.last_trained ?? null, r?.hours_since ?? null)}
+                  </span>
+                )
+              })()}
               <span className="text-[10px] text-gray-400">{t.recovery_hours}h</span>
               {t.model_config && (
                 <span className="text-[10px] text-gray-400">
@@ -317,14 +358,20 @@ function ExerciseView({ exercises, onSave }: { exercises: WkExercise[]; onSave: 
 export default function TissueAdminPage() {
   const [tissues, setTissues] = useState<WkTissue[]>([])
   const [exercises, setExercises] = useState<WkExercise[]>([])
+  const [readiness, setReadiness] = useState<WkTissueReadiness[]>([])
   const [view, setView] = useState<View>('tissues')
   const [loading, setLoading] = useState(true)
 
   const load = async () => {
     try {
-      const [t, e] = await Promise.all([getTissues(), getExercises()])
+      const [t, e, r] = await Promise.all([
+        getTissues(),
+        getExercises(),
+        getTissueReadiness(),
+      ])
       setTissues(t)
       setExercises(e)
+      setReadiness(r)
     } catch (err) {
       console.error('Failed to load data', err)
     } finally {
@@ -357,6 +404,12 @@ export default function TissueAdminPage() {
       .sort((a, b) => a.display_name.localeCompare(b.display_name))
   }, [tissues, exercises])
 
+  const readinessMap = useMemo(() => {
+    const map = new Map<number, WkTissueReadiness>()
+    for (const r of readiness) map.set(r.tissue.id, r)
+    return map
+  }, [readiness])
+
   if (loading) {
     return <div className="text-sm text-gray-500 p-6">Loading...</div>
   }
@@ -387,7 +440,7 @@ export default function TissueAdminPage() {
       </div>
 
       {view === 'tissues' && (
-        <TissueView tissues={tissuesWithExercises} exercises={exercises} onSave={load} />
+        <TissueView tissues={tissuesWithExercises} exercises={exercises} readinessMap={readinessMap} onSave={load} />
       )}
 
       {view === 'exercises' && (
