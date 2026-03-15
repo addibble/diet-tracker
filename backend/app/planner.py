@@ -42,6 +42,17 @@ MAX_CANDIDATES = 16
 DEFAULT_SELECTED = 8
 AUTO_PROGRAM_NAME = "__auto_plan__"
 
+# Per-tissue fatigue gates used in exercise selection.
+# Tissues with routing_factor >= this threshold are considered "significantly
+# loaded" for the purposes of fatigue checking (catches primary muscles and
+# meaningful secondary muscles, while ignoring distant stabilizers).
+_SIGNIFICANT_ROUTING = 0.3
+# Below HARD floor → exercise is skipped entirely (tissue too fatigued).
+_TISSUE_FATIGUE_HARD_FLOOR = 0.4
+# Below SOFT floor → selection score is linearly discounted to zero at
+# the HARD floor, so fresher alternatives sort ahead.
+_TISSUE_FATIGUE_SOFT_FLOOR = 0.7
+
 
 # ── Main entry point ─────────────────────────────────────────────────
 
@@ -684,6 +695,28 @@ def _select_exercises(
         if has_blocked_primary:
             continue
 
+        # Per-tissue fatigue gate: look at recovery_state for every tissue
+        # that is significantly loaded by this exercise.  Averaging across
+        # all tissues masks recently-trained muscles (e.g. adductors trained
+        # yesterday drag down Leg Press even though hamstrings are fresh).
+        min_significant_recovery = min(
+            (
+                tm.get("recovery_state", 1.0)
+                for tm in ex.get("tissues", [])
+                if tm.get("routing_factor", 0.0) >= _SIGNIFICANT_ROUTING
+            ),
+            default=1.0,
+        )
+        if min_significant_recovery < _TISSUE_FATIGUE_HARD_FLOOR:
+            continue  # Skip: one or more heavily-loaded tissues are too fatigued
+        # Linear discount between hard and soft floor: 0.0 at HARD_FLOOR,
+        # 1.0 at SOFT_FLOOR and above.
+        fatigue_factor = min(
+            (min_significant_recovery - _TISSUE_FATIGUE_HARD_FLOOR)
+            / (_TISSUE_FATIGUE_SOFT_FLOOR - _TISSUE_FATIGUE_HARD_FLOOR),
+            1.0,
+        )
+
         # Score hits on target regions
         target_hits = []
         target_routing = 0.0
@@ -715,7 +748,7 @@ def _select_exercises(
                 + rec_bonus * 0.25
                 + min(target_routing, 1.0) * 0.25
                 + suitability_norm * 0.15
-            )
+            ) * fatigue_factor
             primary_candidates.append({
                 **ex,
                 "target_hits": set(target_hits),
@@ -728,7 +761,7 @@ def _select_exercises(
                 + rec_bonus * 0.25
                 + min(adj_routing, 1.0) * 0.20
                 + suitability_norm * 0.10
-            )
+            ) * fatigue_factor
             adjacent_candidates.append({
                 **ex,
                 "target_hits": set(adj_hits),

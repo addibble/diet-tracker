@@ -1,5 +1,10 @@
 from app.models import Exercise, Tissue
-from app.planner import _prescribe_all, _select_exercises
+from app.planner import (
+    _TISSUE_FATIGUE_HARD_FLOOR,
+    _TISSUE_FATIGUE_SOFT_FLOOR,
+    _prescribe_all,
+    _select_exercises,
+)
 
 
 def test_prescribe_all_normalizes_suitability_score(session):
@@ -84,6 +89,119 @@ def test_select_exercises_prefers_fresh_muscles_over_fatigued():
     names = [r["name"] for r in result]
     assert names.index("Fresh Squat") < names.index("Tired Squat"), (
         "Fresh muscle exercise should be ranked before fatigued one"
+    )
+
+
+def test_select_exercises_hard_excludes_severely_fatigued_tissue():
+    """Exercises where a significant tissue is below the hard floor are dropped."""
+    # Leg Press with one tissue severely fatigued (recovery_state = 0.25 < 0.4)
+    leg_press = {
+        "id": 10,
+        "name": "Leg Press",
+        "recommendation": "good",
+        "suitability_score": 80,
+        "weighted_risk_7d": 20.0,
+        "tissues": [
+            {"tissue_id": 1, "tissue_display_name": "Quad", "routing_factor": 0.9, "recovery_state": 0.8},
+            {"tissue_id": 2, "tissue_display_name": "Adductor", "routing_factor": 0.5, "recovery_state": 0.25},
+        ],
+    }
+    hamstring_curl = {
+        "id": 11,
+        "name": "Hamstring Curl",
+        "recommendation": "good",
+        "suitability_score": 85,
+        "weighted_risk_7d": 10.0,
+        "tissues": [
+            {"tissue_id": 3, "tissue_display_name": "Hamstring", "routing_factor": 1.0, "recovery_state": 0.9},
+        ],
+    }
+    exercise_region_map = {
+        10: [{"region": "quads", "role": "primary", "routing": 1.0}],
+        11: [{"region": "hamstrings", "role": "primary", "routing": 1.0}],
+    }
+    result = _select_exercises(
+        [leg_press, hamstring_curl],
+        target_regions={"quads", "hamstrings"},
+        adjacent_regions=set(),
+        blocked_regions=set(),
+        exercise_region_map=exercise_region_map,
+    )
+    names = [r["name"] for r in result]
+    assert "Leg Press" not in names, (
+        "Leg Press should be excluded when a primary tissue is below the hard fatigue floor"
+    )
+    assert "Hamstring Curl" in names
+
+
+def test_select_exercises_demotes_moderately_fatigued_tissue():
+    """Exercises with a tissue between the hard and soft floor rank lower than fresh alternatives."""
+    # Leg Press with adductor at recovery_state = 0.55 (between 0.4 and 0.7)
+    leg_press = {
+        "id": 20,
+        "name": "Leg Press",
+        "recommendation": "good",
+        "suitability_score": 80,
+        "weighted_risk_7d": 20.0,
+        "tissues": [
+            {"tissue_id": 1, "tissue_display_name": "Quad", "routing_factor": 0.9, "recovery_state": 0.85},
+            {"tissue_id": 2, "tissue_display_name": "Adductor", "routing_factor": 0.45, "recovery_state": 0.55},
+        ],
+    }
+    hamstring_curl = {
+        "id": 21,
+        "name": "Hamstring Curl",
+        "recommendation": "good",
+        "suitability_score": 75,
+        "weighted_risk_7d": 15.0,
+        "tissues": [
+            {"tissue_id": 3, "tissue_display_name": "Hamstring", "routing_factor": 1.0, "recovery_state": 0.95},
+        ],
+    }
+    exercise_region_map = {
+        20: [{"region": "quads", "role": "primary", "routing": 1.0}],
+        21: [{"region": "hamstrings", "role": "primary", "routing": 1.0}],
+    }
+    result = _select_exercises(
+        [leg_press, hamstring_curl],
+        target_regions={"quads", "hamstrings"},
+        adjacent_regions=set(),
+        blocked_regions=set(),
+        exercise_region_map=exercise_region_map,
+    )
+    names = [r["name"] for r in result]
+    assert "Leg Press" in names, "Leg Press should still be a candidate (above hard floor)"
+    assert names.index("Hamstring Curl") < names.index("Leg Press"), (
+        "Hamstring Curl (fresh tissue) should rank above Leg Press (moderately fatigued adductor)"
+    )
+
+
+def test_select_exercises_does_not_penalise_distant_stabilisers():
+    """Tissues with routing_factor below the significant threshold don't trigger fatigue gating."""
+    # Exercise where only a distant stabilizer is fatigued (routing < 0.3)
+    ex_with_minor_fatigued_stabilizer = {
+        "id": 30,
+        "name": "Cable Fly",
+        "recommendation": "good",
+        "suitability_score": 85,
+        "weighted_risk_7d": 10.0,
+        "tissues": [
+            {"tissue_id": 5, "tissue_display_name": "Pec", "routing_factor": 1.0, "recovery_state": 0.9},
+            {"tissue_id": 6, "tissue_display_name": "Wrist", "routing_factor": 0.15, "recovery_state": 0.2},
+        ],
+    }
+    exercise_region_map = {
+        30: [{"region": "chest", "role": "primary", "routing": 1.0}],
+    }
+    result = _select_exercises(
+        [ex_with_minor_fatigued_stabilizer],
+        target_regions={"chest"},
+        adjacent_regions=set(),
+        blocked_regions=set(),
+        exercise_region_map=exercise_region_map,
+    )
+    assert len(result) == 1, (
+        "Exercise should not be excluded when only a distant stabilizer (routing < threshold) is fatigued"
     )
 
 
