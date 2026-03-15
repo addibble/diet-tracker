@@ -15,11 +15,51 @@ import {
 
 // ── Helpers ──
 
-function repDot(completion: string | null): string {
-  if (completion === 'full') return 'bg-green-500'
-  if (completion === 'partial') return 'bg-yellow-500'
-  if (completion === 'failed') return 'bg-red-500'
-  return 'bg-gray-300'
+// Formula 1-inspired dot: purple = PR, green = all reps completed, yellow = partial/failed
+type F1Status = 'pr' | 'complete' | 'partial'
+
+function f1Dot(status: F1Status): string {
+  if (status === 'pr') return 'bg-purple-500'
+  if (status === 'complete') return 'bg-green-500'
+  return 'bg-yellow-400'
+}
+
+/**
+ * Returns one F1Status per exercise in the session.
+ * PR is signalled when every set was completed (rep_completion "full") AND
+ * the session's max weight for that exercise exceeds the max weight logged in
+ * any other session from the supplied list (i.e. a new visible-history record).
+ */
+function exerciseF1Statuses(
+  sessionSets: WkSession['sets'],
+  allSessions: WkSession[],
+  thisSessionId: number,
+): Map<string, F1Status> {
+  // Build historical max weight per exercise from all OTHER sessions
+  const historicalMax = new Map<string, number>()
+  for (const other of allSessions) {
+    if (other.id === thisSessionId) continue
+    for (const s of other.sets) {
+      const cur = historicalMax.get(s.exercise_name) ?? 0
+      if ((s.weight ?? 0) > cur) historicalMax.set(s.exercise_name, s.weight ?? 0)
+    }
+  }
+
+  const exerciseMap = groupSetsByExercise(sessionSets)
+  const result = new Map<string, F1Status>()
+  for (const [name, sets] of exerciseMap) {
+    const tracked = sets.filter(s => s.rep_completion != null)
+    if (tracked.length === 0) continue          // no completion data – skip
+    const allFull = tracked.every(s => s.rep_completion === 'full')
+    if (!allFull) {
+      result.set(name, 'partial')
+      continue
+    }
+    const maxWeight = Math.max(0, ...sets.map(s => s.weight ?? 0))
+    const prevMax = historicalMax.get(name) ?? 0
+    result.set(name, maxWeight > 0 && prevMax > 0 && maxWeight > prevMax ? 'pr' : 'complete')
+  }
+  return result
 }
 
 function hoursLabel(hours: number | null): string {
@@ -614,6 +654,7 @@ function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
             (sum, s) => sum + (s.reps || 0) * (s.weight || 0),
             0,
           )
+          const f1Statuses = exerciseF1Statuses(ws.sets, sessions, ws.id)
           const isExpanded = expandedId === ws.id
 
           return (
@@ -636,15 +677,12 @@ function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
                   </p>
                 </div>
                 <div className="flex gap-0.5">
-                  {ws.sets
-                    .filter((s) => s.rep_completion)
-                    .slice(0, 8)
-                    .map((s, i) => (
-                      <span
-                        key={i}
-                        className={`w-2 h-2 rounded-full ${repDot(s.rep_completion)}`}
-                      />
-                    ))}
+                  {Array.from(f1Statuses.values()).map((status, i) => (
+                    <span
+                      key={i}
+                      className={`w-2 h-2 rounded-full ${f1Dot(status)}`}
+                    />
+                  ))}
                 </div>
                 <span className="text-gray-400 text-xs">{isExpanded ? '−' : '+'}</span>
               </button>
