@@ -133,11 +133,11 @@ function WeightTrendCard({
 }) {
   const chart = useMemo(() => {
     const width = 340
-    const height = 210
+    const height = 230
     const left = 22
     const right = 18
     const top = 16
-    const bottom = 50
+    const bottom = 66
     const weightDays = trends.weight_days
     const step = (width - left - right) / Math.max(weightDays.length - 1, 1)
     const actualWeights = weightDays.map((day) => day.weight_lb)
@@ -221,11 +221,6 @@ function WeightTrendCard({
               <span className="text-gray-400 ml-1">({cs.days_counted}d)</span>
             </p>
           )}
-          {trends.tdee_estimate !== null && (
-            <p className="text-sm font-medium text-teal-700 mt-1">
-              Est. TDEE {trends.tdee_estimate} kcal/day
-            </p>
-          )}
         </div>
         <div className="text-left sm:text-right">
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">
@@ -242,13 +237,18 @@ function WeightTrendCard({
               {trends.weight_regression.points_used === 1 ? '' : 's'} used
             </p>
           )}
+          {trends.tdee_estimate !== null && (
+            <p className="text-sm font-medium text-teal-700 mt-1">
+              Est. TDEE {trends.tdee_estimate} kcal/day
+            </p>
+          )}
         </div>
       </div>
 
       <TodayWeightInput trends={trends} onSaved={onWeightSaved} />
 
       {chart.actualPoints.length > 0 ? (
-        <svg viewBox={`0 0 ${chart.width} ${chart.height}`} className="w-full h-52">
+        <svg viewBox={`0 0 ${chart.width} ${chart.height}`} className="w-full">
           {chart.guides.map((guide) => (
             <g key={guide.label}>
               <line
