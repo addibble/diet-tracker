@@ -15,6 +15,7 @@ from sqlmodel import Session, col, select
 from app.models import (
     Exercise,
     ExerciseTissue,
+    ProgramDayExercise,
     RoutineExercise,
     Tissue,
     TissueCondition,
@@ -912,6 +913,13 @@ def handle_set_exercises(args: dict, session: Session) -> dict:
                 )
             source = src_recs[0]
             target = tgt_recs[0]
+            if source.id == target.id:
+                return error_response(
+                    "exercises",
+                    "Source and target are the same exercise",
+                )
+
+            # workout_sets — move all
             sets_moved = 0
             for s in session.exec(
                 select(WorkoutSet).where(
@@ -921,24 +929,76 @@ def handle_set_exercises(args: dict, session: Session) -> dict:
                 s.exercise_id = target.id
                 session.add(s)
                 sets_moved += 1
-            for re in session.exec(
+
+            # routine_exercises — move all
+            routines_moved = 0
+            for re_ in session.exec(
                 select(RoutineExercise).where(
                     RoutineExercise.exercise_id == source.id
                 )
             ).all():
-                re.exercise_id = target.id
-                session.add(re)
+                re_.exercise_id = target.id
+                session.add(re_)
+                routines_moved += 1
+
+            # program_day_exercises — move; delete dupes where target
+            # already exists in the same program_day
+            target_pde_days = {
+                r.program_day_id
+                for r in session.exec(
+                    select(ProgramDayExercise).where(
+                        ProgramDayExercise.exercise_id == target.id
+                    )
+                ).all()
+            }
+            pde_moved = pde_dupes = 0
+            for pde in session.exec(
+                select(ProgramDayExercise).where(
+                    ProgramDayExercise.exercise_id == source.id
+                )
+            ).all():
+                if pde.program_day_id in target_pde_days:
+                    session.delete(pde)
+                    pde_dupes += 1
+                else:
+                    pde.exercise_id = target.id
+                    session.add(pde)
+                    pde_moved += 1
+
+            # exercise_tissues — merge; keep target's row on conflict,
+            # move source-only tissues to target
+            target_tissue_ids = {
+                r.tissue_id
+                for r in session.exec(
+                    select(ExerciseTissue).where(
+                        ExerciseTissue.exercise_id == target.id
+                    )
+                ).all()
+            }
+            tissues_moved = tissues_dupes = 0
             for et in session.exec(
                 select(ExerciseTissue).where(
                     ExerciseTissue.exercise_id == source.id
                 )
             ).all():
-                session.delete(et)
+                if et.tissue_id in target_tissue_ids:
+                    session.delete(et)
+                    tissues_dupes += 1
+                else:
+                    et.exercise_id = target.id
+                    session.add(et)
+                    tissues_moved += 1
+
             session.delete(source)
             results.append({
                 "merged": source.name,
                 "into": target.name,
                 "sets_moved": sets_moved,
+                "routines_moved": routines_moved,
+                "program_days_moved": pde_moved,
+                "program_days_dupes_removed": pde_dupes,
+                "tissues_moved": tissues_moved,
+                "tissues_dupes_removed": tissues_dupes,
             })
             changed += 1
 
