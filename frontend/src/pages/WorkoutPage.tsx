@@ -49,7 +49,7 @@ function exerciseF1Statuses(
   const result = new Map<string, F1Status>()
   for (const [name, sets] of exerciseMap) {
     const tracked = sets.filter(s => s.rep_completion != null)
-    if (tracked.length === 0) continue          // no completion data – skip
+    if (tracked.length === 0) continue
     const allFull = tracked.every(s => s.rep_completion === 'full')
     if (!allFull) {
       result.set(name, 'partial')
@@ -629,7 +629,7 @@ function ExerciseColumn({
 // ── Recent Sessions ──
 
 function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
-  const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [expandedIds, setExpandedIds] = useState<number[]>([])
 
   if (sessions.length === 0) {
     return (
@@ -655,12 +655,18 @@ function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
             0,
           )
           const f1Statuses = exerciseF1Statuses(ws.sets, sessions, ws.id)
-          const isExpanded = expandedId === ws.id
+          const isExpanded = expandedIds.includes(ws.id)
 
           return (
             <div key={ws.id} className="rounded-xl border border-gray-200">
               <button
-                onClick={() => setExpandedId(isExpanded ? null : ws.id)}
+                onClick={() =>
+                  setExpandedIds((current) =>
+                    current.includes(ws.id)
+                      ? current.filter((expandedId) => expandedId !== ws.id)
+                      : [...current, ws.id],
+                  )
+                }
                 className="w-full text-left px-3 py-2 flex items-center gap-3"
               >
                 <div className="flex-1 min-w-0">
@@ -688,25 +694,35 @@ function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
               </button>
               {isExpanded && (
                 <div className="px-3 pb-3 space-y-2">
-                  {Array.from(exerciseMap.entries()).map(([name, sets]) => (
-                    <div key={name}>
-                      <p className="text-xs font-medium text-gray-700">{name}</p>
-                      <div className="flex flex-wrap gap-1 mt-0.5">
-                        {sets.map((s) => (
-                          <span
-                            key={s.id}
-                            className="text-[11px] text-gray-500 bg-gray-50 rounded px-1.5 py-0.5"
-                          >
-                            {s.reps != null && s.weight != null
-                              ? `${s.weight}×${s.reps}`
-                              : s.duration_secs != null
-                                ? `${s.duration_secs}s`
-                                : '—'}
-                          </span>
-                        ))}
+                  {Array.from(exerciseMap.entries()).map(([name, sets]) => {
+                    const exerciseStatus = f1Statuses.get(name)
+                    return (
+                      <div key={name}>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {exerciseStatus && (
+                            <span
+                              className={`h-2 w-2 shrink-0 rounded-full ${f1Dot(exerciseStatus)}`}
+                            />
+                          )}
+                          <p className="text-xs font-medium text-gray-700">{name}</p>
+                        </div>
+                        <div className="flex flex-wrap gap-1 mt-0.5">
+                          {sets.map((s) => (
+                            <span
+                              key={s.id}
+                              className="text-[11px] text-gray-500 bg-gray-50 rounded px-1.5 py-0.5"
+                            >
+                              {s.reps != null && s.weight != null
+                                ? `${s.weight}×${s.reps}`
+                                : s.duration_secs != null
+                                  ? `${s.duration_secs}s`
+                                  : '—'}
+                            </span>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                   {ws.notes && (
                     <p className="text-xs text-gray-400 italic">{ws.notes}</p>
                   )}

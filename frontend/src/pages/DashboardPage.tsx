@@ -545,10 +545,20 @@ function groupSetsByExercise(sets: WkSession['sets']) {
   return map
 }
 
+function formatRecentSessionSet(set: WkSession['sets'][number]) {
+  if (set.reps != null && set.weight != null) return `${set.weight}×${set.reps}`
+  if (set.duration_secs != null) return `${set.duration_secs}s`
+  return '—'
+}
+
+function formatRecentSessionRpe(set: WkSession['sets'][number]) {
+  return set.rpe == null ? 'RPE —' : `RPE ${set.rpe}`
+}
+
 // ── Recent Sessions ──
 
 function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
-  const [expandedDate, setExpandedDate] = useState<string | null>(null)
+  const [expandedDates, setExpandedDates] = useState<string[]>([])
 
   // Group multiple sessions on the same date into one entry
   const byDate = useMemo(() => {
@@ -579,6 +589,7 @@ function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
         const allSets = daySessions.flatMap(s => s.sets)
         const exerciseMap = groupSetsByExercise(allSets)
         const totalVolume = allSets.reduce((sum, s) => sum + (s.reps || 0) * (s.weight || 0), 0)
+        const rpeMissingCount = allSets.filter(s => s.rpe == null).length
         const notes = daySessions.map(s => s.notes).filter(Boolean).join(' · ')
 
         // F1 status per exercise for this date
@@ -601,7 +612,7 @@ function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
           f1Statuses.set(name, thisMax > 0 && histMax > 0 && thisMax > histMax ? 'pr' : 'complete')
         }
 
-        return { date, exerciseMap, totalVolume, notes, f1Statuses }
+        return { date, exerciseMap, totalVolume, rpeMissingCount, notes, f1Statuses }
       })
   }, [sessions])
 
@@ -611,12 +622,18 @@ function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
     <section className="bg-white border border-gray-200 rounded-2xl p-5">
       <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400 mb-3">Recent Sessions</p>
       <div className="space-y-2">
-        {byDate.map(({ date, exerciseMap, totalVolume, notes, f1Statuses }) => {
-          const isExpanded = expandedDate === date
+        {byDate.map(({ date, exerciseMap, totalVolume, rpeMissingCount, notes, f1Statuses }) => {
+          const isExpanded = expandedDates.includes(date)
           return (
             <div key={date} className="rounded-xl border border-gray-200">
               <button
-                onClick={() => setExpandedDate(isExpanded ? null : date)}
+                onClick={() =>
+                  setExpandedDates((current) =>
+                    current.includes(date)
+                      ? current.filter((expandedDate) => expandedDate !== date)
+                      : [...current, date],
+                  )
+                }
                 className="w-full text-left px-3 py-2 flex items-center gap-3"
               >
                 <div className="flex-1 min-w-0">
@@ -626,6 +643,17 @@ function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
                   <p className="text-xs text-gray-500">
                     {exerciseMap.size} exercise{exerciseMap.size !== 1 ? 's' : ''}
                     {totalVolume > 0 && ` · ${Math.round(totalVolume).toLocaleString()} lbs vol`}
+                    <span
+                      className={
+                        rpeMissingCount > 0 ? 'font-medium text-amber-700' : 'text-emerald-700'
+                      }
+                    >
+                      {` · ${
+                        rpeMissingCount > 0
+                          ? `${rpeMissingCount} RPE missing`
+                          : 'RPE complete'
+                      }`}
+                    </span>
                   </p>
                 </div>
                 <div className="flex gap-0.5">
@@ -637,18 +665,44 @@ function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
               </button>
               {isExpanded && (
                 <div className="px-3 pb-3 space-y-2">
-                  {Array.from(exerciseMap.entries()).map(([name, sets]) => (
-                    <div key={name}>
-                      <p className="text-xs font-medium text-gray-700">{name}</p>
-                      <div className="flex flex-wrap gap-1 mt-0.5">
-                        {sets.map((s) => (
-                          <span key={s.id} className="text-[11px] text-gray-500 bg-gray-50 rounded px-1.5 py-0.5">
-                            {s.reps != null && s.weight != null ? `${s.weight}×${s.reps}` : s.duration_secs != null ? `${s.duration_secs}s` : '—'}
-                          </span>
-                        ))}
+                  {Array.from(exerciseMap.entries()).map(([name, sets]) => {
+                    const exerciseStatus = f1Statuses.get(name)
+                    const missingRpeCount = sets.filter(s => s.rpe == null).length
+                    return (
+                      <div key={name}>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {exerciseStatus && (
+                            <span
+                              className={`h-2 w-2 shrink-0 rounded-full ${f1Dot(exerciseStatus)}`}
+                            />
+                          )}
+                          <p className="text-xs font-medium text-gray-700">{name}</p>
+                          {missingRpeCount > 0 && (
+                            <span className="rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                              {missingRpeCount} RPE missing
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap gap-1 mt-0.5">
+                          {sets.map((s) => {
+                            const missingRpe = s.rpe == null
+                            return (
+                              <span
+                                key={s.id}
+                                className={`rounded px-1.5 py-0.5 text-[11px] ${
+                                  missingRpe
+                                    ? 'bg-amber-50 font-medium text-amber-700'
+                                    : 'bg-gray-50 text-gray-500'
+                                }`}
+                              >
+                                {formatRecentSessionSet(s)} · {formatRecentSessionRpe(s)}
+                              </span>
+                            )
+                          })}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                   {notes && <p className="text-xs text-gray-400 italic">{notes}</p>}
                 </div>
               )}
