@@ -42,6 +42,17 @@ MAX_CANDIDATES = 16
 DEFAULT_SELECTED = 8
 AUTO_PROGRAM_NAME = "__auto_plan__"
 
+# Per-tissue fatigue gates used in exercise selection.
+# Tissues with routing_factor >= this threshold are considered "significantly
+# loaded" for the purposes of fatigue checking (catches primary muscles and
+# meaningful secondary muscles, while ignoring distant stabilizers).
+_SIGNIFICANT_ROUTING = 0.3
+# Below HARD floor → exercise is skipped entirely (tissue too fatigued).
+_TISSUE_FATIGUE_HARD_FLOOR = 0.4
+# Below SOFT floor → selection score is linearly discounted to zero at
+# the HARD floor, so fresher alternatives sort ahead.
+_TISSUE_FATIGUE_SOFT_FLOOR = 0.7
+
 
 # ── Main entry point ─────────────────────────────────────────────────
 
@@ -684,6 +695,28 @@ def _select_exercises(
         if has_blocked_primary:
             continue
 
+        # Per-tissue fatigue gate: look at recovery_state for every tissue
+        # that is significantly loaded by this exercise.  Averaging across
+        # all tissues masks recently-trained muscles (e.g. adductors trained
+        # yesterday drag down Leg Press even though hamstrings are fresh).
+        min_significant_recovery = min(
+            (
+                tm.get("recovery_state", 1.0)
+                for tm in ex.get("tissues", [])
+                if tm.get("routing_factor", 0.0) >= _SIGNIFICANT_ROUTING
+            ),
+            default=1.0,
+        )
+        if min_significant_recovery < _TISSUE_FATIGUE_HARD_FLOOR:
+            continue  # Skip: one or more heavily-loaded tissues are too fatigued
+        # Linear discount between hard and soft floor: 0.0 at HARD_FLOOR,
+        # 1.0 at SOFT_FLOOR and above.
+        fatigue_factor = min(
+            (min_significant_recovery - _TISSUE_FATIGUE_HARD_FLOOR)
+            / (_TISSUE_FATIGUE_SOFT_FLOOR - _TISSUE_FATIGUE_HARD_FLOOR),
+            1.0,
+        )
+
         # Score hits on target regions
         target_hits = []
         target_routing = 0.0
@@ -704,10 +737,18 @@ def _select_exercises(
             continue
 
         rec_bonus = 1.0 if rec == "good" else 0.5
+        # Normalize suitability to [0, 1] to deprioritize exercises that load
+        # fatigued or at-risk tissues (lower suitability = more tissue risk).
+        suitability_norm = min(ex.get("suitability_score", 70) / 100.0, 1.0)
 
         if target_hits:
             coverage = len(set(target_hits)) / max(len(target_regions), 1)
-            score = coverage * 0.4 + rec_bonus * 0.3 + min(target_routing, 1.0) * 0.3
+            score = (
+                coverage * 0.35
+                + rec_bonus * 0.25
+                + min(target_routing, 1.0) * 0.25
+                + suitability_norm * 0.15
+            ) * fatigue_factor
             primary_candidates.append({
                 **ex,
                 "target_hits": set(target_hits),
@@ -715,7 +756,12 @@ def _select_exercises(
             })
         else:
             coverage = len(set(adj_hits)) / max(len(adjacent_regions), 1)
-            score = coverage * 0.3 + rec_bonus * 0.3 + min(adj_routing, 1.0) * 0.2
+            score = (
+                coverage * 0.25
+                + rec_bonus * 0.25
+                + min(adj_routing, 1.0) * 0.20
+                + suitability_norm * 0.10
+            ) * fatigue_factor
             adjacent_candidates.append({
                 **ex,
                 "target_hits": set(adj_hits),
@@ -751,8 +797,13 @@ def _prescribe_all(
 ) -> list[dict]:
     today = as_of or date.today()
     tissue_readiness: dict[int, float] = {}
+    tissue_condition_by_id: dict[int, dict] = {}
     for t in tissues_data:
-        tissue_readiness[t["tissue"]["id"]] = t.get("recovery_estimate", 0.5)
+        tid = t["tissue"]["id"]
+        tissue_readiness[tid] = t.get("recovery_estimate", 0.5)
+        cond = t.get("current_condition")
+        if cond:
+            tissue_condition_by_id[tid] = cond
 
     results = []
     for ex in exercises:
@@ -782,10 +833,41 @@ def _prescribe_all(
             weighted_risk_7d=weighted_risk,
         )
 
+        # Find the most restrictive loading factor from tender/rehabbing tissues.
+        # Only tissues with a significant routing factor (>= 0.3) are considered
+        # so distant stabilizers don't unnecessarily suppress the weight.
+        min_condition_factor = 1.0
+        condition_label = None
+        for tm in ex.get("tissues", []):
+            tid = tm.get("tissue_id")
+            if not tid:
+                continue
+            if tm.get("routing_factor", 0.0) < 0.3:
+                continue
+            cond = tissue_condition_by_id.get(tid)
+            if not cond:
+                continue
+            status = cond.get("status", "healthy")
+            max_lf = cond.get("max_loading_factor")
+            if status == "tender":
+                factor = min(max_lf, 0.6) if max_lf is not None else 0.6
+            elif status == "rehabbing":
+                factor = max_lf if max_lf is not None else 0.7
+            else:
+                continue
+            if factor < min_condition_factor:
+                min_condition_factor = factor
+                condition_label = f"{status} {tm.get('tissue_display_name', '')}"
+
+        weight_adjustment_note = None
+        if min_condition_factor < 1.0 and condition_label:
+            pct = round(min_condition_factor * 100)
+            weight_adjustment_note = f"Reduced to {pct}% load due to {condition_label}"
+
         target_weight = None
         if current_e1rm > 0:
             intensity = (intensity_range[0] + intensity_range[1]) / 2
-            raw_weight = current_e1rm * intensity
+            raw_weight = current_e1rm * intensity * min_condition_factor
             if exercise.equipment == "barbell":
                 target_weight = round(raw_weight / 5) * 5
             elif exercise.equipment == "dumbbell":
@@ -796,7 +878,8 @@ def _prescribe_all(
 
         last_perf = _get_last_performance(session, exercise_id)
         overload_note = None
-        if last_perf and target_weight and target_weight > 0:
+        # Skip progressive overload when a tissue condition restricts loading.
+        if not weight_adjustment_note and last_perf and target_weight and target_weight > 0:
             last_weight = last_perf.get("max_weight", 0)
             all_full = last_perf.get("all_full", False)
             if all_full and last_weight and last_weight >= target_weight:
@@ -824,6 +907,7 @@ def _prescribe_all(
             "target_weight": target_weight,
             "rationale": rationale,
             "overload_note": overload_note,
+            "weight_adjustment_note": weight_adjustment_note,
             "current_e1rm": round(current_e1rm, 2) if current_e1rm else None,
             "selected": ex.get("selected", True),
         })

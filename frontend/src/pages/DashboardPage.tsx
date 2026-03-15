@@ -526,11 +526,13 @@ function TargetNormalizedMacroTrendsCard({ trends }: { trends: DashboardTrends }
 
 // ── Helpers shared with workout ──
 
-function repDot(completion: string | null): string {
-  if (completion === 'full') return 'bg-green-500'
-  if (completion === 'partial') return 'bg-yellow-500'
-  if (completion === 'failed') return 'bg-red-500'
-  return 'bg-gray-300'
+// Formula 1-inspired dot: purple = PR, green = all reps completed, yellow = partial/failed
+type F1Status = 'pr' | 'complete' | 'partial'
+
+function f1Dot(status: F1Status): string {
+  if (status === 'pr') return 'bg-purple-500'
+  if (status === 'complete') return 'bg-green-500'
+  return 'bg-yellow-400'
 }
 
 function groupSetsByExercise(sets: WkSession['sets']) {
@@ -556,6 +558,20 @@ function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
       list.push(ws)
       map.set(ws.date, list)
     }
+
+    // Pre-compute max weight per exercise per date for PR detection
+    const dateMaxByExercise = new Map<string, Map<string, number>>()
+    for (const [date, daySessions] of map) {
+      const exMax = new Map<string, number>()
+      for (const ws of daySessions) {
+        for (const s of ws.sets) {
+          const cur = exMax.get(s.exercise_name) ?? 0
+          if ((s.weight ?? 0) > cur) exMax.set(s.exercise_name, s.weight ?? 0)
+        }
+      }
+      dateMaxByExercise.set(date, exMax)
+    }
+
     // Sort dates descending, return array of merged day entries
     return Array.from(map.entries())
       .sort((a, b) => b[0].localeCompare(a[0]))
@@ -564,7 +580,28 @@ function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
         const exerciseMap = groupSetsByExercise(allSets)
         const totalVolume = allSets.reduce((sum, s) => sum + (s.reps || 0) * (s.weight || 0), 0)
         const notes = daySessions.map(s => s.notes).filter(Boolean).join(' · ')
-        return { date, exerciseMap, totalVolume, notes, allSets }
+
+        // F1 status per exercise for this date
+        const f1Statuses = new Map<string, F1Status>()
+        for (const [name, sets] of exerciseMap) {
+          const tracked = sets.filter(s => s.rep_completion != null)
+          if (tracked.length === 0) continue
+          const allFull = tracked.every(s => s.rep_completion === 'full')
+          if (!allFull) {
+            f1Statuses.set(name, 'partial')
+            continue
+          }
+          const thisMax = dateMaxByExercise.get(date)?.get(name) ?? 0
+          let histMax = 0
+          for (const [otherDate, otherMap] of dateMaxByExercise) {
+            if (otherDate === date) continue
+            const v = otherMap.get(name) ?? 0
+            if (v > histMax) histMax = v
+          }
+          f1Statuses.set(name, thisMax > 0 && histMax > 0 && thisMax > histMax ? 'pr' : 'complete')
+        }
+
+        return { date, exerciseMap, totalVolume, notes, f1Statuses }
       })
   }, [sessions])
 
@@ -574,7 +611,7 @@ function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
     <section className="bg-white border border-gray-200 rounded-2xl p-5">
       <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400 mb-3">Recent Sessions</p>
       <div className="space-y-2">
-        {byDate.map(({ date, exerciseMap, totalVolume, notes, allSets }) => {
+        {byDate.map(({ date, exerciseMap, totalVolume, notes, f1Statuses }) => {
           const isExpanded = expandedDate === date
           return (
             <div key={date} className="rounded-xl border border-gray-200">
@@ -592,8 +629,8 @@ function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
                   </p>
                 </div>
                 <div className="flex gap-0.5">
-                  {allSets.filter(s => s.rep_completion).slice(0, 8).map((s, i) => (
-                    <span key={i} className={`w-2 h-2 rounded-full ${repDot(s.rep_completion)}`} />
+                  {Array.from(f1Statuses.values()).map((status, i) => (
+                    <span key={i} className={`w-2 h-2 rounded-full ${f1Dot(status)}`} />
                   ))}
                 </div>
                 <span className="text-gray-400 text-xs">{isExpanded ? '−' : '+'}</span>
