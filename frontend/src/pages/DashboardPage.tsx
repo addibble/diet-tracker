@@ -16,6 +16,7 @@ import {
   type WkSession,
   type VolumeByRegion,
 } from '../api'
+import MealItemEditor from '../components/MealItemEditor'
 import WorkoutSetEditor from '../components/WorkoutSetEditor'
 
 function today() {
@@ -875,6 +876,7 @@ export default function DashboardPage() {
   const [sessions, setSessions] = useState<WkSession[]>([])
   const [volumeByRegion, setVolumeByRegion] = useState<VolumeByRegion | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [editingMeals, setEditingMeals] = useState<Set<number>>(new Set())
 
   const refreshTrends = () => setRefreshKey((k) => k + 1)
 
@@ -988,24 +990,47 @@ export default function DashboardPage() {
                         <span className="text-sm font-medium text-gray-900 capitalize">
                           {meal.meal_type}
                         </span>
-                        <span className="text-xs text-gray-500">
-                          {Math.round(meal.total_calories)} kcal
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-gray-500">
+                            {Math.round(meal.total_calories)} kcal
+                          </span>
+                          <button
+                            type="button"
+                            className="text-xs text-blue-500 hover:text-blue-700"
+                            onClick={() => setEditingMeals((prev) => {
+                              const next = new Set(prev)
+                              if (next.has(meal.id)) next.delete(meal.id)
+                              else next.add(meal.id)
+                              return next
+                            })}
+                          >
+                            {editingMeals.has(meal.id) ? 'done' : 'edit'}
+                          </button>
+                        </div>
                       </div>
                       {meal.notes && <p className="text-xs text-gray-500 mb-1">{meal.notes}</p>}
-                      <div className="space-y-0.5">
-                        {meal.items.map((item, idx) => (
-                          <div
-                            key={`${meal.id}-${idx}`}
-                            className="flex items-center justify-between text-xs text-gray-600"
-                          >
-                            <span>{item.name}</span>
-                            <span className="text-gray-400">
-                              {Math.round(item.grams)}g · {Math.round(item.calories)} cal
-                            </span>
-                          </div>
-                        ))}
-                      </div>
+                      {editingMeals.has(meal.id) ? (
+                        <MealItemEditor
+                          mode="edit"
+                          meal={meal}
+                          onMealChanged={refreshTrends}
+                          compact
+                        />
+                      ) : (
+                        <div className="space-y-0.5">
+                          {meal.items.map((item, idx) => (
+                            <div
+                              key={`${meal.id}-${idx}`}
+                              className="flex items-center justify-between text-xs text-gray-600"
+                            >
+                              <span>{item.name}</span>
+                              <span className="text-gray-400">
+                                {Math.round(item.grams)}g · {Math.round(item.calories)} cal
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import MealItemEditor from '../components/MealItemEditor'
 import WorkoutSetEditor from '../components/WorkoutSetEditor'
 import {
   chatMealWithProgress,
   getChatModels,
   importFoodLabel,
-  MACRO_KEYS, MACRO_LABELS, MACRO_UNITS,
   type ChatProgressEvent,
-  type ChatMessage, type ChatModelOption, type ChatProposedItem, type ChatResponse, type Meal, type Macros, type FoodImportResult,
+  type ChatMessage, type ChatModelOption, type ChatProposedItem, type ChatResponse, type Meal, type FoodImportResult,
 } from '../api'
 
 interface SpeechRecognitionAlternativeLike {
@@ -190,69 +190,11 @@ interface MessageBubble {
   role: 'user' | 'assistant'
   content: string
   proposedItems?: ChatProposedItem[]
+  proposedDate?: string
+  proposedMealType?: string
   savedMeal?: Meal
   editMealId?: number
   workoutSessionId?: number
-}
-
-function computeItemMacro(item: ChatProposedItem, macro: keyof Macros): number {
-  const ratio = item.serving_size_grams > 0 ? item.amount_grams / item.serving_size_grams : 0
-  return Math.round(item.macros_per_serving[macro] * ratio * 10) / 10
-}
-
-function ProposedItemsCard({
-  items,
-  onConfirm,
-  confirmed,
-  isEdit,
-}: {
-  items: ChatProposedItem[]
-  onConfirm: () => void
-  confirmed: boolean
-  isEdit?: boolean
-}) {
-  const totals = MACRO_KEYS.reduce((acc, m) => {
-    acc[m] = items.reduce((sum, item) => sum + computeItemMacro(item, m), 0)
-    return acc
-  }, {} as Record<keyof Macros, number>)
-
-  return (
-    <div className="mt-2 bg-gray-50 rounded-lg border border-gray-200 p-3">
-      <p className="text-xs font-medium text-gray-500 mb-2">
-        {isEdit ? 'Proposed edit:' : 'Proposed breakdown:'}
-      </p>
-      <div className="space-y-1">
-        {items.map((item, i) => (
-          <div key={i} className="flex justify-between text-sm gap-3">
-            <span className={item.food_id === null && !item.recipe_id ? 'text-gray-400 italic' : 'text-gray-700'}>
-              {item.name}
-              {item.food_id === null && !item.recipe_id && ' (not in database)'}
-            </span>
-            <span className="text-gray-500 whitespace-nowrap">
-              {item.amount_grams}g
-              {(item.food_id !== null || item.recipe_id) && ` · ${Math.round(computeItemMacro(item, 'calories'))} cal`}
-            </span>
-          </div>
-        ))}
-      </div>
-      <div className="border-t border-gray-200 mt-2 pt-2 flex flex-wrap gap-2 text-xs text-gray-500">
-        {MACRO_KEYS.map((m) => (
-          <span key={m}>
-            {MACRO_LABELS[m]}: <strong>{Math.round(totals[m])}</strong>{MACRO_UNITS[m]}
-          </span>
-        ))}
-      </div>
-      {!confirmed && (
-        <button
-          type="button"
-          onClick={onConfirm}
-          className="mt-3 w-full py-2.5 bg-green-600 text-white text-sm font-medium rounded-md hover:bg-green-700 active:bg-green-800"
-        >
-          {isEdit ? 'Confirm Edit' : 'Confirm & Save'}
-        </button>
-      )}
-    </div>
-  )
 }
 
 function SavedMealCard({ meal, isEdit }: { meal: Meal; isEdit?: boolean }) {
@@ -735,6 +677,8 @@ export default function MealLogPage() {
         role: 'assistant',
         content: resp.message,
         proposedItems: resp.proposed_items ?? undefined,
+        proposedDate: resp.proposed_date ?? undefined,
+        proposedMealType: resp.proposed_meal_type ?? undefined,
         savedMeal: resp.saved_meal ?? undefined,
         editMealId: resp.edit_meal_id ?? undefined,
         workoutSessionId: resp.workout_session_id ?? undefined,
@@ -949,12 +893,19 @@ export default function MealLogPage() {
                 ) : (
                   <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
                 )}
-                {msg.proposedItems && msg.proposedItems.length > 0 && (
-                  <ProposedItemsCard
+                {msg.proposedItems && msg.proposedItems.length > 0 && !msg.savedMeal && (
+                  <MealItemEditor
+                    mode="propose"
                     items={msg.proposedItems}
-                    onConfirm={() => handleSend('Yes, save it')}
-                    confirmed={!!msg.savedMeal || i < messages.length - 1}
-                    isEdit={!!msg.editMealId}
+                    date={msg.proposedDate}
+                    mealType={msg.proposedMealType}
+                    editMealId={msg.editMealId}
+                    onSaved={(saved) => {
+                      setMessages((prev) => prev.map((m, mi) =>
+                        mi === i ? { ...m, savedMeal: saved } : m,
+                      ))
+                      setSaved(true)
+                    }}
                   />
                 )}
                 {msg.savedMeal && <SavedMealCard meal={msg.savedMeal} isEdit={!!msg.editMealId} />}

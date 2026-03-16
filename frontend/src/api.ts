@@ -405,6 +405,21 @@ export const updateMeal = (id: number, data: {
 export const deleteMeal = (id: number) =>
   request<void>(`/meals/${id}`, { method: 'DELETE' });
 
+// Meal Items (individual item CRUD)
+export const updateMealItem = (itemId: number, data: { amount_grams: number }) =>
+  request<Meal>(`/meal-items/${itemId}`, {
+    method: 'PATCH', body: JSON.stringify(data),
+  });
+
+export const addMealItem = (mealId: number, data: {
+  food_id?: number; recipe_id?: number; amount_grams: number;
+}) => request<Meal>(`/meals/${mealId}/items`, {
+  method: 'POST', body: JSON.stringify(data),
+});
+
+export const deleteMealItem = (itemId: number) =>
+  request<void>(`/meal-items/${itemId}`, { method: 'DELETE' });
+
 // Workouts
 export interface Workout {
   id: number;
@@ -971,6 +986,8 @@ export interface ChatProposedItem {
   source: string;
   serving_size_grams: number;
   macros_per_serving: Macros;
+  group?: string;
+  source_recipe_id?: number;
 }
 
 export interface RepCheckExercise {
@@ -984,6 +1001,8 @@ export interface RepCheckExercise {
 export interface ChatResponse {
   message: string;
   proposed_items: ChatProposedItem[] | null;
+  proposed_date: string;
+  proposed_meal_type: string;
   saved_meal: Meal | null;
   edit_meal_id: number | null;
   data_changed: boolean;

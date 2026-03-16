@@ -33,7 +33,7 @@ from app.llm import (
 )
 from app.llm_tools import TOOL_HANDLERS, get_workout_context
 from app.macros import MACRO_FIELDS
-from app.models import Food, MealItem, MealLog, Recipe
+from app.models import Food, MealItem, MealLog, Recipe, RecipeComponent
 from app.usda import search_usda
 
 logger = logging.getLogger("parse")
@@ -336,9 +336,11 @@ def _make_tool_executor(
 
 
 def _resolve_chat_items(raw_items: list[dict], session: Session) -> list[dict]:
-    """Resolve LLM-proposed items to full food/recipe details with macros."""
-    from app.routers.recipes import _build_recipe_response
+    """Resolve LLM-proposed items to full food/recipe details with macros.
 
+    Recipes are expanded into individual food components so the user can
+    adjust each ingredient independently in the meal editor widget.
+    """
     result = []
     for item in raw_items:
         food_id = item.get("food_id")
@@ -355,20 +357,23 @@ def _resolve_chat_items(raw_items: list[dict], session: Session) -> list[dict]:
         if recipe_id is not None:
             recipe = session.get(Recipe, recipe_id)
             if recipe:
-                rdata = _build_recipe_response(recipe, session)
-                total_g = rdata.get("total_grams", 0) or 1
-                result.append({
-                    "name": rdata["name"],
-                    "amount_grams": grams,
-                    "food_id": None,
-                    "recipe_id": recipe_id,
-                    "source": "db",
-                    "serving_size_grams": total_g,
-                    "macros_per_serving": {
-                        m: rdata.get(f"total_{m}", 0)
-                        for m in MACRO_FIELDS
-                    },
-                })
+                components = session.exec(
+                    select(RecipeComponent).where(
+                        RecipeComponent.recipe_id == recipe.id
+                    )
+                ).all()
+                recipe_total_g = sum(c.amount_grams for c in components)
+                scale = grams / recipe_total_g if recipe_total_g > 0 else 1.0
+                for comp in components:
+                    food = session.get(Food, comp.food_id)
+                    if not food:
+                        continue
+                    parsed = _food_to_parsed_item(
+                        food, round(comp.amount_grams * scale, 1), "db"
+                    )
+                    parsed["group"] = recipe.name
+                    parsed["source_recipe_id"] = recipe.id
+                    result.append(parsed)
                 continue
 
         result.append({
@@ -735,6 +740,8 @@ async def chat_meal_endpoint(
     return {
         "message": clean_message,
         "proposed_items": proposed_items,
+        "proposed_date": request_date.isoformat(),
+        "proposed_meal_type": meal_type,
         "saved_meal": saved_meal,
         "edit_meal_id": edit_meal_id,
         "data_changed": tool_state.data_changed,
