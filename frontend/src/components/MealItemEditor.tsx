@@ -333,10 +333,10 @@ export default function MealItemEditor({
 
   // ── Group rows by recipe name for visual grouping ──
   const groups: { label: string | null; rows: EditorRow[] }[] = []
-  let currentGroup: string | null = null
+  let currentGroup: string | null | undefined = undefined
   for (const row of rows) {
     const g = row.group ?? null
-    if (g !== currentGroup) {
+    if (g !== currentGroup || groups.length === 0) {
       groups.push({ label: g, rows: [row] })
       currentGroup = g
     } else {
