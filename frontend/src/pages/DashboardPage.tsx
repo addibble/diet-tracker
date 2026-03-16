@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import ScrollablePage from '../components/ScrollablePage'
 import {
   getDailySummary,
@@ -16,6 +16,7 @@ import {
   type WkSession,
   type VolumeByRegion,
 } from '../api'
+import WorkoutSetEditor from '../components/WorkoutSetEditor'
 
 function today() {
   const now = new Date()
@@ -557,8 +558,15 @@ function formatRecentSessionRpe(set: WkSession['sets'][number]) {
 
 // ── Recent Sessions ──
 
-function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
+function RecentSessionsCard({
+  sessions,
+  onSessionChanged,
+}: {
+  sessions: WkSession[]
+  onSessionChanged?: () => void
+}) {
   const [expandedDates, setExpandedDates] = useState<string[]>([])
+  const [editingDates, setEditingDates] = useState<Set<string>>(new Set())
 
   // Group multiple sessions on the same date into one entry
   const byDate = useMemo(() => {
@@ -612,7 +620,7 @@ function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
           f1Statuses.set(name, thisMax > 0 && histMax > 0 && thisMax > histMax ? 'pr' : 'complete')
         }
 
-        return { date, exerciseMap, totalVolume, rpeMissingCount, notes, f1Statuses }
+        return { date, sessions: daySessions, exerciseMap, totalVolume, rpeMissingCount, notes, f1Statuses }
       })
   }, [sessions])
 
@@ -622,7 +630,7 @@ function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
     <section className="bg-white border border-gray-200 rounded-2xl p-5">
       <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400 mb-3">Recent Sessions</p>
       <div className="space-y-2">
-        {byDate.map(({ date, exerciseMap, totalVolume, rpeMissingCount, notes, f1Statuses }) => {
+        {byDate.map(({ date, sessions: daySessions, exerciseMap, totalVolume, rpeMissingCount, notes, f1Statuses }) => {
           const isExpanded = expandedDates.includes(date)
           return (
             <div key={date} className="rounded-xl border border-gray-200">
@@ -661,49 +669,82 @@ function RecentSessionsCard({ sessions }: { sessions: WkSession[] }) {
                     <span key={i} className={`w-2 h-2 rounded-full ${f1Dot(status)}`} />
                   ))}
                 </div>
+                {isExpanded && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setEditingDates((prev) => {
+                        const next = new Set(prev)
+                        if (next.has(date)) next.delete(date)
+                        else next.add(date)
+                        return next
+                      })
+                    }}
+                    className="text-[10px] text-gray-400 hover:text-gray-600"
+                  >
+                    {editingDates.has(date) ? 'done' : 'edit'}
+                  </button>
+                )}
                 <span className="text-gray-400 text-xs">{isExpanded ? '−' : '+'}</span>
               </button>
               {isExpanded && (
                 <div className="px-3 pb-3 space-y-2">
-                  {Array.from(exerciseMap.entries()).map(([name, sets]) => {
-                    const exerciseStatus = f1Statuses.get(name)
-                    const missingRpeCount = sets.filter(s => s.rpe == null).length
-                    return (
-                      <div key={name}>
-                        <div className="flex flex-wrap items-center gap-2">
-                          {exerciseStatus && (
-                            <span
-                              className={`h-2 w-2 shrink-0 rounded-full ${f1Dot(exerciseStatus)}`}
-                            />
-                          )}
-                          <p className="text-xs font-medium text-gray-700">{name}</p>
-                          {missingRpeCount > 0 && (
-                            <span className="rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
-                              {missingRpeCount} RPE missing
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex flex-wrap gap-1 mt-0.5">
-                          {sets.map((s) => {
-                            const missingRpe = s.rpe == null
-                            return (
-                              <span
-                                key={s.id}
-                                className={`rounded px-1.5 py-0.5 text-[11px] ${
-                                  missingRpe
-                                    ? 'bg-amber-50 font-medium text-amber-700'
-                                    : 'bg-gray-50 text-gray-500'
-                                }`}
-                              >
-                                {formatRecentSessionSet(s)} · {formatRecentSessionRpe(s)}
-                              </span>
-                            )
-                          })}
-                        </div>
-                      </div>
-                    )
-                  })}
-                  {notes && <p className="text-xs text-gray-400 italic">{notes}</p>}
+                  {editingDates.has(date) ? (
+                    <>
+                      {daySessions.map((ws) => (
+                        <WorkoutSetEditor
+                          key={ws.id}
+                          mode="log"
+                          sessionId={ws.id}
+                          session={ws}
+                          onSessionChanged={onSessionChanged}
+                          compact
+                        />
+                      ))}
+                    </>
+                  ) : (
+                    <>
+                      {Array.from(exerciseMap.entries()).map(([name, sets]) => {
+                        const exerciseStatus = f1Statuses.get(name)
+                        const missingRpeCount = sets.filter((s) => s.rpe == null).length
+                        return (
+                          <div key={name}>
+                            <div className="flex flex-wrap items-center gap-2">
+                              {exerciseStatus && (
+                                <span
+                                  className={`h-2 w-2 shrink-0 rounded-full ${f1Dot(exerciseStatus)}`}
+                                />
+                              )}
+                              <p className="text-xs font-medium text-gray-700">{name}</p>
+                              {missingRpeCount > 0 && (
+                                <span className="rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                                  {missingRpeCount} RPE missing
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex flex-wrap gap-1 mt-0.5">
+                              {sets.map((s) => {
+                                const missingRpe = s.rpe == null
+                                return (
+                                  <span
+                                    key={s.id}
+                                    className={`rounded px-1.5 py-0.5 text-[11px] ${
+                                      missingRpe
+                                        ? 'bg-amber-50 font-medium text-amber-700'
+                                        : 'bg-gray-50 text-gray-500'
+                                    }`}
+                                  >
+                                    {formatRecentSessionSet(s)} · {formatRecentSessionRpe(s)}
+                                  </span>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        )
+                      })}
+                      {notes && <p className="text-xs text-gray-400 italic">{notes}</p>}
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -873,6 +914,12 @@ export default function DashboardPage() {
 
   const activeTarget = summary?.active_macro_target ?? null
 
+  const refreshSessions = useCallback(() => {
+    getWorkoutSessions(undefined, undefined, 10)
+      .then((s) => setSessions(s as WkSession[]))
+      .catch(() => {})
+  }, [])
+
   return (
     <ScrollablePage className="space-y-6">
       <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -974,7 +1021,7 @@ export default function DashboardPage() {
           <TargetNormalizedMacroTrendsCard trends={trends} />
 
           {volumeByRegion && <MuscleVolumeCard data={volumeByRegion} />}
-          <RecentSessionsCard sessions={sessions} />
+          <RecentSessionsCard sessions={sessions} onSessionChanged={refreshSessions} />
 
           {workouts.length > 0 && (
             <section className="bg-white border border-gray-200 rounded-2xl p-5">

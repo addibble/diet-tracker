@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import ScrollablePage from '../components/ScrollablePage'
+import WorkoutSetEditor from '../components/WorkoutSetEditor'
 import {
   getTrainingModelSummary,
   getRecoveryCheckIns,
@@ -9,6 +10,9 @@ import {
   getExerciseHistory,
   getPlannerToday,
   savePlan,
+  getActivePlan,
+  startPlan,
+  completePlan,
   type TrainingModelSummary,
   type TrainingModelTissueSummary,
   type TrainingModelExerciseInsight,
@@ -18,6 +22,7 @@ import {
   type WkExerciseHistory,
   type PlannerTodayResponse,
   type PlannerExercisePrescription,
+  type SavedPlan,
 } from '../api'
 
 // ── Helpers ──
@@ -526,6 +531,121 @@ const schemeColor = (scheme: string) =>
   scheme === 'volume' ? 'bg-blue-100 text-blue-700' :
   'bg-green-100 text-green-700'
 
+function ActivePlanCard({ plan, onRefresh }: { plan: SavedPlan; onRefresh: () => void }) {
+  const [starting, setStarting] = useState(false)
+  const [completing, setCompleting] = useState(false)
+
+  const handleStart = async () => {
+    setStarting(true)
+    try {
+      await startPlan()
+      onRefresh()
+    } finally {
+      setStarting(false)
+    }
+  }
+
+  const handleComplete = async () => {
+    setCompleting(true)
+    try {
+      await completePlan()
+      onRefresh()
+    } finally {
+      setCompleting(false)
+    }
+  }
+
+  const isStarted = plan.status !== 'planned'
+  const isCompleted = plan.status === 'completed'
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-2xl p-5">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-semibold text-gray-900">Today's Workout</h3>
+          <span className="text-xs px-2 py-0.5 rounded-lg bg-gray-900 text-white font-medium">
+            {plan.day_label}
+          </span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+            isCompleted ? 'bg-emerald-50 text-emerald-700' :
+            isStarted ? 'bg-blue-50 text-blue-700' :
+            'bg-gray-100 text-gray-600'
+          }`}>
+            {plan.status}
+          </span>
+        </div>
+        <button
+          onClick={onRefresh}
+          className="text-[10px] text-gray-400 hover:text-gray-600"
+        >
+          refresh
+        </button>
+      </div>
+
+      {plan.target_regions.length > 0 && (
+        <div className="flex flex-wrap gap-1 mb-3">
+          {plan.target_regions.map(r => (
+            <span
+              key={r}
+              className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 font-medium"
+            >
+              {r}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Phase 1: Plan mode (not started) */}
+      {!isStarted && (
+        <>
+          <WorkoutSetEditor
+            mode="plan"
+            planExercises={plan.exercises}
+            onPlanChanged={onRefresh}
+          />
+          <button
+            onClick={handleStart}
+            disabled={starting}
+            className="w-full mt-3 py-2 text-xs font-medium rounded-xl bg-gray-900
+              hover:bg-gray-800 text-white transition-colors disabled:opacity-40"
+          >
+            {starting ? 'Starting…' : 'Start Workout'}
+          </button>
+        </>
+      )}
+
+      {/* Phase 2: Log mode (started, not completed) */}
+      {isStarted && !isCompleted && plan.workout_session_id && (
+        <>
+          <WorkoutSetEditor
+            mode="log"
+            sessionId={plan.workout_session_id}
+            onSessionChanged={onRefresh}
+          />
+          <button
+            onClick={handleComplete}
+            disabled={completing}
+            className="w-full mt-3 py-2 text-xs font-medium rounded-xl bg-emerald-600
+              hover:bg-emerald-700 text-white transition-colors disabled:opacity-40"
+          >
+            {completing ? 'Completing…' : 'Complete Workout'}
+          </button>
+        </>
+      )}
+
+      {/* Phase 3: Completed */}
+      {isCompleted && plan.workout_session_id && (
+        <WorkoutSetEditor
+          mode="log"
+          sessionId={plan.workout_session_id}
+          onSessionChanged={onRefresh}
+          compact
+        />
+      )}
+    </div>
+  )
+}
+
 function PlannerCard({ planner, onRefresh, onSave }: {
   planner: PlannerTodayResponse;
   onRefresh?: () => void;
@@ -742,6 +862,9 @@ export default function TrainingPage() {
   const [planner, setPlanner] = useState<PlannerTodayResponse | null>(null)
   const [plannerLoading, setPlannerLoading] = useState(true)
 
+  // Active (saved) plan state
+  const [activePlan, setActivePlan] = useState<SavedPlan | null>(null)
+
   // Exercise progress
   const [allExercises, setAllExercises] = useState<WkExercise[]>([])
 
@@ -793,6 +916,14 @@ export default function TrainingPage() {
     }).catch(() => { setPlanner(null); setPlannerLoading(false) })
   }, [])
 
+  const refreshActivePlan = useCallback(() => {
+    getActivePlan().then(setActivePlan)
+  }, [])
+
+  useEffect(() => {
+    refreshActivePlan()
+  }, [refreshActivePlan])
+
   const refreshCheckIns = useCallback(() => {
     getRecoveryCheckIns(today()).then(setCheckIns).catch(() => {})
     // Re-plan after check-in since readiness may have changed
@@ -802,8 +933,9 @@ export default function TrainingPage() {
   const handleSavePlan = useCallback((dayLabel: string, regions: string[], exercises: PlannerExercisePrescription[]) => {
     savePlan(dayLabel, regions, exercises).then(() => {
       refreshPlanner()
+      refreshActivePlan()
     }).catch(() => {})
-  }, [refreshPlanner])
+  }, [refreshPlanner, refreshActivePlan])
 
   return (
     <ScrollablePage>
@@ -833,8 +965,19 @@ export default function TrainingPage() {
               )}
               <ExerciseProgressCard exercises={allExercises} />
             </div>
-            {/* Right: Today's Plan */}
-            {plannerLoading ? <CardSkeleton lines={8} /> : planner && <PlannerCard planner={planner} onRefresh={refreshPlanner} onSave={handleSavePlan} />}
+            {/* Right: Today's Plan / Active Workout */}
+            {activePlan
+              ? <ActivePlanCard plan={activePlan} onRefresh={refreshActivePlan} />
+              : plannerLoading
+                ? <CardSkeleton lines={8} />
+                : planner && (
+                  <PlannerCard
+                    planner={planner}
+                    onRefresh={refreshPlanner}
+                    onSave={handleSavePlan}
+                  />
+                )
+            }
           </div>
         )}
 

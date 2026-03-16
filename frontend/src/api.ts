@@ -761,6 +761,54 @@ export const getWorkoutSessions = (startDate?: string, endDate?: string, limit?:
 export const getWorkoutSession = (id: number) =>
   request<WkSession>(`/workout-sessions/${id}`);
 
+// Individual workout set CRUD
+export const updateWorkoutSet = (setId: number, data: {
+  reps?: number | null;
+  weight?: number | null;
+  duration_secs?: number | null;
+  distance_steps?: number | null;
+  rpe?: number | null;
+  rep_completion?: string | null;
+  notes?: string | null;
+}) =>
+  request<WkSetDetail>(`/workout-sets/${setId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+
+export const addWorkoutSet = (sessionId: number, data: {
+  exercise_id: number;
+  set_order?: number;
+  reps?: number | null;
+  weight?: number | null;
+  duration_secs?: number | null;
+  distance_steps?: number | null;
+  rpe?: number | null;
+  rep_completion?: string | null;
+  notes?: string | null;
+}) =>
+  request<WkSetDetail>(`/workout-sessions/${sessionId}/sets`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+
+export const deleteWorkoutSet = (setId: number) =>
+  request<void>(`/workout-sets/${setId}`, { method: 'DELETE' });
+
+// ProgramDayExercise target editing
+export const updateProgramDayExercise = (pdeId: number, data: {
+  target_sets?: number;
+  target_rep_min?: number | null;
+  target_rep_max?: number | null;
+  target_weight?: number | null;
+  rep_scheme?: string | null;
+  sort_order?: number;
+}) =>
+  request<SavedPlanExercise>(`/program-day-exercises/${pdeId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+
 export const getTissueReadiness = () =>
   request<WkTissueReadiness[]>('/tissue-readiness');
 
@@ -887,15 +935,17 @@ export interface SavedPlan {
 }
 
 export interface SavedPlanExercise {
+  pde_id: number;
   exercise_id: number;
   exercise_name: string;
   equipment: string | null;
+  load_input_mode: string;
   target_sets: number;
   target_rep_min: number | null;
   target_rep_max: number | null;
   rep_scheme: string | null;
   target_weight: number | null;
-  completed_sets: { reps: number | null; weight: number | null; rpe: number | null }[];
+  completed_sets: { id: number; set_order: number; reps: number | null; weight: number | null; rpe: number | null; rep_completion: string | null; notes: string | null }[];
   sets_done: number;
   done: boolean;
 }
@@ -938,6 +988,7 @@ export interface ChatResponse {
   edit_meal_id: number | null;
   data_changed: boolean;
   rep_check: RepCheckExercise[] | null;
+  workout_session_id: number | null;
 }
 
 export interface ChatModelOption {

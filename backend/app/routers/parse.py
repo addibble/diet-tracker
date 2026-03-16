@@ -291,6 +291,8 @@ class _ToolState:
         # True if the LLM already created a meal log via the set_meal_logs tool.
         # Used to suppress the <CONFIRM/> auto-save so we don't double-write.
         self.meal_saved_via_tools = False
+        # Captures the workout session ID when set_workout_sessions creates/updates one.
+        self.workout_session_id: int | None = None
 
 
 def _make_tool_executor(
@@ -313,6 +315,13 @@ def _make_tool_executor(
         # Any setter marks data as changed
         if name.startswith("set_"):
             state.data_changed = True
+
+        # Capture workout session ID from workout_sessions setter
+        if name == "set_workout_sessions":
+            for match in result.get("matches", []):
+                if isinstance(match, dict) and "id" in match:
+                    state.workout_session_id = match["id"]
+                    break
 
         # Track meal creation via tools to prevent duplicate saves
         if name == "set_meal_logs":
@@ -730,4 +739,5 @@ async def chat_meal_endpoint(
         "edit_meal_id": edit_meal_id,
         "data_changed": tool_state.data_changed,
         "rep_check": rep_check,
+        "workout_session_id": tool_state.workout_session_id,
     }

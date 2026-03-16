@@ -423,9 +423,13 @@ def _serialize_saved_plan(session: Session, planned: PlannedSession) -> dict:
 
         completed_sets = logged_sets.get(pde.exercise_id, [])
         exercises.append({
+            "pde_id": pde.id,
             "exercise_id": pde.exercise_id,
             "exercise_name": exercise.name if exercise else "Unknown",
             "equipment": exercise.equipment if exercise else None,
+            "load_input_mode": (
+                exercise.load_input_mode if exercise else "external_weight"
+            ),
             "target_sets": pde.target_sets,
             "target_rep_min": pde.target_rep_min,
             "target_rep_max": pde.target_rep_max,

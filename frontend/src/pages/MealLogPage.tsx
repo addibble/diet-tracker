@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import WorkoutSetEditor from '../components/WorkoutSetEditor'
 import {
   chatMealWithProgress,
   getChatModels,
@@ -191,6 +192,7 @@ interface MessageBubble {
   proposedItems?: ChatProposedItem[]
   savedMeal?: Meal
   editMealId?: number
+  workoutSessionId?: number
 }
 
 function computeItemMacro(item: ChatProposedItem, macro: keyof Macros): number {
@@ -735,6 +737,7 @@ export default function MealLogPage() {
         proposedItems: resp.proposed_items ?? undefined,
         savedMeal: resp.saved_meal ?? undefined,
         editMealId: resp.edit_meal_id ?? undefined,
+        workoutSessionId: resp.workout_session_id ?? undefined,
       }
       setMessages([...newMessages, assistantBubble])
       if (resp.saved_meal) {
@@ -955,6 +958,15 @@ export default function MealLogPage() {
                   />
                 )}
                 {msg.savedMeal && <SavedMealCard meal={msg.savedMeal} isEdit={!!msg.editMealId} />}
+                {msg.workoutSessionId && (
+                  <div className="mt-2">
+                    <WorkoutSetEditor
+                      mode="log"
+                      sessionId={msg.workoutSessionId}
+                      compact
+                    />
+                  </div>
+                )}
               </div>
               {msg.role === 'user' && (
                 <button

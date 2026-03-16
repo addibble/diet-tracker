@@ -22,6 +22,7 @@ from app.routers.tissue_readiness import router as tissue_readiness_router
 from app.routers.tissues import router as tissues_router
 from app.routers.training_model import router as training_model_router
 from app.routers.workout_sessions import router as workout_sessions_router
+from app.routers.workout_sets import router as workout_sets_router
 from app.routers.workouts import router as workouts_router
 
 # Configure parse logger to write to file
@@ -67,6 +68,7 @@ app.include_router(debug_router)
 app.include_router(workouts_router)
 app.include_router(exercises_router)
 app.include_router(workout_sessions_router)
+app.include_router(workout_sets_router)
 app.include_router(tissues_router)
 app.include_router(tissue_readiness_router)
 app.include_router(training_model_router)
