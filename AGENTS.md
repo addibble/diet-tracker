@@ -253,3 +253,59 @@ curl -u logs:$APP_PASSWORD $APP_URL/api/debug/logs?lines=50
 # Only errors
 curl -u logs:$APP_PASSWORD $APP_URL/api/debug/logs?level=ERROR
 ```
+
+### Live Testing with Chrome DevTools MCP
+
+After pushing to `main`, GitHub Actions deploys to the production VPS (~2 minutes). Use Chrome DevTools MCP to verify features on the live app.
+
+**Setup:** Add the Chrome DevTools MCP server to your agent configuration:
+```json
+{
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "npx",
+      "args": ["-y", "chrome-devtools-mcp@latest"]
+    }
+  }
+}
+```
+
+**Testing workflow:**
+
+1. Push to `main` and wait ~2 minutes for deploy
+2. Navigate to the app URL (from `APP_URL` in `.env`)
+3. Confirm the deploy landed by checking the git hash slug in the navbar
+4. Install error listeners before interacting with the page:
+   ```js
+   window.__capturedErrors = [];
+   window.addEventListener('error', (e) => {
+     window.__capturedErrors.push({
+       message: e.message, filename: e.filename,
+       lineno: e.lineno, stack: e.error?.stack
+     });
+   });
+   window.addEventListener('unhandledrejection', (e) => {
+     window.__capturedErrors.push({
+       message: e.reason?.message || String(e.reason),
+       stack: e.reason?.stack
+     });
+   });
+   ```
+5. Log in using the password from `APP_PASSWORD` in `.env` (single password field, submit button)
+6. **Re-install error listeners after login** — the page navigates, clearing listeners
+7. Exercise the feature under test (click buttons, fill forms, etc.)
+8. Check `window.__capturedErrors` for any JS errors
+9. Take screenshots to visually verify UI state
+
+**Tips:**
+- React input fields need the native value setter pattern to trigger state updates:
+  ```js
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype, 'value'
+  ).set;
+  setter.call(input, 'value');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  ```
+- After navigation (login, page switch), error listeners are lost — always reinstall
+- Use `document.querySelectorAll('button')` to discover interactive elements
+- The minified bundle uses short names; match errors to source by searching for property names (e.g., `.rows`, `.items`) in the component code
