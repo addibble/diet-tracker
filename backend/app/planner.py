@@ -14,6 +14,7 @@ from datetime import date, timedelta
 
 from sqlmodel import Session, col, select
 
+from app.exercise_loads import bodyweight_by_date, latest_bodyweight
 from app.models import (
     Exercise,
     ExerciseTissue,
@@ -23,6 +24,7 @@ from app.models import (
     RecoveryCheckIn,
     Tissue,
     TrainingProgram,
+    WeightLog,
     WorkoutSession,
     WorkoutSet,
 )
@@ -889,6 +891,15 @@ def _prescribe_all(
         if cond:
             tissue_condition_by_id[tid] = cond
 
+    # Load current bodyweight for mixed/bodyweight exercise adjustments
+    weight_rows = list(
+        session.exec(select(WeightLog).order_by(col(WeightLog.logged_at).asc())).all()
+    )
+    bw_by_date_map = bodyweight_by_date(
+        [r for r in weight_rows if r.logged_at.date() <= today]
+    )
+    current_bw = latest_bodyweight(bw_by_date_map, today)
+
     results = []
     for ex in exercises:
         exercise_id = ex.get("exercise_id") or ex.get("id")
@@ -952,6 +963,12 @@ def _prescribe_all(
         if current_e1rm > 0:
             intensity = (intensity_range[0] + intensity_range[1]) / 2
             raw_weight = current_e1rm * intensity * min_condition_factor
+            # For mixed exercises the e1RM includes bodyweight, but target_weight
+            # must represent the *external* load only — subtract the bodyweight
+            # component so the suggestion isn't inflated by the user's body mass.
+            if exercise.load_input_mode == "mixed" and current_bw > 0:
+                bw_component = current_bw * (exercise.bodyweight_fraction or 0.0)
+                raw_weight = max(0.0, raw_weight - bw_component)
             if exercise.equipment == "barbell":
                 target_weight = round(raw_weight / 5) * 5
             elif exercise.equipment == "dumbbell":
