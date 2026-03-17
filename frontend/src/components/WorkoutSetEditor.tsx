@@ -27,6 +27,8 @@ export interface WorkoutSetEditorProps {
   onSessionChanged?: () => void
   /** Compact layout (e.g., in chat bubble) */
   compact?: boolean
+  /** Local date string (YYYY-MM-DD) for planner as_of parameter */
+  asOf?: string
 }
 
 interface EditableSet {
@@ -89,6 +91,7 @@ export default function WorkoutSetEditor({
   session: prefetchedSession,
   onSessionChanged,
   compact,
+  asOf,
 }: WorkoutSetEditorProps) {
   if (mode === 'plan') {
     return (
@@ -96,6 +99,7 @@ export default function WorkoutSetEditor({
         exercises={planExercises ?? []}
         onChanged={onPlanChanged}
         compact={compact}
+        asOf={asOf}
       />
     )
   }
@@ -115,10 +119,12 @@ function PlanEditor({
   exercises,
   onChanged,
   compact,
+  asOf,
 }: {
   exercises: SavedPlanExercise[]
   onChanged?: () => void
   compact?: boolean
+  asOf?: string
 }) {
   const [saving, setSaving] = useState<Record<number, boolean>>({})
   const [localExercises, setLocalExercises] = useState(exercises)
@@ -153,13 +159,13 @@ function PlanEditor({
     async (exerciseId: number) => {
       setLocalExercises((prev) => prev.filter((e) => e.exercise_id !== exerciseId))
       try {
-        await removePlanExercise(exerciseId)
+        await removePlanExercise(exerciseId, asOf)
         onChanged?.()
       } catch {
         setLocalExercises(exercises) // rollback
       }
     },
-    [exercises, onChanged],
+    [exercises, onChanged, asOf],
   )
 
   const handleAdd = useCallback(
@@ -171,13 +177,13 @@ function PlanEditor({
           target_sets: 3,
           target_reps: '8-12',
           rep_scheme: 'volume',
-        }])
+        }], asOf)
         onChanged?.()
       } catch {
         // ignore
       }
     },
-    [onChanged],
+    [onChanged, asOf],
   )
 
   const handleDragEnd = useCallback(
@@ -190,13 +196,13 @@ function PlanEditor({
       setDragIdx(null)
       setDragOverIdx(null)
       try {
-        await reorderPlanExercises(reordered.map((e) => e.pde_id))
+        await reorderPlanExercises(reordered.map((e) => e.pde_id), asOf)
         onChanged?.()
       } catch {
         setLocalExercises(exercises) // rollback
       }
     },
-    [localExercises, exercises, onChanged],
+    [localExercises, exercises, onChanged, asOf],
   )
 
   const existingIds = useMemo(

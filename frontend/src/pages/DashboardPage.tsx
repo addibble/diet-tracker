@@ -6,6 +6,7 @@ import {
   getWorkouts,
   getWorkoutSessions,
   getVolumeByRegion,
+  deleteWorkoutSession,
   putTodayWeight,
   MACRO_KEYS,
   MACRO_LABELS,
@@ -568,6 +569,7 @@ function RecentSessionsCard({
 }) {
   const [expandedDates, setExpandedDates] = useState<string[]>([])
   const [editingDates, setEditingDates] = useState<Set<string>>(new Set())
+  const [deleting, setDeleting] = useState<Set<number>>(new Set())
 
   // Group multiple sessions on the same date into one entry
   const byDate = useMemo(() => {
@@ -649,21 +651,52 @@ function RecentSessionsCard({
                   <p className="text-sm font-medium text-gray-800">
                     {new Date(date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
                   </p>
-                  <p className="text-xs text-gray-500">
-                    {exerciseMap.size} exercise{exerciseMap.size !== 1 ? 's' : ''}
-                    {totalVolume > 0 && ` · ${Math.round(totalVolume).toLocaleString()} lbs vol`}
-                    <span
-                      className={
-                        rpeMissingCount > 0 ? 'font-medium text-amber-700' : 'text-emerald-700'
-                      }
-                    >
-                      {` · ${
-                        rpeMissingCount > 0
-                          ? `${rpeMissingCount} RPE missing`
-                          : 'RPE complete'
-                      }`}
-                    </span>
-                  </p>
+                  {exerciseMap.size === 0 ? (
+                    <p className="text-xs text-gray-400">
+                      Empty session{daySessions.length > 1 ? 's' : ''}
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        className="ml-2 text-red-400 hover:text-red-600 cursor-pointer"
+                        onClick={async (e) => {
+                          e.stopPropagation()
+                          for (const ws of daySessions) {
+                            if (ws.sets.length === 0) {
+                              setDeleting((p) => new Set([...p, ws.id]))
+                              try {
+                                await deleteWorkoutSession(ws.id)
+                              } finally {
+                                setDeleting((p) => {
+                                  const n = new Set(p)
+                                  n.delete(ws.id)
+                                  return n
+                                })
+                              }
+                            }
+                          }
+                          onSessionChanged?.()
+                        }}
+                      >
+                        🗑 delete
+                      </span>
+                    </p>
+                  ) : (
+                    <p className="text-xs text-gray-500">
+                      {exerciseMap.size} exercise{exerciseMap.size !== 1 ? 's' : ''}
+                      {totalVolume > 0 && ` · ${Math.round(totalVolume).toLocaleString()} lbs vol`}
+                      <span
+                        className={
+                          rpeMissingCount > 0 ? 'font-medium text-amber-700' : 'text-emerald-700'
+                        }
+                      >
+                        {` · ${
+                          rpeMissingCount > 0
+                            ? `${rpeMissingCount} RPE missing`
+                            : 'RPE complete'
+                        }`}
+                      </span>
+                    </p>
+                  )}
                 </div>
                 <div className="flex gap-0.5">
                   {Array.from(f1Statuses.values()).map((status, i) => (
@@ -693,14 +726,42 @@ function RecentSessionsCard({
                   {editingDates.has(date) ? (
                     <>
                       {daySessions.map((ws) => (
-                        <WorkoutSetEditor
-                          key={ws.id}
-                          mode="log"
-                          sessionId={ws.id}
-                          session={ws}
-                          onSessionChanged={onSessionChanged}
-                          compact
-                        />
+                        <div key={ws.id} className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] text-gray-400">
+                              Session #{ws.id} · {ws.sets.length} set{ws.sets.length !== 1 ? 's' : ''}
+                            </span>
+                            <button
+                              onClick={async () => {
+                                setDeleting((p) => new Set([...p, ws.id]))
+                                try {
+                                  await deleteWorkoutSession(ws.id)
+                                  onSessionChanged?.()
+                                } finally {
+                                  setDeleting((p) => {
+                                    const n = new Set(p)
+                                    n.delete(ws.id)
+                                    return n
+                                  })
+                                }
+                              }}
+                              disabled={deleting.has(ws.id)}
+                              className="text-[10px] text-red-400 hover:text-red-600
+                                disabled:opacity-40"
+                            >
+                              {deleting.has(ws.id) ? 'deleting…' : '🗑 delete session'}
+                            </button>
+                          </div>
+                          {ws.sets.length > 0 && (
+                            <WorkoutSetEditor
+                              mode="log"
+                              sessionId={ws.id}
+                              session={ws}
+                              onSessionChanged={onSessionChanged}
+                              compact
+                            />
+                          )}
+                        </div>
                       ))}
                     </>
                   ) : (
@@ -907,7 +968,7 @@ export default function DashboardPage() {
   useEffect(() => {
     Promise.all([
       getWorkoutSessions(undefined, undefined, 10).catch(() => []),
-      getVolumeByRegion(7).catch(() => null),
+      getVolumeByRegion(7, today()).catch(() => null),
     ]).then(([s, v]) => {
       setSessions(s as WkSession[])
       setVolumeByRegion(v as VolumeByRegion | null)

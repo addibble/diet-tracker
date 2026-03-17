@@ -28,7 +28,13 @@ import {
 
 // ── Helpers ──
 
-const today = () => new Date().toISOString().slice(0, 10)
+function today() {
+  const now = new Date()
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
 
 const riskColor = (r: number) =>
   r >= 75 ? 'text-red-600' : r >= 55 ? 'text-amber-600' : r >= 30 ? 'text-yellow-600' : 'text-emerald-600'
@@ -548,7 +554,7 @@ function ActivePlanCard({
   const handleStart = async () => {
     setStarting(true)
     try {
-      await startPlan()
+      await startPlan(today())
       onRefresh()
     } finally {
       setStarting(false)
@@ -558,7 +564,7 @@ function ActivePlanCard({
   const handleComplete = async () => {
     setCompleting(true)
     try {
-      await completePlan()
+      await completePlan(today())
       onRefresh()
     } finally {
       setCompleting(false)
@@ -568,7 +574,7 @@ function ActivePlanCard({
   const handleCancel = async () => {
     setCancelling(true)
     try {
-      await deletePlan()
+      await deletePlan(today())
       onCancel()
     } finally {
       setCancelling(false)
@@ -625,6 +631,7 @@ function ActivePlanCard({
             mode="plan"
             planExercises={plan.exercises}
             onPlanChanged={onRefresh}
+            asOf={today()}
           />
           <button
             onClick={handleStart}
@@ -910,7 +917,7 @@ export default function TrainingPage() {
   useEffect(() => {
     let cancelled = false
     setModelLoading(true)
-    getTrainingModelSummary(undefined, true).then(data => {
+    getTrainingModelSummary(today(), true).then(data => {
       if (cancelled) return
       setModelSummary(data)
       setModelLoading(false)
@@ -923,7 +930,7 @@ export default function TrainingPage() {
   useEffect(() => {
     let cancelled = false
     setPlannerLoading(true)
-    getPlannerToday().then(data => {
+    getPlannerToday(today()).then(data => {
       if (cancelled) return
       setPlanner(data)
       setPlannerLoading(false)
@@ -933,14 +940,14 @@ export default function TrainingPage() {
 
   const refreshPlanner = useCallback(() => {
     setPlannerLoading(true)
-    getPlannerToday().then(data => {
+    getPlannerToday(today()).then(data => {
       setPlanner(data)
       setPlannerLoading(false)
     }).catch(() => { setPlanner(null); setPlannerLoading(false) })
   }, [])
 
   const refreshActivePlan = useCallback(() => {
-    getActivePlan().then(setActivePlan)
+    getActivePlan(today()).then(setActivePlan)
   }, [])
 
   useEffect(() => {
@@ -954,7 +961,7 @@ export default function TrainingPage() {
   }, [refreshPlanner])
 
   const handleSavePlan = useCallback((dayLabel: string, regions: string[], exercises: PlannerExercisePrescription[]) => {
-    savePlan(dayLabel, regions, exercises).then(() => {
+    savePlan(dayLabel, regions, exercises, today()).then(() => {
       refreshPlanner()
       refreshActivePlan()
     }).catch(() => {})

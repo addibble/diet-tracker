@@ -810,6 +810,9 @@ export const addWorkoutSet = (sessionId: number, data: {
 export const deleteWorkoutSet = (setId: number) =>
   request<void>(`/workout-sets/${setId}`, { method: 'DELETE' });
 
+export const deleteWorkoutSession = (sessionId: number) =>
+  request<void>(`/workout-sessions/${sessionId}`, { method: 'DELETE' });
+
 // ProgramDayExercise target editing
 export const updateProgramDayExercise = (pdeId: number, data: {
   target_sets?: number;
@@ -909,38 +912,52 @@ export const getRegions = () =>
 
 // ── Planner ──
 
-export const getPlannerToday = (asOf?: string) => {
-  const params = asOf ? `?as_of=${asOf}` : '';
-  return request<PlannerTodayResponse>(`/planner/today${params}`);
-};
+// Helper: append ?as_of=... query param when provided
+const plannerQ = (path: string, asOf?: string) =>
+  asOf ? `${path}${path.includes('?') ? '&' : '?'}as_of=${asOf}` : path;
 
-export const savePlan = (dayLabel: string, targetRegions: string[], exercises: PlannerExercisePrescription[]) =>
-  request<SavedPlan>('/planner/save', {
+export const getPlannerToday = (asOf?: string) =>
+  request<PlannerTodayResponse>(plannerQ('/planner/today', asOf));
+
+export const savePlan = (
+  dayLabel: string,
+  targetRegions: string[],
+  exercises: PlannerExercisePrescription[],
+  asOf?: string,
+) =>
+  request<SavedPlan>(plannerQ('/planner/save', asOf), {
     method: 'POST',
-    body: JSON.stringify({ day_label: dayLabel, target_regions: targetRegions, exercises }),
+    body: JSON.stringify({
+      day_label: dayLabel,
+      target_regions: targetRegions,
+      exercises,
+    }),
   });
 
-export const getActivePlan = () =>
-  request<SavedPlan>('/planner/active').catch(() => null);
+export const getActivePlan = (asOf?: string) =>
+  request<SavedPlan>(plannerQ('/planner/active', asOf)).catch(() => null);
 
-export const deletePlan = () =>
-  request<void>('/planner/active', { method: 'DELETE' });
+export const deletePlan = (asOf?: string) =>
+  request<void>(plannerQ('/planner/active', asOf), { method: 'DELETE' });
 
-export const addPlanExercise = (exercises: {
-  exercise_id: number; target_sets?: number; target_reps?: string;
-  target_weight?: number | null; rep_scheme?: string;
-}[]) =>
-  request<SavedPlan>('/planner/active/exercises', {
+export const addPlanExercise = (
+  exercises: {
+    exercise_id: number; target_sets?: number; target_reps?: string;
+    target_weight?: number | null; rep_scheme?: string;
+  }[],
+  asOf?: string,
+) =>
+  request<SavedPlan>(plannerQ('/planner/active/exercises', asOf), {
     method: 'POST', body: JSON.stringify({ exercises }),
   });
 
-export const removePlanExercise = (exerciseId: number) =>
-  request<SavedPlan>(`/planner/active/exercises/${exerciseId}`, {
+export const removePlanExercise = (exerciseId: number, asOf?: string) =>
+  request<SavedPlan>(plannerQ(`/planner/active/exercises/${exerciseId}`, asOf), {
     method: 'DELETE',
   });
 
-export const reorderPlanExercises = (pdeIds: number[]) =>
-  request<SavedPlan>('/planner/active/reorder', {
+export const reorderPlanExercises = (pdeIds: number[], asOf?: string) =>
+  request<SavedPlan>(plannerQ('/planner/active/reorder', asOf), {
     method: 'PATCH', body: JSON.stringify({ pde_ids: pdeIds }),
   });
 
@@ -951,14 +968,14 @@ export interface VolumeByRegion {
   totals: Record<string, number>;
 }
 
-export const getVolumeByRegion = (days = 7) =>
-  request<VolumeByRegion>(`/training-model/volume-by-region?days=${days}`);
+export const getVolumeByRegion = (days = 7, asOf?: string) =>
+  request<VolumeByRegion>(plannerQ(`/training-model/volume-by-region?days=${days}`, asOf));
 
-export const startPlan = () =>
-  request<{ workout_session_id: number }>('/planner/start', { method: 'POST' });
+export const startPlan = (asOf?: string) =>
+  request<{ workout_session_id: number }>(plannerQ('/planner/start', asOf), { method: 'POST' });
 
-export const completePlan = () =>
-  request<{ id: number; status: string }>('/planner/complete', { method: 'POST' });
+export const completePlan = (asOf?: string) =>
+  request<{ id: number; status: string }>(plannerQ('/planner/complete', asOf), { method: 'POST' });
 
 export interface SavedPlan {
   id: number;
