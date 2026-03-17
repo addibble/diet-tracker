@@ -13,6 +13,7 @@ import {
   getActivePlan,
   startPlan,
   completePlan,
+  deletePlan,
   type TrainingModelSummary,
   type TrainingModelTissueSummary,
   type TrainingModelExerciseInsight,
@@ -531,9 +532,18 @@ const schemeColor = (scheme: string) =>
   scheme === 'volume' ? 'bg-blue-100 text-blue-700' :
   'bg-green-100 text-green-700'
 
-function ActivePlanCard({ plan, onRefresh }: { plan: SavedPlan; onRefresh: () => void }) {
+function ActivePlanCard({
+  plan,
+  onRefresh,
+  onCancel,
+}: {
+  plan: SavedPlan
+  onRefresh: () => void
+  onCancel: () => void
+}) {
   const [starting, setStarting] = useState(false)
   const [completing, setCompleting] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
 
   const handleStart = async () => {
     setStarting(true)
@@ -552,6 +562,16 @@ function ActivePlanCard({ plan, onRefresh }: { plan: SavedPlan; onRefresh: () =>
       onRefresh()
     } finally {
       setCompleting(false)
+    }
+  }
+
+  const handleCancel = async () => {
+    setCancelling(true)
+    try {
+      await deletePlan()
+      onCancel()
+    } finally {
+      setCancelling(false)
     }
   }
 
@@ -574,12 +594,15 @@ function ActivePlanCard({ plan, onRefresh }: { plan: SavedPlan; onRefresh: () =>
             {plan.status}
           </span>
         </div>
-        <button
-          onClick={onRefresh}
-          className="text-[10px] text-gray-400 hover:text-gray-600"
-        >
-          refresh
-        </button>
+        {!isStarted && !isCompleted && (
+          <button
+            onClick={handleCancel}
+            disabled={cancelling}
+            className="text-[10px] text-red-400 hover:text-red-600 disabled:opacity-50"
+          >
+            {cancelling ? 'cancelling…' : 'cancel'}
+          </button>
+        )}
       </div>
 
       {plan.target_regions.length > 0 && (
@@ -605,7 +628,7 @@ function ActivePlanCard({ plan, onRefresh }: { plan: SavedPlan; onRefresh: () =>
           />
           <button
             onClick={handleStart}
-            disabled={starting}
+            disabled={starting || plan.exercises.length === 0}
             className="w-full mt-3 py-2 text-xs font-medium rounded-xl bg-gray-900
               hover:bg-gray-800 text-white transition-colors disabled:opacity-40"
           >
@@ -967,7 +990,14 @@ export default function TrainingPage() {
             </div>
             {/* Right: Today's Plan / Active Workout */}
             {activePlan
-              ? <ActivePlanCard plan={activePlan} onRefresh={refreshActivePlan} />
+              ? <ActivePlanCard
+                  plan={activePlan}
+                  onRefresh={refreshActivePlan}
+                  onCancel={() => {
+                    setActivePlan(null)
+                    refreshPlanner()
+                  }}
+                />
               : plannerLoading
                 ? <CardSkeleton lines={8} />
                 : planner && (

@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  addPlanExercise,
   addWorkoutSet,
   deleteWorkoutSet,
   getExercises,
   getWorkoutSession,
+  removePlanExercise,
+  reorderPlanExercises,
   updateProgramDayExercise,
   updateWorkoutSet,
   type SavedPlanExercise,
@@ -118,6 +121,16 @@ function PlanEditor({
   compact?: boolean
 }) {
   const [saving, setSaving] = useState<Record<number, boolean>>({})
+  const [localExercises, setLocalExercises] = useState(exercises)
+  const [showPicker, setShowPicker] = useState(false)
+  const [allExercises, setAllExercises] = useState<WkExercise[]>([])
+  const [dragIdx, setDragIdx] = useState<number | null>(null)
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null)
+
+  useEffect(() => { setLocalExercises(exercises) }, [exercises])
+  useEffect(() => {
+    getExercises().then(setAllExercises).catch(() => {})
+  }, [])
 
   const handleUpdate = useCallback(
     async (pdeId: number, field: string, value: number | string | null) => {
@@ -134,22 +147,122 @@ function PlanEditor({
     [onChanged],
   )
 
-  const debouncedUpdate = useDebouncedCallback(handleUpdate, 500)
+  const debouncedUpdate = useDebouncedCallback(handleUpdate, 1000)
 
-  if (exercises.length === 0) {
-    return <p className="text-xs text-gray-400 italic">No exercises in plan</p>
+  const handleRemove = useCallback(
+    async (exerciseId: number) => {
+      setLocalExercises((prev) => prev.filter((e) => e.exercise_id !== exerciseId))
+      try {
+        await removePlanExercise(exerciseId)
+        onChanged?.()
+      } catch {
+        setLocalExercises(exercises) // rollback
+      }
+    },
+    [exercises, onChanged],
+  )
+
+  const handleAdd = useCallback(
+    async (ex: WkExercise) => {
+      setShowPicker(false)
+      try {
+        await addPlanExercise([{
+          exercise_id: ex.id,
+          target_sets: 3,
+          target_reps: '8-12',
+          rep_scheme: 'volume',
+        }])
+        onChanged?.()
+      } catch {
+        // ignore
+      }
+    },
+    [onChanged],
+  )
+
+  const handleDragEnd = useCallback(
+    async (fromIdx: number, toIdx: number) => {
+      if (fromIdx === toIdx) return
+      const reordered = [...localExercises]
+      const [moved] = reordered.splice(fromIdx, 1)
+      reordered.splice(toIdx, 0, moved)
+      setLocalExercises(reordered)
+      setDragIdx(null)
+      setDragOverIdx(null)
+      try {
+        await reorderPlanExercises(reordered.map((e) => e.pde_id))
+        onChanged?.()
+      } catch {
+        setLocalExercises(exercises) // rollback
+      }
+    },
+    [localExercises, exercises, onChanged],
+  )
+
+  const existingIds = useMemo(
+    () => new Set(localExercises.map((e) => e.exercise_id)),
+    [localExercises],
+  )
+
+  if (localExercises.length === 0 && !showPicker) {
+    return (
+      <div className="space-y-2">
+        <p className="text-xs text-gray-400 italic">No exercises in plan</p>
+        <button
+          onClick={() => setShowPicker(true)}
+          className="w-full py-1.5 text-xs text-gray-500 hover:text-gray-700
+                     border border-dashed border-gray-300 rounded-lg
+                     hover:border-gray-400 transition-colors"
+        >
+          + Add Exercise
+        </button>
+      </div>
+    )
   }
 
   return (
     <div className={`space-y-2 ${compact ? 'text-xs' : 'text-sm'}`}>
-      {exercises.map((ex) => (
-        <PlanExerciseRow
+      {localExercises.map((ex, i) => (
+        <div
           key={ex.pde_id}
-          ex={ex}
-          saving={saving[ex.pde_id]}
-          onUpdate={(field, value) => debouncedUpdate(ex.pde_id, field, value)}
-        />
+          draggable
+          onDragStart={() => setDragIdx(i)}
+          onDragOver={(e) => { e.preventDefault(); setDragOverIdx(i) }}
+          onDrop={() => { if (dragIdx !== null) handleDragEnd(dragIdx, i) }}
+          onDragEnd={() => { setDragIdx(null); setDragOverIdx(null) }}
+          className={`transition-all ${
+            dragOverIdx === i && dragIdx !== null && dragIdx !== i
+              ? 'border-t-2 border-blue-400'
+              : ''
+          } ${dragIdx === i ? 'opacity-40' : ''}`}
+        >
+          <PlanExerciseRow
+            ex={ex}
+            saving={saving[ex.pde_id]}
+            onUpdate={(field, value) => debouncedUpdate(ex.pde_id, field, value)}
+            onRemove={() => handleRemove(ex.exercise_id)}
+          />
+        </div>
       ))}
+
+      {/* Add Exercise */}
+      {showPicker ? (
+        <ExercisePicker
+          exercises={allExercises}
+          existingIds={existingIds}
+          onSelect={handleAdd}
+          onCancel={() => setShowPicker(false)}
+        />
+      ) : (
+        <button
+          onClick={() => setShowPicker(true)}
+          className="w-full py-1.5 text-xs text-gray-500 hover:text-gray-700
+                     border border-dashed border-gray-300 rounded-lg
+                     hover:border-gray-400 transition-colors"
+        >
+          + Add Exercise
+        </button>
+      )}
     </div>
   )
 }
@@ -158,15 +271,19 @@ function PlanExerciseRow({
   ex,
   saving,
   onUpdate,
+  onRemove,
 }: {
   ex: SavedPlanExercise
   saving?: boolean
   onUpdate: (field: string, value: number | string | null) => void
+  onRemove: () => void
 }) {
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-2.5">
       <div className="flex items-center gap-2 mb-1.5">
-        <span className="text-sm font-medium text-gray-900 truncate">
+        <span className="cursor-grab text-gray-300 hover:text-gray-500 text-xs select-none"
+          title="Drag to reorder">⠿</span>
+        <span className="text-sm font-medium text-gray-900 truncate flex-1">
           {ex.exercise_name}
         </span>
         {ex.equipment && (
@@ -177,6 +294,12 @@ function PlanExerciseRow({
         {saving && (
           <span className="text-[10px] text-gray-400">saving…</span>
         )}
+        <button
+          onClick={onRemove}
+          className="text-gray-300 hover:text-red-500 text-sm
+                     leading-none px-0.5 transition-colors"
+          title="Remove exercise"
+        >🗑</button>
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <label className="flex items-center gap-1 text-xs text-gray-500">
@@ -325,7 +448,7 @@ function LogEditor({
     [onChanged, refreshSession],
   )
 
-  const debouncedUpdate = useDebouncedCallback(handleUpdateSet, 400)
+  const debouncedUpdate = useDebouncedCallback(handleUpdateSet, 1000)
 
   const handleAddSet = useCallback(
     async (exerciseId: number, templateSet?: EditableSet) => {

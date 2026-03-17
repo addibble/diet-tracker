@@ -923,6 +923,27 @@ export const savePlan = (dayLabel: string, targetRegions: string[], exercises: P
 export const getActivePlan = () =>
   request<SavedPlan>('/planner/active').catch(() => null);
 
+export const deletePlan = () =>
+  request<void>('/planner/active', { method: 'DELETE' });
+
+export const addPlanExercise = (exercises: {
+  exercise_id: number; target_sets?: number; target_reps?: string;
+  target_weight?: number | null; rep_scheme?: string;
+}[]) =>
+  request<SavedPlan>('/planner/active/exercises', {
+    method: 'POST', body: JSON.stringify({ exercises }),
+  });
+
+export const removePlanExercise = (exerciseId: number) =>
+  request<SavedPlan>(`/planner/active/exercises/${exerciseId}`, {
+    method: 'DELETE',
+  });
+
+export const reorderPlanExercises = (pdeIds: number[]) =>
+  request<SavedPlan>('/planner/active/reorder', {
+    method: 'PATCH', body: JSON.stringify({ pde_ids: pdeIds }),
+  });
+
 export interface VolumeByRegion {
   dates: string[];
   regions: string[];

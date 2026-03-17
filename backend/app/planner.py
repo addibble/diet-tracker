@@ -344,7 +344,7 @@ def get_saved_plan(session: Session, plan_date: date) -> dict | None:
 
 
 def start_workout(session: Session, planned_session_id: int) -> dict:
-    """Create a WorkoutSession and link it to the PlannedSession."""
+    """Create a WorkoutSession, pre-fill sets from plan, and link to PlannedSession."""
     planned = session.get(PlannedSession, planned_session_id)
     if not planned:
         raise ValueError("Planned session not found")
@@ -362,6 +362,36 @@ def start_workout(session: Session, planned_session_id: int) -> dict:
     planned.workout_session_id = ws.id
     planned.status = "in_progress"
     session.add(planned)
+
+    # Pre-create sets from plan targets
+    day = session.get(ProgramDay, planned.program_day_id)
+    if day:
+        pdes = session.exec(
+            select(ProgramDayExercise)
+            .where(ProgramDayExercise.program_day_id == day.id)
+            .order_by(ProgramDayExercise.sort_order)
+        ).all()
+        set_order = 0
+        for pde in pdes:
+            meta = {}
+            if pde.notes:
+                try:
+                    meta = json.loads(pde.notes)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            target_weight = meta.get("target_weight")
+            target_reps = pde.target_rep_max or pde.target_rep_min
+            for _ in range(pde.target_sets):
+                s = WorkoutSet(
+                    session_id=ws.id,
+                    exercise_id=pde.exercise_id,
+                    set_order=set_order,
+                    weight=target_weight,
+                    reps=target_reps,
+                )
+                session.add(s)
+                set_order += 1
+
     session.commit()
 
     return {"workout_session_id": ws.id, "already_started": False}
@@ -378,6 +408,56 @@ def complete_workout(session: Session, planned_session_id: int) -> dict:
     session.commit()
 
     return {"id": planned.id, "status": "completed"}
+
+
+def delete_plan(session: Session, plan_date: date) -> None:
+    """Delete a planned session and its ProgramDay + exercises."""
+    planned = session.exec(
+        select(PlannedSession)
+        .where(PlannedSession.date == plan_date)
+        .order_by(col(PlannedSession.id).desc())
+        .limit(1)
+    ).first()
+    if not planned:
+        raise ValueError(f"No saved plan for {plan_date}")
+
+    day = session.get(ProgramDay, planned.program_day_id)
+    if day:
+        pdes = session.exec(
+            select(ProgramDayExercise)
+            .where(ProgramDayExercise.program_day_id == day.id)
+        ).all()
+        for pde in pdes:
+            session.delete(pde)
+        session.delete(day)
+
+    session.delete(planned)
+    session.commit()
+
+
+def reorder_plan_exercises(
+    session: Session,
+    plan_date: date,
+    pde_ids: list[int],
+) -> dict:
+    """Reorder exercises in a saved plan by setting sort_order."""
+    planned = session.exec(
+        select(PlannedSession)
+        .where(PlannedSession.date == plan_date)
+        .order_by(col(PlannedSession.id).desc())
+        .limit(1)
+    ).first()
+    if not planned:
+        raise ValueError(f"No saved plan for {plan_date}")
+
+    for i, pde_id in enumerate(pde_ids):
+        pde = session.get(ProgramDayExercise, pde_id)
+        if pde:
+            pde.sort_order = i
+            session.add(pde)
+
+    session.commit()
+    return _serialize_saved_plan(session, planned)
 
 
 def _serialize_saved_plan(session: Session, planned: PlannedSession) -> dict:

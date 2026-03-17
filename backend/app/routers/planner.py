@@ -7,8 +7,12 @@ from sqlmodel import Session
 from app.auth import get_current_user
 from app.database import get_session
 from app.planner import (
+    add_exercises_to_plan,
     complete_workout,
+    delete_plan,
     get_saved_plan,
+    remove_exercises_from_plan,
+    reorder_plan_exercises,
     save_plan,
     start_workout,
     suggest_today,
@@ -80,3 +84,66 @@ def complete_today(
     if not plan:
         raise HTTPException(status_code=404, detail="No saved plan for this date")
     return complete_workout(session, plan["id"])
+
+
+@router.delete("/active", status_code=204)
+def delete_active(
+    as_of: datetime.date | None = Query(default=None),
+    session: Session = Depends(get_session),
+    _user: str = Depends(get_current_user),
+):
+    plan_date = as_of or datetime.date.today()
+    try:
+        delete_plan(session, plan_date)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+class AddExercisesRequest(BaseModel):
+    exercises: list[dict]
+
+
+@router.post("/active/exercises", status_code=200)
+def add_exercises(
+    data: AddExercisesRequest,
+    as_of: datetime.date | None = Query(default=None),
+    session: Session = Depends(get_session),
+    _user: str = Depends(get_current_user),
+):
+    plan_date = as_of or datetime.date.today()
+    try:
+        return add_exercises_to_plan(session, plan_date, data.exercises)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("/active/exercises/{exercise_id}", status_code=200)
+def remove_exercise(
+    exercise_id: int,
+    as_of: datetime.date | None = Query(default=None),
+    session: Session = Depends(get_session),
+    _user: str = Depends(get_current_user),
+):
+    plan_date = as_of or datetime.date.today()
+    try:
+        return remove_exercises_from_plan(session, plan_date, [exercise_id])
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+class ReorderRequest(BaseModel):
+    pde_ids: list[int]
+
+
+@router.patch("/active/reorder", status_code=200)
+def reorder_exercises(
+    data: ReorderRequest,
+    as_of: datetime.date | None = Query(default=None),
+    session: Session = Depends(get_session),
+    _user: str = Depends(get_current_user),
+):
+    plan_date = as_of or datetime.date.today()
+    try:
+        return reorder_plan_exercises(session, plan_date, data.pde_ids)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
