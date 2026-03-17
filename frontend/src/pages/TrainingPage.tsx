@@ -542,10 +542,12 @@ function ActivePlanCard({
   plan,
   onRefresh,
   onCancel,
+  onComplete,
 }: {
   plan: SavedPlan
   onRefresh: () => void
   onCancel: () => void
+  onComplete: () => void
 }) {
   const [starting, setStarting] = useState(false)
   const [completing, setCompleting] = useState(false)
@@ -565,7 +567,7 @@ function ActivePlanCard({
     setCompleting(true)
     try {
       await completePlan(today())
-      onRefresh()
+      onComplete()
     } finally {
       setCompleting(false)
     }
@@ -1001,6 +1003,10 @@ export default function TrainingPage() {
                   plan={activePlan}
                   onRefresh={refreshActivePlan}
                   onCancel={() => {
+                    setActivePlan(null)
+                    refreshPlanner()
+                  }}
+                  onComplete={() => {
                     setActivePlan(null)
                     refreshPlanner()
                   }}
