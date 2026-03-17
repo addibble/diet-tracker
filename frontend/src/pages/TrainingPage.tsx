@@ -594,13 +594,13 @@ function ActivePlanCard({
             {plan.status}
           </span>
         </div>
-        {!isStarted && !isCompleted && (
+        {!isCompleted && (
           <button
             onClick={handleCancel}
             disabled={cancelling}
             className="text-[10px] text-red-400 hover:text-red-600 disabled:opacity-50"
           >
-            {cancelling ? 'cancelling…' : 'cancel'}
+            {cancelling ? 'cancelling…' : 'cancel workout'}
           </button>
         )}
       </div>

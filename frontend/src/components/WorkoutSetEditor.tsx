@@ -448,7 +448,24 @@ function LogEditor({
     [onChanged, refreshSession],
   )
 
-  const debouncedUpdate = useDebouncedCallback(handleUpdateSet, 1000)
+  const handleDeleteExercise = useCallback(
+    async (exerciseId: number) => {
+      if (!session) return
+      const setsToDelete = session.sets.filter((s) => s.exercise_id === exerciseId)
+      // Optimistic remove
+      setSession((prev) => {
+        if (!prev) return prev
+        return { ...prev, sets: prev.sets.filter((s) => s.exercise_id !== exerciseId) }
+      })
+      try {
+        for (const s of setsToDelete) await deleteWorkoutSet(s.id)
+        onChanged?.()
+      } catch {
+        refreshSession()
+      }
+    },
+    [session, onChanged, refreshSession],
+  )
 
   const handleAddSet = useCallback(
     async (exerciseId: number, templateSet?: EditableSet) => {
@@ -526,9 +543,10 @@ function LogEditor({
           key={g.exercise_id}
           group={g}
           compact={compact}
-          onUpdateSet={debouncedUpdate}
+          onUpdateSet={handleUpdateSet}
           onAddSet={handleAddSet}
           onDeleteSet={handleDeleteSet}
+          onDeleteExercise={handleDeleteExercise}
         />
       ))}
 
@@ -560,12 +578,14 @@ function LogExerciseGroup({
   onUpdateSet,
   onAddSet,
   onDeleteSet,
+  onDeleteExercise,
 }: {
   group: ExerciseGroup
   compact?: boolean
   onUpdateSet: (setId: number, field: string, value: number | string | null) => void
   onAddSet: (exerciseId: number, templateSet?: EditableSet) => void
   onDeleteSet: (setId: number) => void
+  onDeleteExercise: (exerciseId: number) => void
 }) {
   const mode = group.load_input_mode
 
@@ -590,11 +610,19 @@ function LogExerciseGroup({
             </span>
           )}
         </div>
-        {targetRef && (
-          <span className="text-[10px] text-gray-400 shrink-0 ml-2">
-            Target: {targetRef}
-          </span>
-        )}
+        <div className="flex items-center gap-2 shrink-0">
+          {targetRef && (
+            <span className="text-[10px] text-gray-400">
+              Target: {targetRef}
+            </span>
+          )}
+          <button
+            onClick={() => onDeleteExercise(group.exercise_id)}
+            className="text-gray-300 hover:text-red-500 text-sm leading-none
+                       px-0.5 transition-colors"
+            title="Remove exercise"
+          >🗑</button>
+        </div>
       </div>
 
       {/* Column headers */}
@@ -857,21 +885,20 @@ function NumberInput({
   const [lastSynced, setLastSynced] = useState(value)
 
   // Sync from parent when the prop value changes externally.
-  // Using functional state comparisons to avoid ref-in-render.
   if (value !== lastSynced) {
     setLastSynced(value)
     setLocal(value != null ? String(value) : '')
   }
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const raw = e.target.value
-    setLocal(raw)
-    if (raw === '') {
-      setLastSynced(null)
-      onChange(null)
+  const commit = () => {
+    if (local === '') {
+      if (lastSynced !== null) {
+        setLastSynced(null)
+        onChange(null)
+      }
     } else {
-      const n = parseFloat(raw)
-      if (!isNaN(n)) {
+      const n = parseFloat(local)
+      if (!isNaN(n) && n !== lastSynced) {
         setLastSynced(n)
         onChange(n)
       }
@@ -882,7 +909,9 @@ function NumberInput({
     <input
       type="number"
       value={local}
-      onChange={handleChange}
+      onChange={(e) => setLocal(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === 'Enter') { commit(); (e.target as HTMLInputElement).blur() } }}
       step={step}
       min={min}
       max={max}
