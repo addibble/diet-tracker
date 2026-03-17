@@ -634,9 +634,9 @@ function LogExerciseGroup({
       {/* Column headers */}
       <div className="px-2.5 pt-1 pb-0.5 flex items-center gap-1 text-[10px] text-gray-400 uppercase tracking-wider">
         <span className="w-6 text-center">#</span>
-        {(mode === 'external_weight' || mode === 'bodyweight') && (
+        {(mode === 'external_weight' || mode === 'bodyweight' || mode === 'mixed') && (
           <>
-            {mode === 'external_weight' && (
+            {(mode === 'external_weight' || mode === 'mixed') && (
               <span className="w-16 text-center">Weight</span>
             )}
             <span className="w-12 text-center">Reps</span>
@@ -704,9 +704,9 @@ function SetRow({
         {index}
       </span>
 
-      {(mode === 'external_weight' || mode === 'bodyweight') && (
+      {(mode === 'external_weight' || mode === 'bodyweight' || mode === 'mixed') && (
         <>
-          {mode === 'external_weight' && (
+          {(mode === 'external_weight' || mode === 'mixed') && (
             <NumberInput
               value={set.weight}
               step={2.5}
