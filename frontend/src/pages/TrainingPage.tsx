@@ -949,7 +949,10 @@ export default function TrainingPage() {
   }, [])
 
   const refreshActivePlan = useCallback(() => {
-    getActivePlan(today()).then(setActivePlan)
+    getActivePlan(today()).then(plan => {
+      // Don't show completed plans — revert to planner for next session
+      setActivePlan(plan?.status === 'completed' ? null : plan)
+    })
   }, [])
 
   useEffect(() => {
