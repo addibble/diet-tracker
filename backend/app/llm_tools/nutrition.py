@@ -181,6 +181,104 @@ def handle_get_foods(args: dict, session: Session) -> dict:
     )
 
 
+# =====================================================================
+#  Combined foods + recipes getter
+# =====================================================================
+
+GET_FOODS_AND_RECIPES_DEF = {
+    "type": "function",
+    "function": {
+        "name": "get_foods_and_recipes",
+        "description": (
+            "Search for foods and recipes by name. Returns both food "
+            "and recipe records with a 'type' field indicating which. "
+            "Use this to find items before logging meals."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "filters": {
+                    "type": "object",
+                    "description": (
+                        "Filter fields. Operators per field: "
+                        "id({eq,in}), name({eq,fuzzy,contains})."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 25,
+                },
+            },
+        },
+    },
+}
+
+
+def handle_get_foods_and_recipes(
+    args: dict, session: Session
+) -> dict:
+    filters = args.get("filters")
+    limit = args.get("limit", 25)
+
+    # Query foods
+    food_stmt = select(Food)
+    food_stmt, food_fuzzy = apply_filters(
+        food_stmt, Food, filters, fuzzy_fields=["name", "brand"]
+    )
+    food_stmt = food_stmt.limit(limit)
+    foods = list(session.exec(food_stmt).all())
+
+    food_match_info: list[dict] = []
+    if food_fuzzy:
+        foods, food_match_info = apply_fuzzy_post_filter(
+            foods, food_fuzzy
+        )
+
+    # Query recipes
+    recipe_stmt = select(Recipe)
+    recipe_stmt, recipe_fuzzy = apply_filters(
+        recipe_stmt, Recipe, filters, fuzzy_fields=["name"]
+    )
+    recipe_stmt = recipe_stmt.limit(limit)
+    recipes = list(session.exec(recipe_stmt).all())
+
+    recipe_match_info: list[dict] = []
+    if recipe_fuzzy:
+        recipes, recipe_match_info = apply_fuzzy_post_filter(
+            recipes, recipe_fuzzy
+        )
+
+    # Build unified results with type discriminator
+    results: list[dict] = []
+    for f in foods:
+        results.append({**_food_to_dict(f), "type": "food"})
+    for r in recipes:
+        results.append(
+            {**_build_recipe_dict(r, session), "type": "recipe"}
+        )
+
+    # Sort by fuzzy score (desc) when fuzzy, else alphabetically
+    if food_fuzzy or recipe_fuzzy:
+        score_map: dict[int, float] = {}
+        for mi in food_match_info + recipe_match_info:
+            score_map[mi["record_id"]] = mi.get("score", 0)
+        results.sort(
+            key=lambda x: score_map.get(x["id"], 0), reverse=True
+        )
+    else:
+        results.sort(key=lambda x: x["name"].lower())
+
+    results = results[:limit]
+
+    all_match_info = food_match_info + recipe_match_info
+    return getter_response(
+        "foods_and_recipes",
+        results,
+        filters_applied=filters,
+        match_info=all_match_info or None,
+    )
+
+
 _FOOD_SETTABLE = {
     "name", "brand", "source", "serving_size_grams",
     *SERVING_FIELDS,
@@ -1344,17 +1442,16 @@ def handle_set_macro_targets(args: dict, session: Session) -> dict:
 # =====================================================================
 
 NUTRITION_TOOL_DEFINITIONS = [
-    GET_FOODS_DEF, SET_FOODS_DEF,
-    GET_RECIPES_DEF, SET_RECIPES_DEF,
+    GET_FOODS_AND_RECIPES_DEF,
+    SET_FOODS_DEF, SET_RECIPES_DEF,
     GET_MEAL_LOGS_DEF, SET_MEAL_LOGS_DEF,
     GET_WEIGHT_LOGS_DEF, SET_WEIGHT_LOGS_DEF,
     GET_MACRO_TARGETS_DEF, SET_MACRO_TARGETS_DEF,
 ]
 
 NUTRITION_TOOL_HANDLERS = {
-    "get_foods": handle_get_foods,
+    "get_foods_and_recipes": handle_get_foods_and_recipes,
     "set_foods": handle_set_foods,
-    "get_recipes": handle_get_recipes,
     "set_recipes": handle_set_recipes,
     "get_meal_logs": handle_get_meal_logs,
     "set_meal_logs": handle_set_meal_logs,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ScrollablePage from '../components/ScrollablePage'
 import {
   getDailySummary,
@@ -8,6 +8,10 @@ import {
   getVolumeByRegion,
   deleteWorkoutSession,
   putTodayWeight,
+  deleteMeal,
+  updateMeal,
+  createMeal,
+  searchFoodsAndRecipes,
   MACRO_KEYS,
   MACRO_LABELS,
   MACRO_UNITS,
@@ -16,6 +20,7 @@ import {
   type Workout,
   type WkSession,
   type VolumeByRegion,
+  type FoodSearchResult,
 } from '../api'
 import MealItemEditor from '../components/MealItemEditor'
 import WorkoutSetEditor from '../components/WorkoutSetEditor'
@@ -928,6 +933,99 @@ function MuscleVolumeCard({ data }: { data: VolumeByRegion }) {
   )
 }
 
+const MEAL_TYPES = ['breakfast', 'lunch', 'dinner', 'snack'] as const
+
+function QuickAddMeal({ date, onAdded }: { date: string; onAdded: () => void }) {
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<FoodSearchResult[]>([])
+  const [loading, setLoading] = useState(false)
+  const [mealType, setMealType] = useState<string>('snack')
+  const [saving, setSaving] = useState(false)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const search = useCallback((q: string) => {
+    if (timerRef.current) clearTimeout(timerRef.current)
+    if (q.length < 2) { setResults([]); return }
+    timerRef.current = setTimeout(async () => {
+      setLoading(true)
+      try { setResults(await searchFoodsAndRecipes(q)) }
+      catch { setResults([]) }
+      finally { setLoading(false) }
+    }, 300)
+  }, [])
+
+  const handleSelect = async (item: FoodSearchResult) => {
+    setSaving(true)
+    try {
+      const mealItem = item.type === 'food'
+        ? { food_id: item.id, amount_grams: item.serving_size_grams ?? 100 }
+        : { recipe_id: item.id, amount_grams: item.total_grams ?? 100 }
+      await createMeal({ date, meal_type: mealType, items: [mealItem] })
+      setQuery('')
+      setResults([])
+      onAdded()
+    } catch { /* ignore */ }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <div className="mt-3 border border-dashed border-gray-300 rounded-lg p-3">
+      <div className="flex items-center gap-2 mb-2">
+        <p className="text-xs font-medium text-gray-500">Quick Add</p>
+        <select
+          value={mealType}
+          onChange={(e) => setMealType(e.target.value)}
+          className="text-xs border border-gray-300 rounded px-1.5 py-0.5
+                     bg-white text-gray-700"
+        >
+          {MEAL_TYPES.map((t) => (
+            <option key={t} value={t}>{t}</option>
+          ))}
+        </select>
+      </div>
+      <input
+        type="text"
+        className="w-full text-sm border border-gray-300 rounded px-2 py-1.5"
+        placeholder="Search foods &amp; recipes…"
+        value={query}
+        onChange={(e) => { setQuery(e.target.value); search(e.target.value) }}
+      />
+      {loading && <p className="text-xs text-gray-400 mt-1">Searching…</p>}
+      {saving && <p className="text-xs text-blue-500 mt-1">Adding…</p>}
+      {results.length > 0 && !saving && (
+        <div className="mt-1 max-h-44 overflow-y-auto space-y-0.5">
+          {results.map((r) => (
+            <button
+              key={`${r.type}-${r.id}`}
+              type="button"
+              className="w-full text-left text-sm px-2 py-1.5 rounded
+                         hover:bg-blue-50 text-gray-700 flex items-center
+                         justify-between gap-2"
+              onClick={() => handleSelect(r)}
+            >
+              <span className="truncate">{r.name}</span>
+              <span className="flex items-center gap-1.5 shrink-0">
+                <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${
+                  r.type === 'food'
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : 'bg-violet-100 text-violet-700'
+                }`}>
+                  {r.type}
+                </span>
+                <span className="text-xs text-gray-400">
+                  {r.type === 'food'
+                    ? `${r.serving_size_grams}g · ${Math.round(r.calories_per_serving ?? 0)} cal`
+                    : `${r.total_grams}g · ${Math.round(r.total_calories ?? 0)} cal`}
+                </span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function DashboardPage() {
   const [date, setDate] = useState(today())
   const [summary, setSummary] = useState<DailySummary | null>(null)
@@ -1048,13 +1146,51 @@ export default function DashboardPage() {
                       className="rounded-lg border border-gray-200 bg-white p-3"
                     >
                       <div className="flex items-center justify-between mb-1">
-                        <span className="text-sm font-medium text-gray-900 capitalize">
-                          {meal.meal_type}
-                        </span>
+                        {editingMeals.has(meal.id) ? (
+                          <select
+                            value={meal.meal_type}
+                            onChange={async (e) => {
+                              try {
+                                await updateMeal(meal.id, { meal_type: e.target.value })
+                                refreshTrends()
+                              } catch { /* ignore */ }
+                            }}
+                            className="text-sm font-medium text-gray-900 border
+                                       border-gray-300 rounded px-1.5 py-0.5 bg-white
+                                       capitalize"
+                          >
+                            {MEAL_TYPES.map((t) => (
+                              <option key={t} value={t}>{t}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span className="text-sm font-medium text-gray-900 capitalize">
+                            {meal.meal_type}
+                          </span>
+                        )}
                         <div className="flex items-center gap-2">
                           <span className="text-xs text-gray-500">
                             {Math.round(meal.total_calories)} kcal
                           </span>
+                          {editingMeals.has(meal.id) && meal.items.length === 0 && (
+                            <button
+                              type="button"
+                              className="text-xs text-red-500 hover:text-red-700"
+                              onClick={async () => {
+                                try {
+                                  await deleteMeal(meal.id)
+                                  setEditingMeals((prev) => {
+                                    const next = new Set(prev)
+                                    next.delete(meal.id)
+                                    return next
+                                  })
+                                  refreshTrends()
+                                } catch { /* ignore */ }
+                              }}
+                            >
+                              delete
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="text-xs text-blue-500 hover:text-blue-700"
@@ -1096,6 +1232,7 @@ export default function DashboardPage() {
                   ))}
                 </div>
               )}
+              <QuickAddMeal date={date} onAdded={refreshTrends} />
             </div>
           </section>
 

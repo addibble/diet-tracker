@@ -388,6 +388,23 @@ export const updateRecipe = (id: number, data: { name?: string; components?: { f
 export const deleteRecipe = (id: number) =>
   request<void>(`/recipes/${id}`, { method: 'DELETE' });
 
+// Food & recipe search (combined)
+export interface FoodSearchResult {
+  type: 'food' | 'recipe';
+  id: number;
+  name: string;
+  brand?: string | null;
+  serving_size_grams?: number;
+  calories_per_serving?: number;
+  total_grams?: number;
+  total_calories?: number;
+}
+
+export const searchFoodsAndRecipes = (search: string) =>
+  request<FoodSearchResult[]>(
+    `/food-search?search=${encodeURIComponent(search)}`,
+  );
+
 // Meals
 export const getMeals = (date?: string) =>
   request<Meal[]>(`/meals${date ? `?date=${date}` : ''}`);
