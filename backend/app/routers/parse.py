@@ -303,14 +303,19 @@ def _make_tool_executor(
     """Create a tool executor closure with DB access.
 
     Routes all tool calls through the table-driven TOOL_HANDLERS
-    registry from llm_tools.
+    registry from llm_tools. Supports both sync and async handlers.
     """
     async def executor(name: str, args: dict):
         handler = TOOL_HANDLERS.get(name)
         if not handler:
             return {"error": f"Unknown tool: {name}"}
 
-        result = handler(args, session)
+        import inspect
+
+        if inspect.iscoroutinefunction(handler):
+            result = await handler(args, session)
+        else:
+            result = handler(args, session)
 
         # Any setter marks data as changed
         if name.startswith("set_"):

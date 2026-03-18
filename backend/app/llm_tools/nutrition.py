@@ -1438,12 +1438,197 @@ def handle_set_macro_targets(args: dict, session: Session) -> dict:
 
 
 # =====================================================================
-#  Tool registration
+#  USDA Nutrition Lookup (async)
 # =====================================================================
+
+LOOKUP_USDA_DEF = {
+    "type": "function",
+    "function": {
+        "name": "lookup_usda",
+        "description": (
+            "Search the USDA FoodData Central database for a food's "
+            "nutrition facts. Returns macros per 100g serving. Best "
+            "for raw ingredients, generic foods, and whole foods "
+            "(e.g. 'chicken breast', 'brown rice', 'cheddar cheese'). "
+            "For branded, fast food, or restaurant items, use "
+            "search_web_nutrition instead."
+        ),
+        "parameters": {
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Food name to search, e.g. 'chicken breast'"
+                    ),
+                },
+            },
+        },
+    },
+}
+
+
+async def handle_lookup_usda(args: dict, _session: Session) -> dict:
+    from app.usda import search_usda
+
+    query = args.get("query", "").strip()
+    if not query:
+        return {"error": "query is required"}
+
+    result = await search_usda(query)
+    if not result:
+        return {
+            "table": "usda_lookup",
+            "count": 0,
+            "matches": [],
+            "query": query,
+            "note": "No USDA results. Try search_web_nutrition for "
+            "branded or restaurant foods.",
+        }
+    return {
+        "table": "usda_lookup",
+        "count": 1,
+        "matches": [result],
+        "query": query,
+        "note": "Values are per 100g. Create this food via set_foods "
+        "with source='usda' and serving_size_grams=100.",
+    }
+
+
+# =====================================================================
+#  Web Nutrition Search (async)
+# =====================================================================
+
+SEARCH_WEB_NUTRITION_DEF = {
+    "type": "function",
+    "function": {
+        "name": "search_web_nutrition",
+        "description": (
+            "Search the web for nutrition facts of branded, fast food, "
+            "or restaurant items (e.g. 'Chick-fil-A chicken sandwich', "
+            "'Starbucks caramel macchiato grande', 'Chipotle burrito "
+            "bowl'). Returns text snippets from search results — "
+            "extract the calorie and macro values yourself, then "
+            "create the food via set_foods."
+        ),
+        "parameters": {
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Search query, e.g. "
+                        "'McDonald's Big Mac nutrition facts'"
+                    ),
+                },
+            },
+        },
+    },
+}
+
+
+async def handle_search_web_nutrition(
+    args: dict, _session: Session
+) -> dict:
+    import logging
+
+    import httpx
+
+    logger = logging.getLogger("parse")
+    query = args.get("query", "").strip()
+    if not query:
+        return {"error": "query is required"}
+
+    search_query = f"{query} nutrition facts calories protein fat carbs"
+    url = "https://html.duckduckgo.com/html/"
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=10.0,
+            follow_redirects=True,
+        ) as client:
+            resp = await client.post(
+                url,
+                data={"q": search_query},
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (compatible; DietTracker/1.0)"
+                    ),
+                },
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    "DuckDuckGo search failed: %s", resp.status_code
+                )
+                return {
+                    "table": "web_nutrition",
+                    "count": 0,
+                    "matches": [],
+                    "query": query,
+                    "error": f"Search failed (HTTP {resp.status_code})",
+                }
+
+            html = resp.text
+            snippets = _extract_ddg_snippets(html, max_results=6)
+    except Exception as exc:
+        logger.warning("Web nutrition search error: %s", exc)
+        return {
+            "table": "web_nutrition",
+            "count": 0,
+            "matches": [],
+            "query": query,
+            "error": f"Search error: {exc}",
+        }
+
+    if not snippets:
+        return {
+            "table": "web_nutrition",
+            "count": 0,
+            "matches": [],
+            "query": query,
+            "note": "No results found. Try a more specific query.",
+        }
+
+    return {
+        "table": "web_nutrition",
+        "count": len(snippets),
+        "matches": snippets,
+        "query": query,
+        "note": "Extract calorie/macro values from these snippets, "
+        "then create the food via set_foods with source='web'.",
+    }
+
+
+def _extract_ddg_snippets(
+    html: str, max_results: int = 6
+) -> list[dict]:
+    """Extract search result titles and snippets from DDG HTML."""
+    import re
+
+    results: list[dict] = []
+    # DDG HTML results are in <a class="result__a"> for title
+    # and <a class="result__snippet"> for snippet text.
+    # Use a simple regex approach to avoid adding lxml/bs4 deps.
+    result_blocks = re.findall(
+        r'class="result__a"[^>]*>(.*?)</a>.*?'
+        r'class="result__snippet"[^>]*>(.*?)</a>',
+        html,
+        re.DOTALL,
+    )
+    for title_html, snippet_html in result_blocks[:max_results]:
+        title = re.sub(r"<[^>]+>", "", title_html).strip()
+        snippet = re.sub(r"<[^>]+>", "", snippet_html).strip()
+        if title or snippet:
+            results.append({"title": title, "snippet": snippet})
+
+    return results
 
 NUTRITION_TOOL_DEFINITIONS = [
     GET_FOODS_AND_RECIPES_DEF,
     SET_FOODS_DEF, SET_RECIPES_DEF,
+    LOOKUP_USDA_DEF, SEARCH_WEB_NUTRITION_DEF,
     GET_MEAL_LOGS_DEF, SET_MEAL_LOGS_DEF,
     GET_WEIGHT_LOGS_DEF, SET_WEIGHT_LOGS_DEF,
     GET_MACRO_TARGETS_DEF, SET_MACRO_TARGETS_DEF,
@@ -1453,6 +1638,8 @@ NUTRITION_TOOL_HANDLERS = {
     "get_foods_and_recipes": handle_get_foods_and_recipes,
     "set_foods": handle_set_foods,
     "set_recipes": handle_set_recipes,
+    "lookup_usda": handle_lookup_usda,
+    "search_web_nutrition": handle_search_web_nutrition,
     "get_meal_logs": handle_get_meal_logs,
     "set_meal_logs": handle_set_meal_logs,
     "get_weight_logs": handle_get_weight_logs,

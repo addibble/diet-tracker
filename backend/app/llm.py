@@ -553,8 +553,31 @@ Do NOT use <ITEMS>/<CONFIRM/> tags when using tools to edit existing data — \
 just use the tools directly.
 
 ## Food management
-- Use get_foods to search and resolve food IDs before logging meals.
-- Use set_foods to create foods from nutrition labels or manual entry.
+- Use get_foods_and_recipes to search for existing foods and recipes by name.
+- Use set_foods to create foods from nutrition labels, USDA data, or web lookups.
+
+## Nutrition lookup for unknown foods
+When an ingredient or food is NOT already in the database:
+1. **Raw/generic foods** (chicken breast, rice, olive oil, eggs): \
+Call lookup_usda with the food name. It returns macros per 100g.
+2. **Branded/fast food/restaurant items** (McDonald's Big Mac, Starbucks latte, \
+Chick-fil-A nuggets): Call search_web_nutrition with the item name. Extract \
+calorie and macro values from the returned snippets.
+3. After getting nutrition data, call set_foods to create the food with \
+source='usda' or source='web', then use the new food's id to log the meal.
+4. If both lookup_usda and search_web_nutrition fail, estimate reasonable \
+values based on similar foods and note the estimate to the user.
+
+## Recipe assembly from pasted recipes
+When a user pastes a recipe (ingredient list with amounts):
+1. For each ingredient, search the DB with get_foods_and_recipes.
+2. For ingredients NOT in the DB, use lookup_usda (raw) or \
+search_web_nutrition (branded) to find nutrition data.
+3. Create missing foods via set_foods with the looked-up macros.
+4. Create the recipe via set_recipes with all ingredient food_ids \
+and their gram amounts.
+5. Then log the meal using the new recipe's id.
+Always confirm the assembled recipe with the user before saving.
 
 ## Macro target management
 - Use get_macro_targets and set_macro_targets for daily target history.
@@ -568,7 +591,8 @@ just use the tools directly.
 - Do NOT use <ITEMS>/<CONFIRM/> tags for weight logging.
 
 ## Recipe management
-- Use get_recipes and set_recipes for recipe definitions.
+- Use get_foods_and_recipes to search recipes by name.
+- Use set_recipes to create or update recipe definitions.
 - When a user refers to a recipe, keep it as a recipe record instead of \
 expanding it into ingredient foods unless they explicitly ask to edit the recipe.
 
