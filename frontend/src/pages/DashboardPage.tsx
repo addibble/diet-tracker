@@ -1039,6 +1039,15 @@ export default function DashboardPage() {
 
   const refreshTrends = () => setRefreshKey((k) => k + 1)
 
+  // Lightweight refresh: only re-fetch daily summary (meals + macro totals)
+  // without showing the loading spinner or re-fetching trends/workouts.
+  const refreshMeals = useCallback(async () => {
+    try {
+      const dailyData = await getDailySummary(date)
+      setSummary(dailyData)
+    } catch { /* keep stale data on error */ }
+  }, [date])
+
   useEffect(() => {
     const loadDashboard = async () => {
       setLoading(true)
@@ -1152,7 +1161,7 @@ export default function DashboardPage() {
                             onChange={async (e) => {
                               try {
                                 await updateMeal(meal.id, { meal_type: e.target.value })
-                                refreshTrends()
+                                refreshMeals()
                               } catch { /* ignore */ }
                             }}
                             className="text-sm font-medium text-gray-900 border
@@ -1184,7 +1193,7 @@ export default function DashboardPage() {
                                     next.delete(meal.id)
                                     return next
                                   })
-                                  refreshTrends()
+                                  refreshMeals()
                                 } catch { /* ignore */ }
                               }}
                             >
@@ -1210,7 +1219,7 @@ export default function DashboardPage() {
                         <MealItemEditor
                           mode="edit"
                           meal={meal}
-                          onMealChanged={refreshTrends}
+                          onMealChanged={refreshMeals}
                           compact
                         />
                       ) : (
@@ -1232,7 +1241,7 @@ export default function DashboardPage() {
                   ))}
                 </div>
               )}
-              <QuickAddMeal date={date} onAdded={refreshTrends} />
+              <QuickAddMeal date={date} onAdded={refreshMeals} />
             </div>
           </section>
 
