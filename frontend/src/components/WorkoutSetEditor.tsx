@@ -334,9 +334,9 @@ function PlanExerciseRow({
             className="w-12"
           />
         </label>
-        {ex.load_input_mode === 'external_weight' && (
+        {(ex.load_input_mode === 'external_weight' || ex.load_input_mode === 'assisted_bodyweight') && (
           <label className="flex items-center gap-1 text-xs text-gray-500">
-            Weight
+            {ex.load_input_mode === 'assisted_bodyweight' ? 'Assist' : 'Weight'}
             <NumberInput
               value={ex.target_weight}
               step={2.5}
@@ -634,10 +634,10 @@ function LogExerciseGroup({
       {/* Column headers */}
       <div className="px-2.5 pt-1 pb-0.5 flex items-center gap-1 text-[10px] text-gray-400 uppercase tracking-wider">
         <span className="w-6 text-center">#</span>
-        {(mode === 'external_weight' || mode === 'bodyweight' || mode === 'mixed') && (
+        {(mode === 'external_weight' || mode === 'bodyweight' || mode === 'mixed' || mode === 'assisted_bodyweight') && (
           <>
-            {(mode === 'external_weight' || mode === 'mixed') && (
-              <span className="w-16 text-center">Weight</span>
+            {(mode === 'external_weight' || mode === 'mixed' || mode === 'assisted_bodyweight') && (
+              <span className="w-16 text-center">{mode === 'assisted_bodyweight' ? 'Assist' : 'Weight'}</span>
             )}
             <span className="w-12 text-center">Reps</span>
           </>
@@ -704,16 +704,16 @@ function SetRow({
         {index}
       </span>
 
-      {(mode === 'external_weight' || mode === 'bodyweight' || mode === 'mixed') && (
+      {(mode === 'external_weight' || mode === 'bodyweight' || mode === 'mixed' || mode === 'assisted_bodyweight') && (
         <>
-          {(mode === 'external_weight' || mode === 'mixed') && (
+          {(mode === 'external_weight' || mode === 'mixed' || mode === 'assisted_bodyweight') && (
             <NumberInput
               value={set.weight}
               step={2.5}
               min={0}
               onChange={(v) => onUpdate('weight', v)}
               className="w-16"
-              placeholder="lb"
+              placeholder={mode === 'assisted_bodyweight' ? 'assist' : 'lb'}
             />
           )}
           <NumberInput
