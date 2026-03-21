@@ -6,10 +6,12 @@ from sqlmodel import Session, col, select
 
 from app.auth import get_current_user
 from app.database import get_session
+from app.exercise_loads import bodyweight_by_date, effective_weight as calc_effective_weight
 from app.models import (
     Exercise,
     ExerciseTissue,
     Tissue,
+    WeightLog,
     WorkoutSession,
     WorkoutSet,
 )
@@ -227,6 +229,12 @@ def get_exercise_history(
     )
     results = session.exec(stmt).all()
 
+    # Load bodyweight logs for effective weight calculation (counterweight exercises)
+    bodyweight_lookup: dict[date, float] = {}
+    if exercise.load_input_mode in ("bodyweight", "mixed", "assisted_bodyweight"):
+        weight_logs = session.exec(select(WeightLog)).all()
+        bodyweight_lookup = bodyweight_by_date(weight_logs)
+
     # Group by session date
     sessions_map: dict[date, list] = {}
     for ws, d in results:
@@ -235,8 +243,13 @@ def get_exercise_history(
     sessions_out = []
     for d in sorted(sessions_map.keys(), reverse=True)[:limit]:
         sets = sessions_map[d]
-        max_weight = max((s.weight or 0) for s in sets)
-        total_volume = sum((s.reps or 0) * (s.weight or 0) for s in sets)
+        if bodyweight_lookup:
+            eff_weights = [calc_effective_weight(exercise, s, bodyweight_lookup, d) for s in sets]
+            max_weight = max(eff_weights) if eff_weights else 0.0
+            total_volume = sum((s.reps or 0) * ew for s, ew in zip(sets, eff_weights))
+        else:
+            max_weight = max((s.weight or 0) for s in sets)
+            total_volume = sum((s.reps or 0) * (s.weight or 0) for s in sets)
         completions = [s.rep_completion for s in sets if s.rep_completion]
         sessions_out.append({
             "date": str(d),
