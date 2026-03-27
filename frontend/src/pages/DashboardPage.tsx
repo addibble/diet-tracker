@@ -141,13 +141,13 @@ function WeightTrendCard({
 }) {
   const chart = useMemo(() => {
     const width = 340
-    const height = 230
+    const height = 244
     const left = 22
     const right = 18
     const top = 16
     const bottom = 66
     const weightDays = trends.weight_days
-    const step = (width - left - right) / Math.max(weightDays.length - 1, 1)
+    const availableWidth = width - left - right
     const actualWeights = weightDays.map((day) => day.weight_lb)
     const regressionWeights = trends.weight_regression?.line.map((point) => point.weight_lb) ?? []
     const allWeights = [...actualWeights, ...regressionWeights]
@@ -173,14 +173,20 @@ function WeightTrendCard({
     const plotHeight = height - top - bottom
     const toY = (value: number) => top + ((scaledMax - value) / yRange) * plotHeight
 
-    const actualPoints = weightDays.map((day, index) => ({
-      x: left + step * index,
+    const firstDate = localDate(weightDays[0].date).getTime()
+    const lastDate = localDate(weightDays[weightDays.length - 1].date).getTime()
+    const totalMs = Math.max(lastDate - firstDate, 1)
+    const toX = (dateStr: string) =>
+      left + ((localDate(dateStr).getTime() - firstDate) / totalMs) * availableWidth
+
+    const actualPoints = weightDays.map((day) => ({
+      x: toX(day.date),
       y: toY(day.weight_lb),
       value: day.weight_lb,
       date: day.date,
     }))
-    const regressionPoints = (trends.weight_regression?.line ?? []).map((point, index) => ({
-      x: left + step * index,
+    const regressionPoints = (trends.weight_regression?.line ?? []).map((point) => ({
+      x: toX(point.date),
       y: toY(point.weight_lb),
     }))
     const guideValues = [scaledMax, (scaledMax + scaledMin) / 2, scaledMin]
@@ -189,17 +195,16 @@ function WeightTrendCard({
       label: value.toFixed(1),
     }))
 
-    // Auto-detect label spacing: rotated labels need less horizontal room
     const minLabelGap = 20
-    const labelStep = Math.max(1, Math.ceil(minLabelGap / step))
-
-    const dateLabels = weightDays.map((day, index) => {
-      if (index % labelStep !== 0 && index !== weightDays.length - 1) return null
-      return {
-        x: left + step * index,
-        label: shortDateLabel(day.date),
+    const dateLabels: { x: number; label: string }[] = []
+    let lastLabelX = -Infinity
+    for (let i = 0; i < weightDays.length; i++) {
+      const x = toX(weightDays[i].date)
+      if (x - lastLabelX >= minLabelGap || i === weightDays.length - 1) {
+        dateLabels.push({ x, label: shortDateLabel(weightDays[i].date) })
+        lastLabelX = x
       }
-    }).filter(Boolean) as { x: number; label: string }[]
+    }
 
     return {
       width, height, weightDays, actualPoints, regressionPoints, guides, dateLabels,

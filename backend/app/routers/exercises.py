@@ -6,7 +6,8 @@ from sqlmodel import Session, col, select
 
 from app.auth import get_current_user
 from app.database import get_session
-from app.exercise_loads import bodyweight_by_date, effective_weight as calc_effective_weight
+from app.exercise_loads import bodyweight_by_date
+from app.exercise_loads import effective_weight as calc_effective_weight
 from app.models import (
     Exercise,
     ExerciseTissue,
