@@ -141,7 +141,7 @@ function WeightTrendCard({
 }) {
   const chart = useMemo(() => {
     const width = 340
-    const height = 244
+    const height = 230
     const left = 22
     const right = 18
     const top = 16
@@ -214,7 +214,7 @@ function WeightTrendCard({
   const cs = trends.calorie_stats
 
   return (
-    <section className="bg-white border border-gray-200 rounded-2xl p-5">
+    <section className="bg-white border border-gray-200 rounded-2xl p-5 pb-10">
       <div className="flex flex-wrap items-start justify-between gap-4 mb-4">
         <div>
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">
@@ -261,7 +261,7 @@ function WeightTrendCard({
       <TodayWeightInput trends={trends} onSaved={onWeightSaved} />
 
       {chart.actualPoints.length > 0 ? (
-        <svg viewBox={`0 0 ${chart.width} ${chart.height}`} className="w-full">
+        <svg viewBox={`0 0 ${chart.width} ${chart.height}`} className="w-full" overflow="visible">
           {chart.guides.map((guide) => (
             <g key={guide.label}>
               <line
