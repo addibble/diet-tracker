@@ -9,6 +9,7 @@ from app.auth import router as auth_router
 from app.database import create_db_and_tables
 from app.routers.daily import router as daily_router
 from app.routers.dashboard import router as dashboard_router
+from app.routers.database import router as database_router
 from app.routers.debug import ring_handler
 from app.routers.debug import router as debug_router
 from app.routers.exercises import router as exercises_router
@@ -59,6 +60,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(database_router)
 app.include_router(food_search_router)
 app.include_router(foods_router)
 app.include_router(macro_targets_router)
