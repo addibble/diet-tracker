@@ -488,6 +488,7 @@ export interface WkExercise {
   name: string;
   equipment: string | null;
   load_input_mode: string;
+  laterality: 'bilateral' | 'unilateral' | 'either';
   bodyweight_fraction: number;
   estimated_minutes_per_set: number;
   notes: string | null;
@@ -505,6 +506,7 @@ export interface WkExerciseTissueMapping {
   fatigue_factor: number;
   joint_strain_factor: number;
   tendon_strain_factor: number;
+  laterality_mode: 'bilateral_equal' | 'selected_side_only' | 'selected_side_primary' | 'contralateral_carryover';
 }
 
 export interface WkSetDetail {
@@ -512,6 +514,7 @@ export interface WkSetDetail {
   exercise_id: number;
   exercise_name: string;
   set_order: number;
+  performed_side: 'left' | 'right' | 'center' | 'bilateral' | null;
   reps: number | null;
   weight: number | null;
   duration_secs: number | null;
@@ -536,9 +539,17 @@ export interface WkTissue {
   name: string;
   display_name: string;
   type: string;
+  tracking_mode?: 'paired' | 'center';
+  region?: string;
   recovery_hours: number;
   notes?: string | null;
   model_config?: WkTissueModelConfig | null;
+  tracked_tissues?: {
+    id: number;
+    side: 'left' | 'right' | 'center';
+    display_name: string;
+    active: boolean;
+  }[];
 }
 
 export interface WkTissueModelConfig {
@@ -569,6 +580,78 @@ export interface WkTissueReadiness {
   exercises_available: {
     exercise_id: number;
     exercise_name: string;
+    role: string;
+    target_sets: number;
+    target_rep_min: number | null;
+    target_rep_max: number | null;
+  }[];
+}
+
+export interface TrackedTissueReadiness {
+  tracked_tissue: {
+    id: number;
+    tissue_id: number;
+    tissue_name: string;
+    tissue_display_name: string;
+    tissue_type: string;
+    region: string;
+    side: 'left' | 'right' | 'center';
+    display_name: string;
+    tracking_mode: 'paired' | 'center';
+    active: boolean;
+  };
+  condition: {
+    id: number;
+    status: string;
+    severity: number;
+    max_loading_factor: number | null;
+    recovery_hours_override: number | null;
+    rehab_protocol: string | null;
+    notes: string | null;
+    updated_at: string;
+  } | null;
+  active_rehab_plan: {
+    id: number;
+    protocol_id: string;
+    protocol_title: string;
+    stage_id: string;
+    stage_label: string;
+    status: string;
+    pain_monitoring_threshold: number;
+    max_next_day_flare: number;
+    sessions_per_week_target: number | null;
+    max_weekly_set_progression: number | null;
+    max_load_progression_pct: number | null;
+    notes: string | null;
+    started_at: string;
+    updated_at: string;
+  } | null;
+  latest_rehab_check_in: {
+    id: number;
+    rehab_plan_id: number | null;
+    pain_0_10: number;
+    stiffness_0_10: number;
+    weakness_0_10: number;
+    neural_symptoms_0_10: number;
+    during_load_pain_0_10: number;
+    next_day_flare: number;
+    confidence_0_10: number;
+    notes: string | null;
+    recorded_at: string;
+  } | null;
+  last_trained: string | null;
+  hours_since: number | null;
+  effective_recovery_hours: number;
+  recovery_pct: number;
+  protected: boolean;
+  ready: boolean;
+  volume_7d: number;
+  cross_education_7d: number;
+  exercises_available: {
+    exercise_id: number;
+    exercise_name: string;
+    laterality: 'bilateral' | 'unilateral' | 'either';
+    laterality_mode: 'bilateral_equal' | 'selected_side_only' | 'selected_side_primary' | 'contralateral_carryover';
     role: string;
     target_sets: number;
     target_rep_min: number | null;
@@ -739,12 +822,16 @@ export interface PlannerExercisePrescription {
   exercise_id: number;
   exercise_name: string;
   equipment: string | null;
+  laterality?: 'bilateral' | 'unilateral' | 'either';
+  performed_side?: 'left' | 'right' | 'center' | 'bilateral' | null;
   rep_scheme: 'heavy' | 'volume' | 'light';
   target_sets: number;
   target_reps: string;
   target_weight: number | null;
   rationale: string;
   overload_note: string | null;
+  weight_adjustment_note?: string | null;
+  side_explanation?: string | null;
   selected: boolean;
   last_performance: {
     date: string;
@@ -767,6 +854,7 @@ export const updateExercise = (id: number, data: {
   name?: string;
   equipment?: string | null;
   load_input_mode?: string;
+  laterality?: 'bilateral' | 'unilateral' | 'either';
   bodyweight_fraction?: number;
   estimated_minutes_per_set?: number;
   notes?: string | null;
@@ -778,6 +866,7 @@ export const updateExercise = (id: number, data: {
     fatigue_factor?: number;
     joint_strain_factor?: number;
     tendon_strain_factor?: number;
+    laterality_mode?: 'bilateral_equal' | 'selected_side_only' | 'selected_side_primary' | 'contralateral_carryover';
   }[];
 }) =>
   request<WkExercise>(`/exercises/${id}`, { method: 'PUT', body: JSON.stringify(data) });
@@ -795,6 +884,7 @@ export const getWorkoutSession = (id: number) =>
 
 // Individual workout set CRUD
 export const updateWorkoutSet = (setId: number, data: {
+  performed_side?: 'left' | 'right' | 'center' | 'bilateral' | null;
   reps?: number | null;
   weight?: number | null;
   duration_secs?: number | null;
@@ -811,6 +901,7 @@ export const updateWorkoutSet = (setId: number, data: {
 export const addWorkoutSet = (sessionId: number, data: {
   exercise_id: number;
   set_order?: number;
+  performed_side?: 'left' | 'right' | 'center' | 'bilateral' | null;
   reps?: number | null;
   weight?: number | null;
   duration_secs?: number | null;
@@ -846,6 +937,9 @@ export const updateProgramDayExercise = (pdeId: number, data: {
 
 export const getTissueReadiness = () =>
   request<WkTissueReadiness[]>('/tissue-readiness');
+
+export const getTrackedTissueReadiness = () =>
+  request<TrackedTissueReadiness[]>('/tissue-readiness/tracked');
 
 export const getExerciseHistory = (id: number, limit?: number) =>
   request<WkExerciseHistory>(`/exercises/${id}/history${limit ? `?limit=${limit}` : ''}`);
@@ -1010,12 +1104,15 @@ export interface SavedPlanExercise {
   exercise_name: string;
   equipment: string | null;
   load_input_mode: string;
+  laterality?: 'bilateral' | 'unilateral' | 'either';
   target_sets: number;
   target_rep_min: number | null;
   target_rep_max: number | null;
   rep_scheme: string | null;
   target_weight: number | null;
-  completed_sets: { id: number; set_order: number; reps: number | null; weight: number | null; rpe: number | null; rep_completion: string | null; notes: string | null }[];
+  performed_side?: 'left' | 'right' | 'center' | 'bilateral' | null;
+  side_explanation?: string | null;
+  completed_sets: { id: number; set_order: number; performed_side?: 'left' | 'right' | 'center' | 'bilateral' | null; reps: number | null; weight: number | null; rpe: number | null; rep_completion: string | null; notes: string | null }[];
   sets_done: number;
   done: boolean;
 }

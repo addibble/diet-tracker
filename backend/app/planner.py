@@ -28,6 +28,13 @@ from app.models import (
     WorkoutSession,
     WorkoutSet,
 )
+from app.tracked_tissues import (
+    default_performed_side,
+    get_active_rehab_plans_by_tracked_tissue,
+    get_all_current_tracked_conditions,
+    get_tracked_tissue_lookup,
+    tracked_tissue_side_weights,
+)
 from app.training_model import build_exercise_strength, build_training_model_summary
 
 # ── Tissue clusters ──────────────────────────────────────────────────
@@ -54,6 +61,26 @@ _TISSUE_FATIGUE_HARD_FLOOR = 0.4
 # Below SOFT floor → selection score is linearly discounted to zero at
 # the HARD floor, so fresher alternatives sort ahead.
 _TISSUE_FATIGUE_SOFT_FLOOR = 0.7
+_TRACKED_DIRECT_PROTECTION_THRESHOLD = 0.25
+_TRACKED_CROSS_SUPPORT_THRESHOLD = 0.1
+_EARLY_REHAB_STAGES = {
+    "calm-and-isometric",
+    "protected-range",
+    "tolerance-building",
+    "neural-calming",
+}
+_MID_REHAB_STAGES = {
+    "rebuild-capacity",
+    "controlled-dynamic",
+    "activation-and-control",
+    "eccentric-concentric",
+}
+_LATE_REHAB_STAGES = {
+    "return-to-heavy-slow",
+    "return-to-overhead",
+    "return-to-grip-load",
+    "strength-rebuild",
+}
 
 
 # ── Main entry point ─────────────────────────────────────────────────
@@ -222,6 +249,8 @@ def save_plan(
             notes=json.dumps({
                 "rep_scheme": ex.get("rep_scheme"),
                 "target_weight": ex.get("target_weight"),
+                "performed_side": ex.get("performed_side"),
+                "side_explanation": ex.get("side_explanation"),
             }),
         )
         session.add(pde)
@@ -288,6 +317,8 @@ def add_exercises_to_plan(
             notes=json.dumps({
                 "rep_scheme": ex.get("rep_scheme"),
                 "target_weight": ex.get("target_weight"),
+                "performed_side": ex.get("performed_side"),
+                "side_explanation": ex.get("side_explanation"),
             }),
         )
         session.add(pde)
@@ -382,12 +413,18 @@ def start_workout(session: Session, planned_session_id: int) -> dict:
                 except (json.JSONDecodeError, TypeError):
                     pass
             target_weight = meta.get("target_weight")
+            performed_side = meta.get("performed_side")
             target_reps = pde.target_rep_max or pde.target_rep_min
             for _ in range(pde.target_sets):
                 s = WorkoutSet(
                     session_id=ws.id,
                     exercise_id=pde.exercise_id,
                     set_order=set_order,
+                    performed_side=default_performed_side(
+                        exercise_name=session.get(Exercise, pde.exercise_id).name if session.get(Exercise, pde.exercise_id) else "",
+                        exercise_laterality=session.get(Exercise, pde.exercise_id).laterality if session.get(Exercise, pde.exercise_id) else "bilateral",
+                        provided_side=performed_side,
+                    ),
                     weight=target_weight,
                     reps=target_reps,
                 )
@@ -486,6 +523,7 @@ def _serialize_saved_plan(session: Session, planned: PlannedSession) -> dict:
             logged_sets[s.exercise_id].append({
                 "id": s.id,
                 "set_order": s.set_order,
+                "performed_side": s.performed_side,
                 "reps": s.reps,
                 "weight": s.weight,
                 "rpe": s.rpe,
@@ -512,11 +550,14 @@ def _serialize_saved_plan(session: Session, planned: PlannedSession) -> dict:
             "load_input_mode": (
                 exercise.load_input_mode if exercise else "external_weight"
             ),
+            "laterality": exercise.laterality if exercise else "bilateral",
             "target_sets": pde.target_sets,
             "target_rep_min": pde.target_rep_min,
             "target_rep_max": pde.target_rep_max,
             "rep_scheme": meta.get("rep_scheme"),
             "target_weight": meta.get("target_weight"),
+            "performed_side": meta.get("performed_side"),
+            "side_explanation": meta.get("side_explanation"),
             "completed_sets": completed_sets,
             "sets_done": len(completed_sets),
             "done": len(completed_sets) >= pde.target_sets,
@@ -891,6 +932,13 @@ def _prescribe_all(
         if cond:
             tissue_condition_by_id[tid] = cond
 
+    tracked_conditions = get_all_current_tracked_conditions(session)
+    active_rehab_plans = get_active_rehab_plans_by_tracked_tissue(session)
+    tracked_lookup = {
+        tracked.id: tracked
+        for tracked in get_tracked_tissue_lookup(session).values()
+    }
+
     # Load current bodyweight for mixed/bodyweight exercise adjustments
     weight_rows = list(
         session.exec(select(WeightLog).order_by(col(WeightLog.logged_at).asc())).all()
@@ -914,10 +962,28 @@ def _prescribe_all(
         except Exception:
             pass
 
+        preferred_side, side_explanation, rehab_stage, prescription_mode = _planner_preferred_side(
+            exercise=exercise,
+            exercise_summary=ex,
+            tracked_lookup=tracked_lookup,
+            tracked_conditions=tracked_conditions,
+            active_rehab_plans=active_rehab_plans,
+        )
+        if preferred_side == "block":
+            continue
+
         suitability_value = ex.get("suitability_score", ex.get("suitability", 70))
         suitability = suitability_value / 100 if suitability_value > 1 else suitability_value
         recommendation = ex.get("recommendation", "good")
         weighted_risk = ex.get("weighted_risk_7d", 0.0)
+        if prescription_mode == "direct_rehab" and rehab_stage in _EARLY_REHAB_STAGES:
+            recommendation = "caution"
+            suitability = min(suitability, 0.55)
+            weighted_risk = max(weighted_risk, 55.0)
+        elif prescription_mode == "direct_rehab" and rehab_stage in _MID_REHAB_STAGES:
+            recommendation = "caution"
+            suitability = min(suitability, 0.7)
+            weighted_risk = max(weighted_risk, 40.0)
         if recommendation == "caution":
             suitability = min(suitability, 0.74)
         days_since_heavy = _days_since_heavy_work(session, exercise_id, today)
@@ -926,6 +992,15 @@ def _prescribe_all(
             days_since_heavy,
             recommendation=recommendation,
             weighted_risk_7d=weighted_risk,
+        )
+        rep_scheme, target_reps, intensity_range, rationale = _apply_rehab_stage_prescription(
+            rep_scheme=rep_scheme,
+            target_reps=target_reps,
+            intensity_range=intensity_range,
+            rationale=rationale,
+            rehab_stage=rehab_stage,
+            side_explanation=side_explanation,
+            prescription_mode=prescription_mode,
         )
 
         # Find the most restrictive loading factor from tender/rehabbing tissues.
@@ -958,6 +1033,14 @@ def _prescribe_all(
         if min_condition_factor < 1.0 and condition_label:
             pct = round(min_condition_factor * 100)
             weight_adjustment_note = f"Reduced to {pct}% load due to {condition_label}"
+        if prescription_mode == "direct_rehab" and rehab_stage in _EARLY_REHAB_STAGES:
+            min_condition_factor = min(min_condition_factor, 0.6)
+            if weight_adjustment_note is None and side_explanation:
+                weight_adjustment_note = f"Reduced to 60% load during {rehab_stage} ({side_explanation})"
+        elif prescription_mode == "direct_rehab" and rehab_stage in _MID_REHAB_STAGES:
+            min_condition_factor = min(min_condition_factor, 0.75)
+            if weight_adjustment_note is None and side_explanation:
+                weight_adjustment_note = f"Reduced to 75% load during {rehab_stage} ({side_explanation})"
 
         target_weight = None
         if current_e1rm > 0:
@@ -997,11 +1080,17 @@ def _prescribe_all(
             target_sets = 3 if recommendation == "caution" else 4
         else:
             target_sets = 2 if weighted_risk >= 55 else 3
+        if prescription_mode == "direct_rehab" and rehab_stage in _EARLY_REHAB_STAGES:
+            target_sets = min(target_sets, 3)
+        elif prescription_mode == "direct_rehab" and rehab_stage in _MID_REHAB_STAGES:
+            target_sets = min(target_sets, 4)
 
         results.append({
             "exercise_id": exercise.id,
             "exercise_name": ex.get("exercise_name") or ex.get("name") or exercise.name,
             "equipment": exercise.equipment,
+            "laterality": exercise.laterality,
+            "performed_side": preferred_side,
             "rep_scheme": rep_scheme,
             "target_sets": target_sets,
             "target_reps": target_reps,
@@ -1009,6 +1098,7 @@ def _prescribe_all(
             "rationale": rationale,
             "overload_note": overload_note,
             "weight_adjustment_note": weight_adjustment_note,
+            "side_explanation": side_explanation,
             "current_e1rm": round(current_e1rm, 2) if current_e1rm else None,
             "selected": ex.get("selected", True),
         })
@@ -1075,6 +1165,196 @@ def _get_last_performance(session: Session, exercise_id: int) -> dict | None:
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
+
+
+def _planner_preferred_side(
+    *,
+    exercise: Exercise,
+    exercise_summary: dict,
+    tracked_lookup: dict[int, object],
+    tracked_conditions: dict[int, object],
+    active_rehab_plans: dict[int, object],
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Pick a preferred performed_side for planner prescriptions.
+
+    Returns ``(preferred_side, explanation, rehab_stage)``.
+    ``preferred_side`` may be ``"block"`` when the exercise should be excluded.
+    """
+    if exercise.laterality == "bilateral":
+        return (
+            default_performed_side(
+                exercise_name=exercise.name,
+                exercise_laterality=exercise.laterality,
+                provided_side=None,
+            ),
+            None,
+            None,
+            None,
+        )
+
+    explicit = default_performed_side(
+        exercise_name=exercise.name,
+        exercise_laterality=exercise.laterality,
+        provided_side=None,
+    )
+
+    rehab_targets: list[tuple[int, str, str | None]] = []
+    for tracked_id, tracked in tracked_lookup.items():
+        if getattr(tracked, "side", None) not in {"left", "right"}:
+            continue
+        condition = tracked_conditions.get(tracked_id)
+        rehab_plan = active_rehab_plans.get(tracked_id)
+        if rehab_plan is None and not (
+            condition and getattr(condition, "status", None) in {"injured", "rehabbing"}
+        ):
+            continue
+        rehab_targets.append((
+            getattr(tracked, "tissue_id"),
+            getattr(tracked, "side"),
+            getattr(rehab_plan, "stage_id", None) if rehab_plan is not None else None,
+        ))
+
+    if not rehab_targets:
+        if explicit in {"left", "right"}:
+            return explicit, f"exercise name indicates the {explicit} side", None, None
+        return None, None, None, None
+
+    candidate_sides = [explicit] if explicit in {"left", "right"} else ["left", "right"]
+    candidate_metrics: dict[str, dict[str, float | str | None | bool]] = {}
+
+    for candidate_side in candidate_sides:
+        candidate_metrics[candidate_side] = {
+            "direct": 0.0,
+            "cross": 0.0,
+            "blocked": False,
+            "target_side": None,
+            "stage": None,
+            "matched": False,
+        }
+        for tissue_map in exercise_summary.get("tissues", []):
+            tissue_id = tissue_map.get("tissue_id")
+            if not tissue_id:
+                continue
+            laterality_mode = tissue_map.get("laterality_mode") or "bilateral_equal"
+            routing = float(tissue_map.get("routing_factor") or 0.0)
+            for rehab_tissue_id, rehab_side, rehab_stage in rehab_targets:
+                if rehab_tissue_id != tissue_id:
+                    continue
+                load_weights, cross_weights = tracked_tissue_side_weights(
+                    exercise_laterality=exercise.laterality,
+                    laterality_mode=laterality_mode,
+                    performed_side=candidate_side,
+                    tissue_tracking_mode="paired",
+                )
+                direct = routing * float(load_weights.get(rehab_side, 0.0))
+                cross = routing * float(cross_weights.get(rehab_side, 0.0))
+                candidate_metrics[candidate_side]["matched"] = True
+                candidate_metrics[candidate_side]["direct"] = float(candidate_metrics[candidate_side]["direct"]) + direct
+                candidate_metrics[candidate_side]["cross"] = float(candidate_metrics[candidate_side]["cross"]) + cross
+                if direct >= cross:
+                    candidate_metrics[candidate_side]["target_side"] = rehab_side
+                    candidate_metrics[candidate_side]["stage"] = rehab_stage
+                elif candidate_metrics[candidate_side]["target_side"] is None:
+                    candidate_metrics[candidate_side]["target_side"] = rehab_side
+                    candidate_metrics[candidate_side]["stage"] = rehab_stage
+                if (
+                    rehab_stage in _EARLY_REHAB_STAGES
+                    and direct >= _TRACKED_DIRECT_PROTECTION_THRESHOLD
+                ):
+                    candidate_metrics[candidate_side]["blocked"] = True
+
+    relevant_candidates = {
+        side: metrics
+        for side, metrics in candidate_metrics.items()
+        if metrics["matched"] and not metrics["blocked"]
+    }
+
+    if not relevant_candidates:
+        blocked_target = next(
+            ((side, stage) for _tid, side, stage in rehab_targets),
+            ("left", None),
+        )
+        return (
+            "block",
+            f"{blocked_target[0].title()} rehab tissue is still in a protected stage",
+            blocked_target[1],
+            "direct_rehab",
+        )
+
+    cross_candidates = [
+        (side, metrics)
+        for side, metrics in relevant_candidates.items()
+        if float(metrics["cross"]) >= _TRACKED_CROSS_SUPPORT_THRESHOLD
+    ]
+    if cross_candidates:
+        chosen_side, metrics = max(
+            cross_candidates,
+            key=lambda item: float(item[1]["cross"]) - float(item[1]["direct"]),
+        )
+        protected_side = str(metrics["target_side"] or "affected")
+        return (
+            chosen_side,
+            f"uses {chosen_side}-side work for {protected_side}-side cross-education",
+            metrics["stage"],
+            "cross_education",
+        )
+
+    direct_candidates = [
+        (side, metrics)
+        for side, metrics in relevant_candidates.items()
+        if float(metrics["direct"]) >= _TRACKED_DIRECT_PROTECTION_THRESHOLD
+    ]
+    if direct_candidates:
+        chosen_side, metrics = max(
+            direct_candidates,
+            key=lambda item: float(item[1]["direct"]),
+        )
+        protected_side = str(metrics["target_side"] or chosen_side)
+        explanation = (
+            f"exercise name indicates the {chosen_side} side"
+            if explicit == chosen_side
+            else f"targets the protected {protected_side} side directly"
+        )
+        return chosen_side, explanation, metrics["stage"], "direct_rehab"
+
+    if explicit in relevant_candidates:
+        return explicit, f"exercise name indicates the {explicit} side", relevant_candidates[explicit]["stage"], None
+    return None, None, None, None
+
+
+def _apply_rehab_stage_prescription(
+    *,
+    rep_scheme: str,
+    target_reps: str,
+    intensity_range: tuple[float, float],
+    rationale: str,
+    rehab_stage: str | None,
+    side_explanation: str | None,
+    prescription_mode: str | None,
+) -> tuple[str, str, tuple[float, float], str]:
+    if prescription_mode == "direct_rehab" and rehab_stage in _EARLY_REHAB_STAGES:
+        note = "Protected rehab stage; keep the dose light and symptom-gated."
+        if side_explanation:
+            note = f"{note} {side_explanation.capitalize()}."
+        return ("light", "12-20", (0.45, 0.6), note)
+    if prescription_mode == "direct_rehab" and rehab_stage in _MID_REHAB_STAGES:
+        note = "Rehab stage favors controlled rep progression before load."
+        if side_explanation:
+            note = f"{note} {side_explanation.capitalize()}."
+        return ("volume", "8-15", (0.55, 0.7), note)
+    if prescription_mode == "direct_rehab" and rehab_stage in _LATE_REHAB_STAGES and rep_scheme == "heavy":
+        note = rationale
+        if side_explanation:
+            note = f"{note} {side_explanation.capitalize()}."
+        return ("volume", "6-10", (0.65, 0.8), note)
+    if prescription_mode == "cross_education":
+        note = "Cross-education support should stay high-intent without counting as local rehab loading."
+        if side_explanation:
+            note = f"{note} {side_explanation.capitalize()}."
+        return ("heavy", "3-8", (0.75, 0.85), note)
+    if side_explanation:
+        return rep_scheme, target_reps, intensity_range, f"{rationale} {side_explanation.capitalize()}."
+    return rep_scheme, target_reps, intensity_range, rationale
 
 
 def _build_rationale(scored: dict) -> str:

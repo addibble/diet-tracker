@@ -1,4 +1,5 @@
 import json
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -7,6 +8,7 @@ from sqlmodel import Session, func, select
 from app.auth import get_current_user
 from app.database import get_session
 from app.models import Exercise, ProgramDayExercise, WorkoutSession, WorkoutSet
+from app.tracked_tissues import default_performed_side
 
 router = APIRouter(tags=["workout-sets"])
 
@@ -17,6 +19,7 @@ router = APIRouter(tags=["workout-sets"])
 
 
 class SetUpdate(BaseModel):
+    performed_side: Literal["left", "right", "center", "bilateral"] | None = None
     reps: int | None = None
     weight: float | None = None
     duration_secs: int | None = None
@@ -29,6 +32,7 @@ class SetUpdate(BaseModel):
 class SetCreate(BaseModel):
     exercise_id: int
     set_order: int | None = None
+    performed_side: Literal["left", "right", "center", "bilateral"] | None = None
     reps: int | None = None
     weight: float | None = None
     duration_secs: int | None = None
@@ -44,6 +48,8 @@ class ProgramDayExerciseUpdate(BaseModel):
     target_rep_max: int | None = None
     target_weight: float | None = None
     rep_scheme: str | None = None
+    performed_side: Literal["left", "right", "center", "bilateral"] | None = None
+    side_explanation: str | None = None
     sort_order: int | None = None
 
 
@@ -60,6 +66,7 @@ def _set_response(s: WorkoutSet, session: Session) -> dict:
         "exercise_id": s.exercise_id,
         "exercise_name": exercise.name if exercise else "unknown",
         "set_order": s.set_order,
+        "performed_side": s.performed_side,
         "reps": s.reps,
         "weight": s.weight,
         "duration_secs": s.duration_secs,
@@ -85,7 +92,15 @@ def update_set(
     ws = session.get(WorkoutSet, set_id)
     if not ws:
         raise HTTPException(status_code=404, detail="Set not found")
-    for key, value in data.model_dump(exclude_unset=True).items():
+    exercise = session.get(Exercise, ws.exercise_id)
+    updates = data.model_dump(exclude_unset=True)
+    if "performed_side" in updates and exercise:
+        updates["performed_side"] = default_performed_side(
+            exercise_name=exercise.name,
+            exercise_laterality=exercise.laterality,
+            provided_side=updates["performed_side"],
+        )
+    for key, value in updates.items():
         setattr(ws, key, value)
     session.add(ws)
     session.commit()
@@ -123,6 +138,11 @@ def add_set(
         session_id=session_id,
         exercise_id=data.exercise_id,
         set_order=set_order,
+        performed_side=default_performed_side(
+            exercise_name=exercise.name,
+            exercise_laterality=exercise.laterality,
+            provided_side=data.performed_side,
+        ),
         reps=data.reps,
         weight=data.weight,
         duration_secs=data.duration_secs,
@@ -170,8 +190,8 @@ def update_program_day_exercise(
 
     updates = data.model_dump(exclude_unset=True)
 
-    # target_weight and rep_scheme live in the notes JSON blob
-    meta_keys = {"target_weight", "rep_scheme"}
+    # target_weight and planner-specific metadata live in the notes JSON blob
+    meta_keys = {"target_weight", "rep_scheme", "performed_side", "side_explanation"}
     meta_updates = {k: updates.pop(k) for k in meta_keys if k in updates}
 
     for key, value in updates.items():
@@ -209,5 +229,7 @@ def update_program_day_exercise(
         "target_rep_max": pde.target_rep_max,
         "rep_scheme": meta.get("rep_scheme"),
         "target_weight": meta.get("target_weight"),
+        "performed_side": meta.get("performed_side"),
+        "side_explanation": meta.get("side_explanation"),
         "sort_order": pde.sort_order,
     }

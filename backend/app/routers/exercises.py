@@ -16,6 +16,7 @@ from app.models import (
     WorkoutSession,
     WorkoutSet,
 )
+from app.tracked_tissues import default_mapping_laterality_mode, infer_exercise_laterality
 from app.workout_queries import get_current_exercise_tissues
 
 router = APIRouter(prefix="/api/exercises", tags=["exercises"])
@@ -29,12 +30,14 @@ class TissueMappingInput(BaseModel):
     fatigue_factor: float | None = None
     joint_strain_factor: float | None = None
     tendon_strain_factor: float | None = None
+    laterality_mode: str | None = None
 
 
 class ExerciseCreate(BaseModel):
     name: str
     equipment: str | None = None
     load_input_mode: str = "external_weight"
+    laterality: str | None = None
     bodyweight_fraction: float = 0.0
     estimated_minutes_per_set: float = 2.0
     notes: str | None = None
@@ -45,6 +48,7 @@ class ExerciseUpdate(BaseModel):
     name: str | None = None
     equipment: str | None = None
     load_input_mode: str | None = None
+    laterality: str | None = None
     bodyweight_fraction: float | None = None
     estimated_minutes_per_set: float | None = None
     notes: str | None = None
@@ -67,12 +71,14 @@ def _build_exercise_response(exercise: Exercise, session: Session) -> dict:
             "fatigue_factor": m.fatigue_factor,
             "joint_strain_factor": m.joint_strain_factor,
             "tendon_strain_factor": m.tendon_strain_factor,
+            "laterality_mode": m.laterality_mode,
         })
     return {
         "id": exercise.id,
         "name": exercise.name,
         "equipment": exercise.equipment,
         "load_input_mode": exercise.load_input_mode,
+        "laterality": exercise.laterality,
         "bodyweight_fraction": exercise.bodyweight_fraction,
         "estimated_minutes_per_set": exercise.estimated_minutes_per_set,
         "notes": exercise.notes,
@@ -120,6 +126,7 @@ def create_exercise(
         name=data.name,
         equipment=data.equipment,
         load_input_mode=data.load_input_mode,
+        laterality=data.laterality or infer_exercise_laterality(data.name),
         bodyweight_fraction=data.bodyweight_fraction,
         estimated_minutes_per_set=data.estimated_minutes_per_set,
         notes=data.notes,
@@ -128,6 +135,9 @@ def create_exercise(
     session.commit()
     session.refresh(exercise)
     for t in data.tissues:
+        tissue = session.get(Tissue, t.tissue_id)
+        if not tissue:
+            raise HTTPException(status_code=400, detail=f"Tissue {t.tissue_id} not found")
         session.add(ExerciseTissue(
             exercise_id=exercise.id,
             tissue_id=t.tissue_id,
@@ -137,6 +147,11 @@ def create_exercise(
             fatigue_factor=t.fatigue_factor if t.fatigue_factor is not None else t.loading_factor,
             joint_strain_factor=t.joint_strain_factor if t.joint_strain_factor is not None else t.loading_factor,
             tendon_strain_factor=t.tendon_strain_factor if t.tendon_strain_factor is not None else t.loading_factor,
+            laterality_mode=t.laterality_mode or default_mapping_laterality_mode(
+                exercise_laterality=exercise.laterality,
+                tissue_type=tissue.type,
+                role=t.role,
+            ),
         ))
     session.commit()
     return _build_exercise_response(exercise, session)
@@ -158,6 +173,8 @@ def update_exercise(
         exercise.equipment = data.equipment
     if data.load_input_mode is not None:
         exercise.load_input_mode = data.load_input_mode
+    if data.laterality is not None:
+        exercise.laterality = data.laterality
     if data.bodyweight_fraction is not None:
         exercise.bodyweight_fraction = data.bodyweight_fraction
     if data.estimated_minutes_per_set is not None:
@@ -175,6 +192,9 @@ def update_exercise(
             session.delete(et)
         session.flush()
         for t in data.tissues:
+            tissue = session.get(Tissue, t.tissue_id)
+            if not tissue:
+                raise HTTPException(status_code=400, detail=f"Tissue {t.tissue_id} not found")
             session.add(ExerciseTissue(
                 exercise_id=exercise.id,
                 tissue_id=t.tissue_id,
@@ -184,6 +204,11 @@ def update_exercise(
                 fatigue_factor=t.fatigue_factor if t.fatigue_factor is not None else t.loading_factor,
                 joint_strain_factor=t.joint_strain_factor if t.joint_strain_factor is not None else t.loading_factor,
                 tendon_strain_factor=t.tendon_strain_factor if t.tendon_strain_factor is not None else t.loading_factor,
+                laterality_mode=t.laterality_mode or default_mapping_laterality_mode(
+                    exercise_laterality=exercise.laterality,
+                    tissue_type=tissue.type,
+                    role=t.role,
+                ),
             ))
         session.commit()
     return _build_exercise_response(exercise, session)

@@ -58,13 +58,14 @@ def workout_set(
 def test_update_set(client, workout_set):
     resp = client.patch(
         f"/api/workout-sets/{workout_set.id}",
-        json={"reps": 12, "rpe": 8.5},
+        json={"reps": 12, "rpe": 8.5, "performed_side": "bilateral"},
     )
     assert resp.status_code == 200
     data = resp.json()
     assert data["reps"] == 12
     assert data["rpe"] == 8.5
     assert data["weight"] == 135.0  # unchanged
+    assert data["performed_side"] == "bilateral"
 
 
 def test_update_set_not_found(client):
@@ -103,6 +104,7 @@ def test_add_set(client, exercise, workout_session):
     assert data["reps"] == 8
     assert data["weight"] == 155.0
     assert data["set_order"] == 1  # auto-assigned
+    assert data["performed_side"] == "bilateral"
 
 
 def test_add_set_auto_order(client, exercise, workout_session, workout_set):
@@ -129,6 +131,46 @@ def test_add_set_exercise_not_found(client, workout_session):
         json={"exercise_id": 99999, "reps": 5},
     )
     assert resp.status_code == 400
+
+
+def test_add_set_keeps_explicit_unilateral_side(client, session: Session, workout_session: WorkoutSession):
+    exercise = Exercise(
+        name="Single-Arm Cable Curl",
+        load_input_mode="external_weight",
+        laterality="unilateral",
+    )
+    session.add(exercise)
+    session.commit()
+    session.refresh(exercise)
+
+    resp = client.post(
+        f"/api/workout-sessions/{workout_session.id}/sets",
+        json={
+            "exercise_id": exercise.id,
+            "reps": 10,
+            "performed_side": "left",
+        },
+    )
+    assert resp.status_code == 201
+    assert resp.json()["performed_side"] == "left"
+
+
+def test_add_set_infers_side_from_unilateral_exercise_name(client, session: Session, workout_session: WorkoutSession):
+    exercise = Exercise(
+        name="Left Only Lateral Raise",
+        load_input_mode="external_weight",
+        laterality="unilateral",
+    )
+    session.add(exercise)
+    session.commit()
+    session.refresh(exercise)
+
+    resp = client.post(
+        f"/api/workout-sessions/{workout_session.id}/sets",
+        json={"exercise_id": exercise.id, "reps": 12},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["performed_side"] == "left"
 
 
 # ── DELETE /api/workout-sets/{set_id} ─────────────────────────────────
@@ -198,6 +240,18 @@ def test_update_pde_rep_scheme(client, program_day_exercise):
     assert data["target_rep_min"] == 5
     assert data["target_rep_max"] == 5
     assert data["target_weight"] == 135  # unchanged
+
+
+def test_update_pde_performed_side_metadata(client, program_day_exercise):
+    response = client.patch(
+        f"/api/program-day-exercises/{program_day_exercise.id}",
+        json={"performed_side": "left", "side_explanation": "Left-side rehab focus"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["performed_side"] == "left"
+    assert data["side_explanation"] == "Left-side rehab focus"
 
 
 def test_update_pde_not_found(client):

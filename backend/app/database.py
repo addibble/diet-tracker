@@ -54,6 +54,7 @@ def apply_db_updates():
     _backfill_special_workout_sets()
     _backfill_historical_bodyweight_anchor()
     _backfill_progression_rep_completion()
+    _backfill_tracked_tissue_foundation()
 
 
 def _migrate_add_columns():
@@ -66,6 +67,7 @@ def _migrate_add_columns():
             "exercises",
             {
                 "load_input_mode": "ALTER TABLE exercises ADD COLUMN load_input_mode TEXT DEFAULT 'external_weight'",
+                "laterality": "ALTER TABLE exercises ADD COLUMN laterality TEXT DEFAULT 'bilateral'",
                 "bodyweight_fraction": "ALTER TABLE exercises ADD COLUMN bodyweight_fraction FLOAT DEFAULT 0.0",
                 "external_load_multiplier": "ALTER TABLE exercises ADD COLUMN external_load_multiplier FLOAT DEFAULT 1.0",
                 "estimated_minutes_per_set": "ALTER TABLE exercises ADD COLUMN estimated_minutes_per_set FLOAT DEFAULT 2.0",
@@ -81,6 +83,7 @@ def _migrate_add_columns():
                 "fatigue_factor": "ALTER TABLE exercise_tissues ADD COLUMN fatigue_factor FLOAT DEFAULT 1.0",
                 "joint_strain_factor": "ALTER TABLE exercise_tissues ADD COLUMN joint_strain_factor FLOAT DEFAULT 1.0",
                 "tendon_strain_factor": "ALTER TABLE exercise_tissues ADD COLUMN tendon_strain_factor FLOAT DEFAULT 1.0",
+                "laterality_mode": "ALTER TABLE exercise_tissues ADD COLUMN laterality_mode TEXT DEFAULT 'bilateral_equal'",
             },
             insp,
         )
@@ -90,6 +93,25 @@ def _migrate_add_columns():
             "tissues",
             {
                 "region": "ALTER TABLE tissues ADD COLUMN region TEXT DEFAULT 'other'",
+                "tracking_mode": "ALTER TABLE tissues ADD COLUMN tracking_mode TEXT DEFAULT 'paired'",
+            },
+            insp,
+        )
+
+    if "workout_sets" in table_names:
+        _ensure_columns(
+            "workout_sets",
+            {
+                "performed_side": "ALTER TABLE workout_sets ADD COLUMN performed_side TEXT",
+            },
+            insp,
+        )
+
+    if "tissue_conditions" in table_names:
+        _ensure_columns(
+            "tissue_conditions",
+            {
+                "tracked_tissue_id": "ALTER TABLE tissue_conditions ADD COLUMN tracked_tissue_id INTEGER",
             },
             insp,
         )
@@ -177,6 +199,7 @@ def _seed_data():
     """Seed reference data after table creation."""
     from app.seed_tissues import (
         seed_default_training_exclusion_windows,
+        seed_exercise_laterality_defaults,
         seed_exercise_tissue_model_defaults,
         seed_hip_machine_tissues,
         seed_reference_exercises,
@@ -184,6 +207,7 @@ def _seed_data():
         seed_tissue_recovery_hours,
         seed_tissue_regions,
         seed_tissues,
+        seed_tracked_tissue_defaults,
     )
 
     with Session(engine) as session:
@@ -192,8 +216,10 @@ def _seed_data():
         seed_tissue_recovery_hours(session)
         seed_hip_machine_tissues(session)
         seed_reference_exercises(session)
+        seed_exercise_laterality_defaults(session)
         seed_exercise_tissue_model_defaults(session)
         seed_tissue_model_configs(session)
+        seed_tracked_tissue_defaults(session)
         seed_default_training_exclusion_windows(session)
 
 
@@ -401,3 +427,22 @@ def _backfill_progression_rep_completion():
                 changed = True
         if changed:
             conn.commit()
+
+
+def _backfill_tracked_tissue_foundation():
+    from sqlmodel import Session
+
+    from app.tracked_tissues import (
+        backfill_tissue_conditions_to_tracked_tissues,
+        backfill_workout_set_performed_side,
+        seed_exercise_laterality,
+        seed_exercise_tissue_laterality_modes,
+        seed_tracked_tissues,
+    )
+
+    with Session(engine) as session:
+        seed_tracked_tissues(session, force_inferred_mode=True)
+        seed_exercise_laterality(session)
+        seed_exercise_tissue_laterality_modes(session)
+        backfill_workout_set_performed_side(session)
+        backfill_tissue_conditions_to_tracked_tissues(session)

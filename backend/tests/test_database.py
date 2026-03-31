@@ -35,6 +35,11 @@ def test_create_db_and_tables_skips_manual_update_helpers(monkeypatch):
         "_backfill_progression_rep_completion",
         fail("_backfill_progression_rep_completion"),
     )
+    monkeypatch.setattr(
+        database,
+        "_backfill_tracked_tissue_foundation",
+        fail("_backfill_tracked_tissue_foundation"),
+    )
 
     database.create_db_and_tables()
 
@@ -76,6 +81,11 @@ def test_apply_db_updates_runs_manual_update_helpers(monkeypatch):
         "_backfill_progression_rep_completion",
         record("_backfill_progression_rep_completion"),
     )
+    monkeypatch.setattr(
+        database,
+        "_backfill_tracked_tissue_foundation",
+        record("_backfill_tracked_tissue_foundation"),
+    )
 
     database.apply_db_updates()
 
@@ -88,4 +98,5 @@ def test_apply_db_updates_runs_manual_update_helpers(monkeypatch):
         "_backfill_special_workout_sets",
         "_backfill_historical_bodyweight_anchor",
         "_backfill_progression_rep_completion",
+        "_backfill_tracked_tissue_foundation",
     ]

@@ -218,6 +218,7 @@ def build_exercise_risk_ranking(
                     "tissue_display_name": tissue.display_name,
                     "tissue_type": tissue.type,
                     "routing_factor": round(routing, 4),
+                    "laterality_mode": mapping.laterality_mode,
                     "tissue_risk_7d": tissue_risk_7d,
                     "tissue_risk_14d": tissue_risk_14d,
                     "tissue_normalized_load": round(tissue_norm, 3),
@@ -259,6 +260,7 @@ def build_exercise_risk_ranking(
                 "name": exercise.name,
                 "equipment": exercise.equipment,
                 "load_input_mode": exercise.load_input_mode,
+                "laterality": exercise.laterality,
                 "estimated_minutes_per_set": exercise.estimated_minutes_per_set,
                 "in_active_program": exercise.id in context.get(
                     "active_program_exercise_ids", set()

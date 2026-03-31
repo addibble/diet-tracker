@@ -387,3 +387,71 @@ def test_prescribe_all_skips_progressive_overload_when_condition_restricts_weigh
         "Progressive overload should be suppressed when tissue condition restricts weight"
     )
     assert result["weight_adjustment_note"] is not None
+
+
+def test_prescribe_all_prefers_unaffected_side_for_cross_education(session):
+    from app.models import RehabPlan, Tissue, TissueCondition, TrackedTissue
+
+    exercise = Exercise(
+        name="Single Arm Shoulder Press",
+        equipment="dumbbell",
+        laterality="unilateral",
+    )
+    session.add(exercise)
+    tissue = Tissue(
+        name="lateral_deltoid",
+        display_name="Lateral Deltoid",
+        type="muscle",
+        tracking_mode="paired",
+    )
+    session.add(tissue)
+    session.commit()
+    session.refresh(exercise)
+    session.refresh(tissue)
+
+    left = TrackedTissue(tissue_id=tissue.id, side="left", display_name="Left Lateral Deltoid")
+    right = TrackedTissue(tissue_id=tissue.id, side="right", display_name="Right Lateral Deltoid")
+    session.add(left)
+    session.add(right)
+    session.commit()
+    session.refresh(left)
+
+    session.add(
+        TissueCondition(
+            tissue_id=tissue.id,
+            tracked_tissue_id=left.id,
+            status="rehabbing",
+            severity=2,
+        )
+    )
+    session.add(
+        RehabPlan(
+            tracked_tissue_id=left.id,
+            protocol_id="cervical-radiculopathy-deltoid",
+            stage_id="activation-and-control",
+            status="active",
+        )
+    )
+    session.commit()
+
+    exercises_data = [
+        {
+            "id": exercise.id,
+            "name": exercise.name,
+            "suitability_score": 70,
+            "recommendation": "good",
+            "weighted_risk_7d": 15.0,
+            "tissues": [
+                {
+                    "tissue_id": tissue.id,
+                    "tissue_display_name": tissue.display_name,
+                    "routing_factor": 0.9,
+                    "laterality_mode": "contralateral_carryover",
+                }
+            ],
+        }
+    ]
+
+    prescribed = _prescribe_all(session, exercises_data, [])
+    assert prescribed[0]["performed_side"] == "right"
+    assert "cross-education" in (prescribed[0]["side_explanation"] or "")

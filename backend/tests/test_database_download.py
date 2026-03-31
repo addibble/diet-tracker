@@ -1,8 +1,10 @@
 """Test database download endpoint."""
 from pathlib import Path
+
 from fastapi.testclient import TestClient
-from app.main import app
+
 from app.config import settings
+from app.main import app
 
 client = TestClient(app)
 
@@ -20,14 +22,11 @@ def test_database_download_with_auth():
     if not db_path.exists():
         # Skip if no DB in test environment
         return
-    
+
     # First login
-    login_response = client.post(
-        "/api/auth/login",
-        json={"password": "yeiyio8aVai"}
-    )
+    login_response = client.post("/api/auth/login", json={"password": "yeiyio8aVai"})
     assert login_response.status_code == 200
-    
+
     # Try to download - TestClient maintains cookies automatically
     response = client.get("/api/database/download")
     assert response.status_code == 200

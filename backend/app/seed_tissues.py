@@ -16,6 +16,13 @@ from app.reference_exercises import (
     TISSUE_RECOVERY_HOURS_FIXUPS,
     normalize_reference_name,
 )
+from app.tracked_tissues import (
+    default_mapping_laterality_mode,
+    infer_exercise_laterality,
+    seed_exercise_tissue_laterality_modes,
+    seed_tracked_tissues,
+    tissue_tracking_mode,
+)
 
 # Flat tissue list: {name: {type, recovery_hours, display_name?}}
 # display_name is auto-generated from name if not provided.
@@ -303,6 +310,7 @@ def seed_tissues(session: Session) -> None:
             display_name=info.get("display_name", _name_to_display(info["name"])),
             type=info["type"],
             region=tissue_region(info["name"]),
+            tracking_mode=tissue_tracking_mode(info["name"]),
             recovery_hours=info.get("recovery_hours", 48),
             notes=info.get("notes"),
         )
@@ -381,6 +389,7 @@ def seed_reference_exercises(session: Session) -> None:
 
         metadata_fields = (
             "load_input_mode",
+            "laterality",
             "bodyweight_fraction",
             "external_load_multiplier",
             "estimated_minutes_per_set",
@@ -418,6 +427,11 @@ def seed_reference_exercises(session: Session) -> None:
                     tissue_id=tissue.id,
                     role=str(mapping_spec["role"]),
                     loading_factor=float(mapping_spec["loading_factor"]),
+                    laterality_mode=default_mapping_laterality_mode(
+                        exercise_laterality=exercise.laterality,
+                        tissue_type=tissue.type,
+                        role=str(mapping_spec["role"]),
+                    ),
                 )
             )
         changed = True
@@ -458,6 +472,11 @@ def seed_hip_machine_tissues(session: Session) -> None:
                 tissue_id=tissue.id,
                 role=spec["role"],
                 loading_factor=spec["loading_factor"],
+                laterality_mode=default_mapping_laterality_mode(
+                    exercise_laterality=exercise.laterality,
+                    tissue_type=tissue.type,
+                    role=spec["role"],
+                ),
             ))
     session.commit()
 
@@ -524,6 +543,24 @@ def seed_tissue_model_configs(session: Session) -> None:
             )
         session.add(config)
     session.commit()
+
+
+def seed_exercise_laterality_defaults(session: Session) -> None:
+    exercises = session.exec(select(Exercise)).all()
+    changed = False
+    for exercise in exercises:
+        inferred = infer_exercise_laterality(exercise.name)
+        if exercise.laterality != inferred and exercise.laterality == "bilateral" and inferred == "unilateral":
+            exercise.laterality = inferred
+            session.add(exercise)
+            changed = True
+    if changed:
+        session.commit()
+    seed_exercise_tissue_laterality_modes(session)
+
+
+def seed_tracked_tissue_defaults(session: Session) -> None:
+    seed_tracked_tissues(session)
 
 
 def seed_default_training_exclusion_windows(session: Session) -> None:

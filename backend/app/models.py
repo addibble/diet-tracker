@@ -100,6 +100,7 @@ class Exercise(SQLModel, table=True):
     name: str = Field(unique=True, index=True)
     equipment: str | None = None  # dumbbell, cable, barbell, machine, bodyweight, etc.
     load_input_mode: str = "external_weight"
+    laterality: str = "bilateral"  # "bilateral", "unilateral", "either"
     bodyweight_fraction: float = 0.0
     external_load_multiplier: float = 1.0
     estimated_minutes_per_set: float = 2.0
@@ -114,8 +115,24 @@ class Tissue(SQLModel, table=True):
     display_name: str
     type: str = "muscle"  # "muscle", "tendon", "joint"
     region: str = "other"  # shoulders, upper_back, lower_back, chest, hips, knees, quads, hamstrings, calves, arms, core, neck, ankles, other
+    tracking_mode: str = "paired"  # "paired", "center"
     recovery_hours: float = 48.0
     notes: str | None = None
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class TrackedTissue(SQLModel, table=True):
+    __tablename__ = "tracked_tissues"
+    __table_args__ = (
+        UniqueConstraint("tissue_id", "side"),
+    )
+    id: int | None = Field(default=None, primary_key=True)
+    tissue_id: int = Field(foreign_key="tissues.id", index=True)
+    side: str = Field(index=True)  # "left", "right", "center"
+    display_name: str
+    active: bool = True
+    notes: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 
 
@@ -133,6 +150,7 @@ class ExerciseTissue(SQLModel, table=True):
     fatigue_factor: float = 1.0
     joint_strain_factor: float = 1.0
     tendon_strain_factor: float = 1.0
+    laterality_mode: str = "bilateral_equal"  # "bilateral_equal", "selected_side_only", "selected_side_primary", "contralateral_carryover"
     updated_at: datetime = Field(default_factory=_utcnow)
 
 
@@ -152,6 +170,7 @@ class WorkoutSet(SQLModel, table=True):
     session_id: int = Field(foreign_key="workout_sessions.id")
     exercise_id: int = Field(foreign_key="exercises.id")
     set_order: int
+    performed_side: str | None = None  # "left", "right", "center", "bilateral"
     reps: int | None = None  # null for timed sets
     weight: float | None = None  # lbs, null for bodyweight
     duration_secs: int | None = None
@@ -167,6 +186,7 @@ class TissueCondition(SQLModel, table=True):
     __tablename__ = "tissue_conditions"
     id: int | None = Field(default=None, primary_key=True)
     tissue_id: int = Field(foreign_key="tissues.id")
+    tracked_tissue_id: int | None = Field(default=None, foreign_key="tracked_tissues.id")
     status: str  # "healthy", "tender", "injured", "rehabbing"
     severity: int = 0  # 0-4
     max_loading_factor: float | None = None
@@ -211,6 +231,39 @@ class RecoveryCheckIn(SQLModel, table=True):
     readiness_0_10: int = 5
     notes: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
+
+
+class RehabPlan(SQLModel, table=True):
+    __tablename__ = "rehab_plans"
+    id: int | None = Field(default=None, primary_key=True)
+    tracked_tissue_id: int = Field(foreign_key="tracked_tissues.id", index=True)
+    protocol_id: str = Field(index=True)
+    stage_id: str = Field(index=True)
+    status: str = Field(default="active", index=True)  # "active", "paused", "completed"
+    pain_monitoring_threshold: int = 3
+    max_next_day_flare: int = 2
+    sessions_per_week_target: float | None = None
+    max_weekly_set_progression: int | None = None
+    max_load_progression_pct: float | None = None
+    notes: str | None = None
+    started_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class RehabCheckIn(SQLModel, table=True):
+    __tablename__ = "rehab_check_ins"
+    id: int | None = Field(default=None, primary_key=True)
+    tracked_tissue_id: int = Field(foreign_key="tracked_tissues.id", index=True)
+    rehab_plan_id: int | None = Field(default=None, foreign_key="rehab_plans.id")
+    pain_0_10: int = 0
+    stiffness_0_10: int = 0
+    weakness_0_10: int = 0
+    neural_symptoms_0_10: int = 0
+    during_load_pain_0_10: int = 0
+    next_day_flare: int = 0
+    confidence_0_10: int = 5
+    notes: str | None = None
+    recorded_at: datetime = Field(default_factory=_utcnow, index=True)
 
 
 class TrainingProgram(SQLModel, table=True):

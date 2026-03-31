@@ -3,7 +3,9 @@ import {
   getTissues,
   getExercises,
   getTissueReadiness,
+  getTrackedTissueReadiness,
   updateExercise,
+  type TrackedTissueReadiness,
   type WkTissue,
   type WkExercise,
   type WkTissueReadiness,
@@ -53,6 +55,13 @@ function formatLastWorked(isoDate: string | null, hoursSince: number | null): st
   return `${Math.round(days)}d ago`
 }
 
+function formatSide(side: string) {
+  if (side === 'left') return 'L'
+  if (side === 'right') return 'R'
+  if (side === 'center') return 'C'
+  return side
+}
+
 // ── Components ──
 
 function LoadingEditor({
@@ -100,6 +109,7 @@ function LoadingEditor({
               fatigue_factor: t.fatigue_factor,
               joint_strain_factor: t.joint_strain_factor,
               tendon_strain_factor: t.tendon_strain_factor,
+              laterality_mode: t.laterality_mode,
             }
           : {
               tissue_id: t.tissue_id,
@@ -109,6 +119,7 @@ function LoadingEditor({
               fatigue_factor: t.fatigue_factor,
               joint_strain_factor: t.joint_strain_factor,
               tendon_strain_factor: t.tendon_strain_factor,
+              laterality_mode: t.laterality_mode,
             }
       )
       await updateExercise(exerciseId, { tissues: updatedTissues })
@@ -165,11 +176,13 @@ function TissueView({
   tissues,
   exercises,
   readinessMap,
+  trackedReadinessByTissue,
   onSave,
 }: {
   tissues: TissueWithExercises[]
   exercises: WkExercise[]
   readinessMap: Map<number, WkTissueReadiness>
+  trackedReadinessByTissue: Map<number, TrackedTissueReadiness[]>
   onSave: () => void
 }) {
   const [search, setSearch] = useState('')
@@ -274,6 +287,36 @@ function TissueView({
                 })}
               </div>
             )}
+
+            {trackedReadinessByTissue.get(t.id)?.length ? (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {trackedReadinessByTissue.get(t.id)!.map((tracked) => (
+                  <span
+                    key={tracked.tracked_tissue.id}
+                    className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] border ${
+                      tracked.protected
+                        ? 'bg-purple-50 border-purple-200 text-purple-700'
+                        : tracked.ready
+                          ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                          : 'bg-gray-50 border-gray-200 text-gray-600'
+                    }`}
+                    title={tracked.last_trained ?? 'never'}
+                  >
+                    <span className="font-semibold">{formatSide(tracked.tracked_tissue.side)}</span>
+                    <span>{tracked.tracked_tissue.display_name}</span>
+                    {tracked.active_rehab_plan && (
+                      <span className="font-medium">
+                        {tracked.active_rehab_plan.stage_label}
+                      </span>
+                    )}
+                    <span>vol {tracked.volume_7d}</span>
+                    {tracked.cross_education_7d > 0 && (
+                      <span>ce {tracked.cross_education_7d}</span>
+                    )}
+                  </span>
+                ))}
+              </div>
+            ) : null}
           </div>
         ))}
       </div>
@@ -359,19 +402,22 @@ export default function TissueAdminPage() {
   const [tissues, setTissues] = useState<WkTissue[]>([])
   const [exercises, setExercises] = useState<WkExercise[]>([])
   const [readiness, setReadiness] = useState<WkTissueReadiness[]>([])
+  const [trackedReadiness, setTrackedReadiness] = useState<TrackedTissueReadiness[]>([])
   const [view, setView] = useState<View>('tissues')
   const [loading, setLoading] = useState(true)
 
   const load = async () => {
     try {
-      const [t, e, r] = await Promise.all([
+      const [t, e, r, tr] = await Promise.all([
         getTissues(),
         getExercises(),
         getTissueReadiness(),
+        getTrackedTissueReadiness(),
       ])
       setTissues(t)
       setExercises(e)
       setReadiness(r)
+      setTrackedReadiness(tr)
     } catch (err) {
       console.error('Failed to load data', err)
     } finally {
@@ -410,6 +456,17 @@ export default function TissueAdminPage() {
     return map
   }, [readiness])
 
+  const trackedReadinessByTissue = useMemo(() => {
+    const map = new Map<number, TrackedTissueReadiness[]>()
+    for (const row of trackedReadiness) {
+      const tissueId = row.tracked_tissue.tissue_id
+      const existing = map.get(tissueId) ?? []
+      existing.push(row)
+      map.set(tissueId, existing)
+    }
+    return map
+  }, [trackedReadiness])
+
   if (loading) {
     return <div className="text-sm text-gray-500 p-6">Loading...</div>
   }
@@ -440,7 +497,13 @@ export default function TissueAdminPage() {
       </div>
 
       {view === 'tissues' && (
-        <TissueView tissues={tissuesWithExercises} exercises={exercises} readinessMap={readinessMap} onSave={load} />
+        <TissueView
+          tissues={tissuesWithExercises}
+          exercises={exercises}
+          readinessMap={readinessMap}
+          trackedReadinessByTissue={trackedReadinessByTissue}
+          onSave={load}
+        />
       )}
 
       {view === 'exercises' && (

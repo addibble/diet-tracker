@@ -14,10 +14,10 @@ router = APIRouter(prefix="/api/database", tags=["database"])
 def download_database(user: str = Depends(get_current_user)):
     """Download the entire SQLite database file."""
     db_path = Path(settings.database_url.split("///")[-1])
-    
+
     if not db_path.exists():
         raise HTTPException(status_code=404, detail="Database file not found")
-    
+
     return FileResponse(
         path=db_path,
         filename="diet_tracker.db",

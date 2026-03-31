@@ -1,4 +1,5 @@
 import datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -7,6 +8,7 @@ from sqlmodel import Session, col, select
 from app.auth import get_current_user
 from app.database import get_session
 from app.models import Exercise, WorkoutSession, WorkoutSet
+from app.tracked_tissues import default_performed_side
 
 router = APIRouter(prefix="/api/workout-sessions", tags=["workout-sessions"])
 
@@ -14,6 +16,7 @@ router = APIRouter(prefix="/api/workout-sessions", tags=["workout-sessions"])
 class SetInput(BaseModel):
     exercise_id: int
     set_order: int
+    performed_side: Literal["left", "right", "center", "bilateral"] | None = None
     reps: int | None = None
     weight: float | None = None
     duration_secs: int | None = None
@@ -52,6 +55,7 @@ def _build_session_response(ws: WorkoutSession, session: Session) -> dict:
             "exercise_id": s.exercise_id,
             "exercise_name": exercise.name if exercise else "unknown",
             "set_order": s.set_order,
+            "performed_side": s.performed_side,
             "reps": s.reps,
             "weight": s.weight,
             "duration_secs": s.duration_secs,
@@ -122,6 +126,11 @@ def create_session(
             session_id=ws.id,
             exercise_id=s.exercise_id,
             set_order=s.set_order,
+            performed_side=default_performed_side(
+                exercise_name=exercise.name,
+                exercise_laterality=exercise.laterality,
+                provided_side=s.performed_side,
+            ),
             reps=s.reps,
             weight=s.weight,
             duration_secs=s.duration_secs,
@@ -156,10 +165,18 @@ def update_session(
                 session.delete(s)
     if data.add_sets:
         for s in data.add_sets:
+            exercise = session.get(Exercise, s.exercise_id)
+            if not exercise:
+                raise HTTPException(status_code=400, detail=f"Exercise {s.exercise_id} not found")
             session.add(WorkoutSet(
                 session_id=ws.id,
                 exercise_id=s.exercise_id,
                 set_order=s.set_order,
+                performed_side=default_performed_side(
+                    exercise_name=exercise.name,
+                    exercise_laterality=exercise.laterality,
+                    provided_side=s.performed_side,
+                ),
                 reps=s.reps,
                 weight=s.weight,
                 duration_secs=s.duration_secs,

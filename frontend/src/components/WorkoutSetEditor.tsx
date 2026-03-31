@@ -36,6 +36,7 @@ interface EditableSet {
   exercise_id: number
   exercise_name: string
   set_order: number
+  performed_side: 'left' | 'right' | 'center' | 'bilateral' | null
   reps: number | null
   weight: number | null
   duration_secs: number | null
@@ -52,6 +53,7 @@ type ExerciseGroup = {
   exercise_name: string
   equipment: string | null
   load_input_mode: string
+  laterality: 'bilateral' | 'unilateral' | 'either'
   sets: EditableSet[]
   // Plan targets (if available)
   target_sets?: number
@@ -347,7 +349,19 @@ function PlanExerciseRow({
             <span>lb</span>
           </label>
         )}
+        {ex.laterality && ex.laterality !== 'bilateral' && (
+          <label className="flex items-center gap-1 text-xs text-gray-500">
+            Side
+            <PerformedSideSelect
+              value={ex.performed_side ?? null}
+              onChange={(v) => onUpdate('performed_side', v)}
+            />
+          </label>
+        )}
       </div>
+      {ex.side_explanation && (
+        <p className="mt-1.5 text-[11px] text-purple-600">{ex.side_explanation}</p>
+      )}
     </div>
   )
 }
@@ -416,6 +430,7 @@ function LogEditor({
         exercise_name: sets[0].exercise_name,
         equipment: ex?.equipment ?? null,
         load_input_mode: ex?.load_input_mode ?? 'external_weight',
+        laterality: ex?.laterality ?? 'bilateral',
         sets,
       }
     })
@@ -479,6 +494,7 @@ function LogEditor({
       try {
         await addWorkoutSet(session.id, {
           exercise_id: exerciseId,
+          performed_side: templateSet?.performed_side ?? null,
           reps: templateSet?.reps ?? null,
           weight: templateSet?.weight ?? null,
           duration_secs: templateSet?.duration_secs ?? null,
@@ -648,6 +664,9 @@ function LogExerciseGroup({
         {mode === 'distance' && (
           <span className="w-16 text-center">Steps</span>
         )}
+        {group.laterality !== 'bilateral' && (
+          <span className="w-14 text-center">Side</span>
+        )}
         <span className="w-14 text-center">RPE</span>
         <span className="w-14 text-center">Status</span>
         <span className="w-5" />
@@ -661,6 +680,7 @@ function LogExerciseGroup({
             set={s}
             index={i + 1}
             mode={mode}
+            laterality={group.laterality}
             onUpdate={(field, value) => onUpdateSet(s.id, field, value)}
             onDelete={() => onDeleteSet(s.id)}
           />
@@ -689,12 +709,14 @@ function SetRow({
   set,
   index,
   mode,
+  laterality,
   onUpdate,
   onDelete,
 }: {
   set: EditableSet
   index: number
   mode: string
+  laterality: 'bilateral' | 'unilateral' | 'either'
   onUpdate: (field: string, value: number | string | null) => void
   onDelete: () => void
 }) {
@@ -746,6 +768,13 @@ function SetRow({
         />
       )}
 
+      {laterality !== 'bilateral' && (
+        <PerformedSideSelect
+          value={set.performed_side}
+          onChange={(v) => onUpdate('performed_side', v)}
+        />
+      )}
+
       <NumberInput
         value={set.rpe}
         step={0.5}
@@ -769,6 +798,28 @@ function SetRow({
         ×
       </button>
     </div>
+  )
+}
+
+function PerformedSideSelect({
+  value,
+  onChange,
+}: {
+  value: 'left' | 'right' | 'center' | 'bilateral' | null
+  onChange: (v: 'left' | 'right' | 'center' | 'bilateral' | null) => void
+}) {
+  return (
+    <select
+      value={value ?? ''}
+      onChange={(e) => onChange((e.target.value || null) as 'left' | 'right' | 'center' | 'bilateral' | null)}
+      className="w-14 px-1 py-0.5 text-[11px] border border-gray-200 rounded bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-teal-500"
+    >
+      <option value="">—</option>
+      <option value="left">L</option>
+      <option value="right">R</option>
+      <option value="center">C</option>
+      <option value="bilateral">B</option>
+    </select>
   )
 }
 

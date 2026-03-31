@@ -779,11 +779,22 @@ function PlannerCard({ planner, onRefresh, onSave }: {
                     <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${schemeColor(ex.rep_scheme)}`}>
                       {ex.rep_scheme}
                     </span>
+                    {ex.performed_side && ex.performed_side !== 'bilateral' && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-purple-100 text-purple-700">
+                        {ex.performed_side}
+                      </span>
+                    )}
                   </div>
                   <div className="text-[11px] text-gray-600 mt-0.5 font-medium">
                     {ex.target_sets} x {ex.target_reps}
                     {ex.target_weight != null && <> @ <span className="text-gray-900">{ex.target_weight} lb</span></>}
                   </div>
+                  {ex.side_explanation && (
+                    <div className="text-[10px] text-purple-600 mt-0.5">{ex.side_explanation}</div>
+                  )}
+                  {ex.weight_adjustment_note && (
+                    <div className="text-[10px] text-orange-600 mt-0.5">{ex.weight_adjustment_note}</div>
+                  )}
                   {ex.overload_note && (
                     <div className="text-[10px] text-amber-600 mt-0.5">{ex.overload_note}</div>
                   )}
