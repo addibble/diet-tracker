@@ -219,6 +219,66 @@ If a Pydantic model field has the same name as its type import (e.g., `date: dat
 ### Tool definition dicts: watch line length
 Inline JSON-style tool definitions (OpenRouter/OpenAI function calling format) easily exceed the 100-char ruff limit. Break long description strings into parenthesized multi-line strings, and split property dicts across lines.
 
+## Research Paper Downloads (pdfpapermill)
+
+A background agent (`pdfpapermill`) monitors the shared `.comms\` mailbox and converts academic papers (PDF/URL) to structured Markdown with LaTeX math, organized by research topic.
+
+### Requesting a paper
+
+```powershell
+python tools\agent_comms.py send --from <your_agent_name> --to pdfpapermill --type request --subject "Download <paper title>" --body "url: <arxiv_url_or_pdf_url>"
+```
+
+### Examples
+
+Basic request (default topic):
+```powershell
+python tools\agent_comms.py send --from chatgpt --to pdfpapermill --type request --subject "Download 3D Gaussian Splatting paper" --body "url: https://arxiv.org/abs/2308.14737"
+```
+
+With topic:
+```powershell
+python tools\agent_comms.py send --from chatgpt --to pdfpapermill --type request --subject "Bodybuilding hypertrophy research" --body "url: 2405.17421`ntopic: bodybuilding"
+```
+
+### Body fields
+
+| Field     | Required | Default | Description                                           |
+|-----------|----------|---------|-------------------------------------------------------|
+| `url`     | Yes      | —       | arXiv URL, arXiv ID (e.g. `2308.14737`), or direct PDF URL |
+| `backend` | No       | `marker` | `marker` (LaTeX math, good structure) or `fast` (seconds, Unicode math) |
+| `topic`   | No       | `uncategorized` | Research topic subdirectory (e.g. `nephrology`, `bodybuilding`, `gaussian_splat`) |
+
+### Response workflow
+
+1. If the paper is already converted in the requested topic, you get an immediate `artifact` reply with the path.
+2. Otherwise, you receive a `status` message ("conversion started"), then an `artifact` message when done.
+
+### Response format (in your inbox)
+
+```yaml
+type: artifact
+subject: "Paper ready: 2308.14737"
+body: |
+  Paper converted successfully.
+  markdown_path: C:\Users\addib\source\repos\addibble\pdfpapermill\papers\bodybuilding\2308.14737.md
+  pdf_path: C:\Users\addib\source\repos\addibble\pdfpapermill\papers\bodybuilding\2308.14737.pdf
+  topic: bodybuilding
+  images: 102
+  images_dir: C:\Users\addib\source\repos\addibble\pdfpapermill\papers\bodybuilding\2308.14737.images
+```
+
+### Output structure
+
+Papers are filed into `..\pdfpapermill\papers\<topic>\` where `<topic>` defaults to `uncategorized`. Each paper includes:
+- `<id>.md` — converted markdown with LaTeX math
+- `<id>.pdf` — original PDF
+- `<id>.images\` — extracted images (if any)
+
+### Error handling
+
+If download or conversion fails, you receive an `answer` message explaining the error.
+
 ## Conventions
 
 - Python: type hints everywhere, ruff for linting/formatting (line-length 100)
