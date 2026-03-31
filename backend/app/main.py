@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth import router as auth_router
-from app.database import create_db_and_tables
+from app.database import ensure_runtime_db_ready
 from app.routers.daily import router as daily_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.database import router as database_router
@@ -45,7 +45,7 @@ logging.getLogger().setLevel(logging.INFO)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    create_db_and_tables()
+    ensure_runtime_db_ready()
     yield
 
 

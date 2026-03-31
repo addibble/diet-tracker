@@ -13,6 +13,39 @@ logger = logging.getLogger(__name__)
 
 engine = create_engine(settings.database_url, echo=False)
 
+RUNTIME_REQUIRED_TABLES = {
+    "tracked_tissues",
+    "rehab_plans",
+    "rehab_check_ins",
+}
+
+RUNTIME_REQUIRED_COLUMNS = {
+    "exercises": {
+        "load_input_mode",
+        "laterality",
+        "bodyweight_fraction",
+        "external_load_multiplier",
+        "estimated_minutes_per_set",
+    },
+    "exercise_tissues": {
+        "routing_factor",
+        "fatigue_factor",
+        "joint_strain_factor",
+        "tendon_strain_factor",
+        "laterality_mode",
+    },
+    "tissues": {
+        "region",
+        "tracking_mode",
+    },
+    "workout_sets": {
+        "performed_side",
+    },
+    "tissue_conditions": {
+        "tracked_tissue_id",
+    },
+}
+
 
 def _ensure_sqlite_dir():
     if settings.database_url.startswith("sqlite"):
@@ -40,6 +73,16 @@ def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
 
 
+def ensure_runtime_db_ready():
+    import app.models  # noqa: F401
+
+    _ensure_sqlite_dir()
+    SQLModel.metadata.create_all(engine)
+    if _runtime_db_needs_manual_updates():
+        logger.info("Applying pending runtime database updates")
+        apply_db_updates()
+
+
 def apply_db_updates():
     """Apply manual schema/data updates and historical backfills."""
     import app.models  # noqa: F401
@@ -55,6 +98,53 @@ def apply_db_updates():
     _backfill_historical_bodyweight_anchor()
     _backfill_progression_rep_completion()
     _backfill_tracked_tissue_foundation()
+
+
+def _runtime_db_needs_manual_updates() -> bool:
+    insp = inspect(engine)
+    table_names = set(insp.get_table_names())
+
+    if not table_names:
+        logger.info("Database has no tables yet; runtime updates required")
+        return True
+
+    missing_tables = sorted(RUNTIME_REQUIRED_TABLES - table_names)
+    if missing_tables:
+        logger.info("Database missing runtime tables: %s", ", ".join(missing_tables))
+        return True
+
+    for table_name, required_columns in RUNTIME_REQUIRED_COLUMNS.items():
+        if table_name not in table_names:
+            logger.info("Database missing required table: %s", table_name)
+            return True
+        existing_columns = {column["name"] for column in insp.get_columns(table_name)}
+        missing_columns = sorted(required_columns - existing_columns)
+        if missing_columns:
+            logger.info(
+                "Database table %s missing runtime columns: %s",
+                table_name,
+                ", ".join(missing_columns),
+            )
+            return True
+
+    with engine.connect() as conn:
+        exercise_count = conn.execute(text("SELECT COUNT(*) FROM exercises")).scalar() or 0
+        tissue_count = conn.execute(text("SELECT COUNT(*) FROM tissues")).scalar() or 0
+        tracked_tissue_count = conn.execute(text("SELECT COUNT(*) FROM tracked_tissues")).scalar() or 0
+
+    if exercise_count == 0 or tissue_count == 0:
+        logger.info(
+            "Database missing seeded reference data (exercises=%s tissues=%s)",
+            exercise_count,
+            tissue_count,
+        )
+        return True
+
+    if tissue_count > 0 and tracked_tissue_count == 0:
+        logger.info("Database missing tracked-tissue backfill")
+        return True
+
+    return False
 
 
 def _migrate_add_columns():

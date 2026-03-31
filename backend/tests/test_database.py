@@ -100,3 +100,36 @@ def test_apply_db_updates_runs_manual_update_helpers(monkeypatch):
         "_backfill_progression_rep_completion",
         "_backfill_tracked_tissue_foundation",
     ]
+
+
+def test_ensure_runtime_db_ready_runs_updates_when_schema_is_stale(monkeypatch):
+    calls: list[str] = []
+
+    monkeypatch.setattr(database, "_ensure_sqlite_dir", lambda: calls.append("_ensure_sqlite_dir"))
+    monkeypatch.setattr(database.SQLModel.metadata, "create_all", lambda engine: calls.append("create_all"))
+    monkeypatch.setattr(database, "_runtime_db_needs_manual_updates", lambda: True)
+    monkeypatch.setattr(database, "apply_db_updates", lambda: calls.append("apply_db_updates"))
+
+    database.ensure_runtime_db_ready()
+
+    assert calls == [
+        "_ensure_sqlite_dir",
+        "create_all",
+        "apply_db_updates",
+    ]
+
+
+def test_ensure_runtime_db_ready_skips_updates_when_schema_is_current(monkeypatch):
+    calls: list[str] = []
+
+    monkeypatch.setattr(database, "_ensure_sqlite_dir", lambda: calls.append("_ensure_sqlite_dir"))
+    monkeypatch.setattr(database.SQLModel.metadata, "create_all", lambda engine: calls.append("create_all"))
+    monkeypatch.setattr(database, "_runtime_db_needs_manual_updates", lambda: False)
+    monkeypatch.setattr(database, "apply_db_updates", lambda: calls.append("apply_db_updates"))
+
+    database.ensure_runtime_db_ready()
+
+    assert calls == [
+        "_ensure_sqlite_dir",
+        "create_all",
+    ]
