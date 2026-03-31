@@ -50,6 +50,10 @@ REST_DAY_THRESHOLD = 0.35
 MAX_CANDIDATES = 16
 DEFAULT_SELECTED = 8
 AUTO_PROGRAM_NAME = "__auto_plan__"
+_MAX_HEAVY_EXERCISES_PER_SESSION = 3
+_MAX_HEAVY_EXERCISES_PER_PRIMARY_REGION = 1
+_HIGH_REP_STRENGTH_ANCHOR_THRESHOLD = 8
+_HEAVY_WEIGHT_BLEND_RATIO = 0.5
 
 # Per-tissue fatigue gates used in exercise selection.
 # Tissues with routing_factor >= this threshold are considered "significantly
@@ -846,19 +850,25 @@ def _select_exercises(
 
         # Score hits on target regions
         target_hits = []
+        target_primary_hits = []
         target_routing = 0.0
         for m in region_mappings:
             if m["region"] in target_regions and m["role"] in ("primary", "secondary"):
                 target_hits.append(m["region"])
                 target_routing += m["routing"]
+                if m["role"] == "primary":
+                    target_primary_hits.append(m["region"])
 
         # Score hits on adjacent regions (secondary pool)
         adj_hits = []
+        adj_primary_hits = []
         adj_routing = 0.0
         for m in region_mappings:
             if m["region"] in adjacent_regions and m["role"] in ("primary", "secondary"):
                 adj_hits.append(m["region"])
                 adj_routing += m["routing"]
+                if m["role"] == "primary":
+                    adj_primary_hits.append(m["region"])
 
         if not target_hits and not adj_hits:
             continue
@@ -879,6 +889,7 @@ def _select_exercises(
             primary_candidates.append({
                 **ex,
                 "target_hits": set(target_hits),
+                "primary_regions": set(target_primary_hits) or set(target_hits),
                 "selection_score": score,
             })
         else:
@@ -892,6 +903,7 @@ def _select_exercises(
             adjacent_candidates.append({
                 **ex,
                 "target_hits": set(adj_hits),
+                "primary_regions": set(adj_primary_hits) or set(adj_hits),
                 "selection_score": score,
             })
 
@@ -947,6 +959,17 @@ def _prescribe_all(
         [r for r in weight_rows if r.logged_at.date() <= today]
     )
     current_bw = latest_bodyweight(bw_by_date_map, today)
+    session_primary_regions = {
+        region
+        for ex in exercises
+        for region in ex.get("primary_regions", ex.get("target_hits", set()))
+    }
+    session_heavy_limit = min(
+        _MAX_HEAVY_EXERCISES_PER_SESSION,
+        max(1, len(session_primary_regions)),
+    )
+    heavy_primary_region_counts: defaultdict[str, int] = defaultdict(int)
+    heavy_session_count = 0
 
     results = []
     for ex in exercises:
@@ -1002,6 +1025,21 @@ def _prescribe_all(
             side_explanation=side_explanation,
             prescription_mode=prescription_mode,
         )
+        primary_regions = set(ex.get("primary_regions", ex.get("target_hits", set())))
+        rep_scheme, target_reps, intensity_range, rationale = _apply_session_heavy_budget(
+            rep_scheme=rep_scheme,
+            target_reps=target_reps,
+            intensity_range=intensity_range,
+            rationale=rationale,
+            primary_regions=primary_regions,
+            heavy_session_count=heavy_session_count,
+            session_heavy_limit=session_heavy_limit,
+            heavy_primary_region_counts=heavy_primary_region_counts,
+        )
+        if rep_scheme == "heavy":
+            heavy_session_count += 1
+            for region in primary_regions:
+                heavy_primary_region_counts[region] += 1
 
         # Find the most restrictive loading factor from tender/rehabbing tissues.
         # Only tissues with a significant routing factor (>= 0.3) are considered
@@ -1061,12 +1099,36 @@ def _prescribe_all(
             target_weight = max(target_weight, 0)
 
         last_perf = _get_last_performance(session, exercise_id)
+        last_weight = float(last_perf.get("max_weight", 0.0)) if last_perf else 0.0
+        last_session_peak_reps = _last_session_peak_reps(last_perf)
         overload_note = None
+        if (
+            rep_scheme == "heavy"
+            and target_weight
+            and target_weight > 0
+            and last_weight > 0
+            and last_session_peak_reps >= _HIGH_REP_STRENGTH_ANCHOR_THRESHOLD
+            and weight_adjustment_note is None
+        ):
+            target_weight = _round_target_weight(
+                exercise.equipment,
+                _blend_heavy_weight_target(
+                    heavy_target=target_weight,
+                    recent_weight=last_weight,
+                ),
+            )
+            overload_note = (
+                f"Heavy target blends e1RM with your recent {last_session_peak_reps}-rep working weight"
+            )
         # Skip progressive overload when a tissue condition restricts loading.
         if not weight_adjustment_note and last_perf and target_weight and target_weight > 0:
-            last_weight = last_perf.get("max_weight", 0)
             all_full = last_perf.get("all_full", False)
-            if all_full and last_weight and last_weight >= target_weight:
+            if (
+                rep_scheme == "heavy"
+                and last_session_peak_reps >= _HIGH_REP_STRENGTH_ANCHOR_THRESHOLD
+            ):
+                pass
+            elif all_full and last_weight and last_weight >= target_weight:
                 increment = 5.0 if exercise.equipment == "barbell" else 2.5
                 target_weight = last_weight + increment
                 overload_note = f"+{increment} lbs (progressive overload)"
@@ -1125,6 +1187,39 @@ def _select_rep_scheme(
         return ("light", "15-20", (0.50, 0.60), "Low readiness; light work.")
 
 
+def _apply_session_heavy_budget(
+    *,
+    rep_scheme: str,
+    target_reps: str,
+    intensity_range: tuple[float, float],
+    rationale: str,
+    primary_regions: set[str],
+    heavy_session_count: int,
+    session_heavy_limit: int,
+    heavy_primary_region_counts: dict[str, int],
+) -> tuple[str, str, tuple[float, float], str]:
+    if rep_scheme != "heavy":
+        return rep_scheme, target_reps, intensity_range, rationale
+
+    over_session_limit = heavy_session_count >= session_heavy_limit
+    saturated_regions = sorted(
+        region for region in primary_regions
+        if heavy_primary_region_counts.get(region, 0) >= _MAX_HEAVY_EXERCISES_PER_PRIMARY_REGION
+    )
+    if not over_session_limit and not saturated_regions:
+        return rep_scheme, target_reps, intensity_range, rationale
+
+    if saturated_regions:
+        heavy_note = (
+            "Heavy slot already used for "
+            + ", ".join(saturated_regions)
+            + "; shifting this exercise to a volume prescription."
+        )
+    else:
+        heavy_note = "Session heavy budget is already full; shifting this exercise to a volume prescription."
+    return ("volume", "8-12", (0.65, 0.75), f"{rationale} {heavy_note}")
+
+
 def _days_since_heavy_work(session: Session, exercise_id: int, today: date) -> int:
     stmt = (
         select(WorkoutSession.date)
@@ -1139,6 +1234,33 @@ def _days_since_heavy_work(session: Session, exercise_id: int, today: date) -> i
     )
     result = session.exec(stmt).first()
     return (today - result).days if result else 999
+
+
+def _last_session_peak_reps(last_perf: dict | None) -> int:
+    if not last_perf:
+        return 0
+    return max(
+        (
+            int(set_data.get("reps") or 0)
+            for set_data in last_perf.get("sets", [])
+        ),
+        default=0,
+    )
+
+
+def _blend_heavy_weight_target(*, heavy_target: float, recent_weight: float) -> float:
+    return max(
+        recent_weight,
+        recent_weight + (heavy_target - recent_weight) * _HEAVY_WEIGHT_BLEND_RATIO,
+    )
+
+
+def _round_target_weight(equipment: str | None, raw_weight: float) -> float:
+    if equipment == "barbell":
+        return max(round(raw_weight / 5) * 5, 0)
+    if equipment == "dumbbell":
+        return max(round(raw_weight / 2.5) * 2.5, 0)
+    return max(round(raw_weight / 5) * 5, 0)
 
 
 def _get_last_performance(session: Session, exercise_id: int) -> dict | None:

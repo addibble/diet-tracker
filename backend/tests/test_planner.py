@@ -1,4 +1,6 @@
-from app.models import Exercise
+from datetime import date
+
+from app.models import Exercise, WorkoutSession, WorkoutSet
 from app.planner import _prescribe_all, _select_exercises
 
 
@@ -455,3 +457,99 @@ def test_prescribe_all_prefers_unaffected_side_for_cross_education(session):
     prescribed = _prescribe_all(session, exercises_data, [])
     assert prescribed[0]["performed_side"] == "right"
     assert "cross-education" in (prescribed[0]["side_explanation"] or "")
+
+
+def test_prescribe_all_limits_heavy_exercises_per_primary_region(session):
+    heavy_a = Exercise(name="Heavy Press A", equipment="barbell")
+    heavy_b = Exercise(name="Heavy Press B", equipment="barbell")
+    session.add(heavy_a)
+    session.add(heavy_b)
+    session.commit()
+
+    prescribed = _prescribe_all(
+        session,
+        [
+            {
+                "id": heavy_a.id,
+                "name": heavy_a.name,
+                "suitability_score": 95,
+                "recommendation": "good",
+                "weighted_risk_7d": 10.0,
+                "target_hits": {"chest"},
+                "primary_regions": {"chest"},
+                "tissues": [],
+            },
+            {
+                "id": heavy_b.id,
+                "name": heavy_b.name,
+                "suitability_score": 93,
+                "recommendation": "good",
+                "weighted_risk_7d": 12.0,
+                "target_hits": {"chest"},
+                "primary_regions": {"chest"},
+                "tissues": [],
+            },
+        ],
+        [],
+    )
+
+    assert prescribed[0]["rep_scheme"] == "heavy"
+    assert prescribed[1]["rep_scheme"] == "volume"
+    assert "Heavy slot already used" in prescribed[1]["rationale"]
+
+
+def test_prescribe_all_blends_heavy_target_with_recent_high_rep_weight(session):
+    exercise = Exercise(name="Blend Press", equipment="barbell")
+    session.add(exercise)
+    session.commit()
+    session.refresh(exercise)
+
+    workout = WorkoutSession(date=date(2026, 3, 30))
+    session.add(workout)
+    session.commit()
+    session.refresh(workout)
+    for set_order in range(3):
+        session.add(
+            WorkoutSet(
+                session_id=workout.id,
+                exercise_id=exercise.id,
+                set_order=set_order,
+                reps=12,
+                weight=100.0,
+                rep_completion="full",
+            )
+        )
+    session.commit()
+
+    original_build_exercise_strength = __import__("app.planner", fromlist=["build_exercise_strength"]).build_exercise_strength
+
+    def fake_strength(_session, _exercise_id, as_of=None):  # noqa: ARG001
+        return {"current_e1rm": 200.0}
+
+    import app.planner as planner_module
+
+    planner_module.build_exercise_strength = fake_strength
+    try:
+        prescribed = _prescribe_all(
+            session,
+            [
+                {
+                    "id": exercise.id,
+                    "name": exercise.name,
+                    "suitability_score": 95,
+                    "recommendation": "good",
+                    "weighted_risk_7d": 5.0,
+                    "target_hits": {"chest"},
+                    "primary_regions": {"chest"},
+                    "tissues": [],
+                }
+            ],
+            [],
+        )
+    finally:
+        planner_module.build_exercise_strength = original_build_exercise_strength
+
+    result = prescribed[0]
+    assert result["rep_scheme"] == "heavy"
+    assert result["target_weight"] == 130
+    assert "blends e1RM" in (result["overload_note"] or "")
