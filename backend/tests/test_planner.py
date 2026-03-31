@@ -1,7 +1,9 @@
 from datetime import date
 
-from app.models import Exercise, WorkoutSession, WorkoutSet
-from app.planner import _prescribe_all, _select_exercises
+from sqlmodel import select
+
+from app.models import Exercise, RehabPlan, Tissue, TissueCondition, TrackedTissue, WorkoutSession, WorkoutSet
+from app.planner import _build_rehab_priority_map, _prescribe_all, _select_exercises
 
 
 def test_prescribe_all_normalizes_suitability_score(session):
@@ -200,6 +202,225 @@ def test_select_exercises_does_not_penalise_distant_stabilisers():
     assert len(result) == 1, (
         "Exercise should not be excluded when only a distant stabilizer (routing < threshold) is fatigued"
     )
+
+
+def test_select_exercises_inserts_direct_rehab_unilateral_candidate_first(session):
+    tissue = Tissue(
+        name="lateral_deltoid",
+        display_name="Lateral Deltoid",
+        type="muscle",
+        tracking_mode="paired",
+        region="shoulders",
+    )
+    direct_rehab = Exercise(
+        name="Single Arm Shoulder Press",
+        equipment="dumbbell",
+        laterality="unilateral",
+    )
+    bilateral = Exercise(
+        name="Bench Press",
+        equipment="barbell",
+        laterality="bilateral",
+    )
+    session.add(tissue)
+    session.add(direct_rehab)
+    session.add(bilateral)
+    session.commit()
+    session.refresh(tissue)
+    session.refresh(direct_rehab)
+    session.refresh(bilateral)
+
+    left = TrackedTissue(tissue_id=tissue.id, side="left", display_name="Left Lateral Deltoid")
+    right = TrackedTissue(tissue_id=tissue.id, side="right", display_name="Right Lateral Deltoid")
+    session.add(left)
+    session.add(right)
+    session.commit()
+    session.refresh(left)
+
+    session.add(
+        TissueCondition(
+            tissue_id=tissue.id,
+            tracked_tissue_id=left.id,
+            status="rehabbing",
+            severity=2,
+        )
+    )
+    session.add(
+        RehabPlan(
+            tracked_tissue_id=left.id,
+            protocol_id="cervical-radiculopathy-deltoid",
+            stage_id="activation-and-control",
+            status="active",
+        )
+    )
+    session.commit()
+
+    exercises_data = [
+        {
+            "id": bilateral.id,
+            "name": bilateral.name,
+            "laterality": "bilateral",
+            "suitability_score": 92,
+            "recommendation": "good",
+            "weighted_risk_7d": 5.0,
+            "tissues": [
+                {
+                    "tissue_id": tissue.id,
+                    "tissue_display_name": tissue.display_name,
+                    "routing_factor": 0.4,
+                    "laterality_mode": "bilateral_equal",
+                }
+            ],
+        },
+        {
+            "id": direct_rehab.id,
+            "name": direct_rehab.name,
+            "laterality": "unilateral",
+            "suitability_score": 70,
+            "recommendation": "good",
+            "weighted_risk_7d": 15.0,
+            "tissues": [
+                {
+                    "tissue_id": tissue.id,
+                    "tissue_display_name": tissue.display_name,
+                    "routing_factor": 0.95,
+                    "laterality_mode": "selected_side_only",
+                }
+            ],
+        },
+    ]
+    exercise_region_map = {
+        bilateral.id: [{"region": "chest", "role": "primary", "routing": 1.0}],
+        direct_rehab.id: [{"region": "shoulders", "role": "primary", "routing": 1.0}],
+    }
+    tracked_lookup = {left.id: left, right.id: right}
+    tracked_conditions = {left.id: session.exec(select(TissueCondition)).first()}
+    active_rehab_plans = {left.id: session.exec(select(RehabPlan)).first()}
+    rehab_priorities = _build_rehab_priority_map(
+        session=session,
+        exercises_data=exercises_data,
+        tracked_lookup=tracked_lookup,
+        tracked_conditions=tracked_conditions,
+        active_rehab_plans=active_rehab_plans,
+    )
+
+    result = _select_exercises(
+        exercises_data,
+        target_regions={"chest"},
+        adjacent_regions=set(),
+        blocked_regions=set(),
+        exercise_region_map=exercise_region_map,
+        rehab_priorities=rehab_priorities,
+    )
+
+    assert result[0]["name"] == "Single Arm Shoulder Press"
+    assert result[0]["selection_mode"] == "direct_rehab"
+
+
+def test_select_exercises_inserts_cross_education_candidate_first(session):
+    tissue = Tissue(
+        name="lateral_deltoid",
+        display_name="Lateral Deltoid",
+        type="muscle",
+        tracking_mode="paired",
+        region="shoulders",
+    )
+    cross_education = Exercise(
+        name="Single Arm Shoulder Press",
+        equipment="dumbbell",
+        laterality="unilateral",
+    )
+    bilateral = Exercise(
+        name="Lat Pulldown",
+        equipment="cable",
+        laterality="bilateral",
+    )
+    session.add(tissue)
+    session.add(cross_education)
+    session.add(bilateral)
+    session.commit()
+    session.refresh(tissue)
+    session.refresh(cross_education)
+    session.refresh(bilateral)
+
+    left = TrackedTissue(tissue_id=tissue.id, side="left", display_name="Left Lateral Deltoid")
+    right = TrackedTissue(tissue_id=tissue.id, side="right", display_name="Right Lateral Deltoid")
+    session.add(left)
+    session.add(right)
+    session.commit()
+    session.refresh(left)
+
+    session.add(
+        TissueCondition(
+            tissue_id=tissue.id,
+            tracked_tissue_id=left.id,
+            status="rehabbing",
+            severity=2,
+        )
+    )
+    session.add(
+        RehabPlan(
+            tracked_tissue_id=left.id,
+            protocol_id="cervical-radiculopathy-deltoid",
+            stage_id="activation-and-control",
+            status="active",
+        )
+    )
+    session.commit()
+
+    exercises_data = [
+        {
+            "id": bilateral.id,
+            "name": bilateral.name,
+            "laterality": "bilateral",
+            "suitability_score": 90,
+            "recommendation": "good",
+            "weighted_risk_7d": 8.0,
+            "tissues": [],
+        },
+        {
+            "id": cross_education.id,
+            "name": cross_education.name,
+            "laterality": "unilateral",
+            "suitability_score": 72,
+            "recommendation": "good",
+            "weighted_risk_7d": 12.0,
+            "tissues": [
+                {
+                    "tissue_id": tissue.id,
+                    "tissue_display_name": tissue.display_name,
+                    "routing_factor": 0.9,
+                    "laterality_mode": "contralateral_carryover",
+                }
+            ],
+        },
+    ]
+    exercise_region_map = {
+        bilateral.id: [{"region": "upper_back", "role": "primary", "routing": 1.0}],
+        cross_education.id: [{"region": "shoulders", "role": "primary", "routing": 1.0}],
+    }
+    tracked_lookup = {left.id: left, right.id: right}
+    tracked_conditions = {left.id: session.exec(select(TissueCondition)).first()}
+    active_rehab_plans = {left.id: session.exec(select(RehabPlan)).first()}
+    rehab_priorities = _build_rehab_priority_map(
+        session=session,
+        exercises_data=exercises_data,
+        tracked_lookup=tracked_lookup,
+        tracked_conditions=tracked_conditions,
+        active_rehab_plans=active_rehab_plans,
+    )
+
+    result = _select_exercises(
+        exercises_data,
+        target_regions={"upper_back"},
+        adjacent_regions=set(),
+        blocked_regions=set(),
+        exercise_region_map=exercise_region_map,
+        rehab_priorities=rehab_priorities,
+    )
+
+    assert result[0]["name"] == "Single Arm Shoulder Press"
+    assert result[0]["selection_mode"] == "cross_education"
 
 
 # ── _prescribe_all: weight reduction for tissue conditions ───────────────────

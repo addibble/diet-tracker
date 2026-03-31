@@ -50,6 +50,7 @@ REST_DAY_THRESHOLD = 0.35
 MAX_CANDIDATES = 16
 DEFAULT_SELECTED = 8
 AUTO_PROGRAM_NAME = "__auto_plan__"
+_MAX_REHAB_PRIORITY_CANDIDATES = 3
 _MAX_HEAVY_EXERCISES_PER_SESSION = 3
 _MAX_HEAVY_EXERCISES_PER_PRIMARY_REGION = 1
 _HIGH_REP_STRENGTH_ANCHOR_THRESHOLD = 8
@@ -115,6 +116,19 @@ def suggest_today(session: Session, *, as_of: date | None = None) -> dict:
 
     # Build exercise → region mapping from DB (not from model summary)
     exercise_region_map = _build_exercise_region_map(session)
+    tracked_conditions = get_all_current_tracked_conditions(session)
+    active_rehab_plans = get_active_rehab_plans_by_tracked_tissue(session)
+    tracked_lookup = {
+        tracked.id: tracked
+        for tracked in get_tracked_tissue_lookup(session).values()
+    }
+    rehab_priorities = _build_rehab_priority_map(
+        session=session,
+        exercises_data=exercises_data,
+        tracked_lookup=tracked_lookup,
+        tracked_conditions=tracked_conditions,
+        active_rehab_plans=active_rehab_plans,
+    )
 
     # Find when each region was last trained
     region_last_trained = _region_last_trained_by_exercise(
@@ -150,6 +164,7 @@ def suggest_today(session: Session, *, as_of: date | None = None) -> dict:
         adjacent_regions,
         blocked_regions,
         exercise_region_map,
+        rehab_priorities=rehab_priorities,
     )
 
     # Prescribe rep schemes
@@ -795,6 +810,7 @@ def _select_exercises(
     adjacent_regions: set[str],
     blocked_regions: set[str],
     exercise_region_map: dict[int, list[dict]],
+    rehab_priorities: dict[int, dict] | None = None,
 ) -> list[dict]:
     """Select up to MAX_CANDIDATES exercises, prioritizing target regions.
 
@@ -804,6 +820,8 @@ def _select_exercises(
     """
     primary_candidates: list[dict] = []
     adjacent_candidates: list[dict] = []
+    rehab_candidates: list[dict] = []
+    rehab_priorities = rehab_priorities or {}
 
     for ex in exercises_data:
         rec = ex.get("recommendation", "good")
@@ -817,6 +835,10 @@ def _select_exercises(
         region_mappings = exercise_region_map.get(exercise_id, [])
         if not region_mappings:
             continue
+        primary_region_hits = {
+            m["region"] for m in region_mappings if m["role"] == "primary"
+        }
+        mapped_regions = {m["region"] for m in region_mappings}
 
         # Skip if any PRIMARY mapping is in a blocked region
         has_blocked_primary = any(
@@ -870,13 +892,29 @@ def _select_exercises(
                 if m["role"] == "primary":
                     adj_primary_hits.append(m["region"])
 
-        if not target_hits and not adj_hits:
-            continue
-
         rec_bonus = 1.0 if rec == "good" else 0.5
         # Normalize suitability to [0, 1] to deprioritize exercises that load
         # fatigued or at-risk tissues (lower suitability = more tissue risk).
         suitability_norm = min(ex.get("suitability_score", 70) / 100.0, 1.0)
+        rehab_priority = rehab_priorities.get(exercise_id)
+        if not target_hits and not adj_hits and not rehab_priority:
+            continue
+        if rehab_priority:
+            priority_load = min(float(rehab_priority.get("priority_load") or 0.0), 1.0)
+            priority_bonus = 0.6 if rehab_priority.get("mode") == "direct_rehab" else 0.48
+            score = (
+                priority_bonus
+                + rec_bonus * 0.15
+                + priority_load * 0.2
+                + suitability_norm * 0.15
+            ) * fatigue_factor
+            rehab_candidates.append({
+                **ex,
+                "target_hits": primary_region_hits or mapped_regions,
+                "primary_regions": primary_region_hits or mapped_regions,
+                "selection_score": score,
+                "selection_mode": rehab_priority.get("mode"),
+            })
 
         if target_hits:
             coverage = len(set(target_hits)) / max(len(target_regions), 1)
@@ -908,14 +946,33 @@ def _select_exercises(
             })
 
     # Sort each pool by score descending
+    rehab_candidates.sort(key=lambda x: x["selection_score"], reverse=True)
     primary_candidates.sort(key=lambda x: x["selection_score"], reverse=True)
     adjacent_candidates.sort(key=lambda x: x["selection_score"], reverse=True)
 
-    # Fill from primary first, then adjacent, up to MAX_CANDIDATES
-    combined = primary_candidates[:MAX_CANDIDATES]
-    remaining = MAX_CANDIDATES - len(combined)
-    if remaining > 0:
-        combined.extend(adjacent_candidates[:remaining])
+    # Fill rehab-first, then primary, then adjacent, up to MAX_CANDIDATES.
+    combined: list[dict] = []
+    seen_exercise_ids: set[int] = set()
+
+    def append_pool(candidates: list[dict], *, limit: int | None = None) -> None:
+        taken = 0
+        for candidate in candidates:
+            candidate_id = candidate.get("exercise_id") or candidate.get("id")
+            if not candidate_id or candidate_id in seen_exercise_ids:
+                continue
+            combined.append(candidate)
+            seen_exercise_ids.add(candidate_id)
+            taken += 1
+            if len(combined) >= MAX_CANDIDATES:
+                break
+            if limit is not None and taken >= limit:
+                break
+
+    append_pool(rehab_candidates, limit=_MAX_REHAB_PRIORITY_CANDIDATES)
+    if len(combined) < MAX_CANDIDATES:
+        append_pool(primary_candidates)
+    if len(combined) < MAX_CANDIDATES:
+        append_pool(adjacent_candidates)
 
     # Mark first DEFAULT_SELECTED as selected
     for i, c in enumerate(combined):
@@ -1289,40 +1346,16 @@ def _get_last_performance(session: Session, exercise_id: int) -> dict | None:
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _planner_preferred_side(
+def _collect_rehab_targets(
     *,
-    exercise: Exercise,
-    exercise_summary: dict,
     tracked_lookup: dict[int, object],
     tracked_conditions: dict[int, object],
     active_rehab_plans: dict[int, object],
-) -> tuple[str | None, str | None, str | None, str | None]:
-    """Pick a preferred performed_side for planner prescriptions.
-
-    Returns ``(preferred_side, explanation, rehab_stage)``.
-    ``preferred_side`` may be ``"block"`` when the exercise should be excluded.
-    """
-    if exercise.laterality == "bilateral":
-        return (
-            default_performed_side(
-                exercise_name=exercise.name,
-                exercise_laterality=exercise.laterality,
-                provided_side=None,
-            ),
-            None,
-            None,
-            None,
-        )
-
-    explicit = default_performed_side(
-        exercise_name=exercise.name,
-        exercise_laterality=exercise.laterality,
-        provided_side=None,
-    )
-
-    rehab_targets: list[tuple[int, str, str | None]] = []
+) -> list[dict[str, object]]:
+    rehab_targets: list[dict[str, object]] = []
     for tracked_id, tracked in tracked_lookup.items():
-        if getattr(tracked, "side", None) not in {"left", "right"}:
+        side = getattr(tracked, "side", None)
+        if side not in {"left", "right"}:
             continue
         condition = tracked_conditions.get(tracked_id)
         rehab_plan = active_rehab_plans.get(tracked_id)
@@ -1330,19 +1363,29 @@ def _planner_preferred_side(
             condition and getattr(condition, "status", None) in {"injured", "rehabbing"}
         ):
             continue
-        rehab_targets.append((
-            getattr(tracked, "tissue_id"),
-            getattr(tracked, "side"),
-            getattr(rehab_plan, "stage_id", None) if rehab_plan is not None else None,
-        ))
+        rehab_targets.append({
+            "tracked_id": tracked_id,
+            "tissue_id": getattr(tracked, "tissue_id"),
+            "side": side,
+            "stage": getattr(rehab_plan, "stage_id", None) if rehab_plan is not None else None,
+            "display_name": getattr(tracked, "display_name", None),
+        })
+    return rehab_targets
 
-    if not rehab_targets:
-        if explicit in {"left", "right"}:
-            return explicit, f"exercise name indicates the {explicit} side", None, None
-        return None, None, None, None
 
-    candidate_sides = [explicit] if explicit in {"left", "right"} else ["left", "right"]
-    candidate_metrics: dict[str, dict[str, float | str | None | bool]] = {}
+def _rehab_candidate_metrics(
+    *,
+    exercise: Exercise,
+    exercise_summary: dict,
+    rehab_targets: list[dict[str, object]],
+) -> tuple[str | None, dict[str, dict[str, object]]]:
+    explicit_side = default_performed_side(
+        exercise_name=exercise.name,
+        exercise_laterality=exercise.laterality,
+        provided_side=None,
+    )
+    candidate_sides = [explicit_side] if explicit_side in {"left", "right"} else ["left", "right"]
+    candidate_metrics: dict[str, dict[str, object]] = {}
 
     for candidate_side in candidate_sides:
         candidate_metrics[candidate_side] = {
@@ -1359,9 +1402,11 @@ def _planner_preferred_side(
                 continue
             laterality_mode = tissue_map.get("laterality_mode") or "bilateral_equal"
             routing = float(tissue_map.get("routing_factor") or 0.0)
-            for rehab_tissue_id, rehab_side, rehab_stage in rehab_targets:
-                if rehab_tissue_id != tissue_id:
+            for rehab_target in rehab_targets:
+                if rehab_target["tissue_id"] != tissue_id:
                     continue
+                rehab_side = str(rehab_target["side"])
+                rehab_stage = rehab_target["stage"]
                 load_weights, cross_weights = tracked_tissue_side_weights(
                     exercise_laterality=exercise.laterality,
                     laterality_mode=laterality_mode,
@@ -1370,21 +1415,31 @@ def _planner_preferred_side(
                 )
                 direct = routing * float(load_weights.get(rehab_side, 0.0))
                 cross = routing * float(cross_weights.get(rehab_side, 0.0))
-                candidate_metrics[candidate_side]["matched"] = True
-                candidate_metrics[candidate_side]["direct"] = float(candidate_metrics[candidate_side]["direct"]) + direct
-                candidate_metrics[candidate_side]["cross"] = float(candidate_metrics[candidate_side]["cross"]) + cross
+                metrics = candidate_metrics[candidate_side]
+                metrics["matched"] = True
+                metrics["direct"] = float(metrics["direct"]) + direct
+                metrics["cross"] = float(metrics["cross"]) + cross
                 if direct >= cross:
-                    candidate_metrics[candidate_side]["target_side"] = rehab_side
-                    candidate_metrics[candidate_side]["stage"] = rehab_stage
-                elif candidate_metrics[candidate_side]["target_side"] is None:
-                    candidate_metrics[candidate_side]["target_side"] = rehab_side
-                    candidate_metrics[candidate_side]["stage"] = rehab_stage
+                    metrics["target_side"] = rehab_side
+                    metrics["stage"] = rehab_stage
+                elif metrics["target_side"] is None:
+                    metrics["target_side"] = rehab_side
+                    metrics["stage"] = rehab_stage
                 if (
                     rehab_stage in _EARLY_REHAB_STAGES
                     and direct >= _TRACKED_DIRECT_PROTECTION_THRESHOLD
                 ):
-                    candidate_metrics[candidate_side]["blocked"] = True
+                    metrics["blocked"] = True
 
+    return explicit_side, candidate_metrics
+
+
+def _choose_rehab_preferred_side(
+    *,
+    explicit_side: str | None,
+    candidate_metrics: dict[str, dict[str, object]],
+    rehab_targets: list[dict[str, object]],
+) -> tuple[str | None, str | None, str | None, str | None]:
     relevant_candidates = {
         side: metrics
         for side, metrics in candidate_metrics.items()
@@ -1393,7 +1448,7 @@ def _planner_preferred_side(
 
     if not relevant_candidates:
         blocked_target = next(
-            ((side, stage) for _tid, side, stage in rehab_targets),
+            ((str(target["side"]), target["stage"]) for target in rehab_targets),
             ("left", None),
         )
         return (
@@ -1434,14 +1489,133 @@ def _planner_preferred_side(
         protected_side = str(metrics["target_side"] or chosen_side)
         explanation = (
             f"exercise name indicates the {chosen_side} side"
-            if explicit == chosen_side
+            if explicit_side == chosen_side
             else f"targets the protected {protected_side} side directly"
         )
         return chosen_side, explanation, metrics["stage"], "direct_rehab"
 
-    if explicit in relevant_candidates:
-        return explicit, f"exercise name indicates the {explicit} side", relevant_candidates[explicit]["stage"], None
+    if explicit_side in relevant_candidates:
+        return (
+            explicit_side,
+            f"exercise name indicates the {explicit_side} side",
+            relevant_candidates[explicit_side]["stage"],
+            None,
+        )
     return None, None, None, None
+
+
+def _build_rehab_priority_map(
+    *,
+    session: Session,
+    exercises_data: list[dict],
+    tracked_lookup: dict[int, object],
+    tracked_conditions: dict[int, object],
+    active_rehab_plans: dict[int, object],
+) -> dict[int, dict]:
+    rehab_targets = _collect_rehab_targets(
+        tracked_lookup=tracked_lookup,
+        tracked_conditions=tracked_conditions,
+        active_rehab_plans=active_rehab_plans,
+    )
+    if not rehab_targets:
+        return {}
+
+    priorities: dict[int, dict] = {}
+    for ex in exercises_data:
+        exercise_id = ex.get("exercise_id") or ex.get("id")
+        if not exercise_id:
+            continue
+        exercise = session.get(Exercise, exercise_id)
+        if not exercise or exercise.laterality == "bilateral":
+            continue
+
+        explicit_side, candidate_metrics = _rehab_candidate_metrics(
+            exercise=exercise,
+            exercise_summary=ex,
+            rehab_targets=rehab_targets,
+        )
+        preferred_side, side_explanation, rehab_stage, prescription_mode = _choose_rehab_preferred_side(
+            explicit_side=explicit_side,
+            candidate_metrics=candidate_metrics,
+            rehab_targets=rehab_targets,
+        )
+        if preferred_side in {None, "block"} or prescription_mode not in {
+            "direct_rehab",
+            "cross_education",
+        }:
+            continue
+
+        chosen_metrics = candidate_metrics.get(preferred_side)
+        if not chosen_metrics:
+            continue
+        priority_load = float(
+            chosen_metrics["direct"]
+            if prescription_mode == "direct_rehab"
+            else chosen_metrics["cross"]
+        )
+        if priority_load <= 0:
+            continue
+
+        priorities[exercise_id] = {
+            "mode": prescription_mode,
+            "preferred_side": preferred_side,
+            "side_explanation": side_explanation,
+            "rehab_stage": rehab_stage,
+            "priority_load": priority_load,
+        }
+    return priorities
+
+
+def _planner_preferred_side(
+    *,
+    exercise: Exercise,
+    exercise_summary: dict,
+    tracked_lookup: dict[int, object],
+    tracked_conditions: dict[int, object],
+    active_rehab_plans: dict[int, object],
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Pick a preferred performed_side for planner prescriptions.
+
+    Returns ``(preferred_side, explanation, rehab_stage)``.
+    ``preferred_side`` may be ``"block"`` when the exercise should be excluded.
+    """
+    if exercise.laterality == "bilateral":
+        return (
+            default_performed_side(
+                exercise_name=exercise.name,
+                exercise_laterality=exercise.laterality,
+                provided_side=None,
+            ),
+            None,
+            None,
+            None,
+        )
+
+    rehab_targets = _collect_rehab_targets(
+        tracked_lookup=tracked_lookup,
+        tracked_conditions=tracked_conditions,
+        active_rehab_plans=active_rehab_plans,
+    )
+    if not rehab_targets:
+        explicit = default_performed_side(
+            exercise_name=exercise.name,
+            exercise_laterality=exercise.laterality,
+            provided_side=None,
+        )
+        if explicit in {"left", "right"}:
+            return explicit, f"exercise name indicates the {explicit} side", None, None
+        return None, None, None, None
+
+    explicit_side, candidate_metrics = _rehab_candidate_metrics(
+        exercise=exercise,
+        exercise_summary=exercise_summary,
+        rehab_targets=rehab_targets,
+    )
+    return _choose_rehab_preferred_side(
+        explicit_side=explicit_side,
+        candidate_metrics=candidate_metrics,
+        rehab_targets=rehab_targets,
+    )
 
 
 def _apply_rehab_stage_prescription(
