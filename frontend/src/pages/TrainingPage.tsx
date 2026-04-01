@@ -761,6 +761,9 @@ function PlannerCard({ planner, onRefresh, onSave }: {
                   {ex.side_explanation && (
                     <div className="text-[10px] text-purple-600 mt-0.5">{ex.side_explanation}</div>
                   )}
+                  {ex.selection_note && (
+                    <div className="text-[10px] text-blue-600 mt-0.5">{ex.selection_note}</div>
+                  )}
                   {ex.weight_adjustment_note && (
                     <div className="text-[10px] text-orange-600 mt-0.5">{ex.weight_adjustment_note}</div>
                   )}

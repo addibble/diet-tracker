@@ -41,10 +41,18 @@ REFERENCE_EXERCISE_FIXUPS: dict[str, dict[str, object]] = {
     "Assisted Pull-Ups": {
         "load_input_mode": "assisted_bodyweight",
         "bodyweight_fraction": 1.0,
+        "variant_group": "pull_up_vertical",
+        "grip_style": "pronated",
+        "grip_width": "wide",
+        "support_style": "machine",
     },
     "Wide Pull-ups (Assist)": {
         "load_input_mode": "assisted_bodyweight",
         "bodyweight_fraction": 1.0,
+        "variant_group": "pull_up_vertical",
+        "grip_style": "pronated",
+        "grip_width": "wide",
+        "support_style": "machine",
     },
     "Push-ups": {
         "load_input_mode": "bodyweight",
@@ -103,6 +111,7 @@ REFERENCE_EXERCISE_FIXUPS: dict[str, dict[str, object]] = {
     "Flutter Kicks": {
         "load_input_mode": "bodyweight",
         "bodyweight_fraction": 0.2,
+        "set_metric_mode": "duration",
         "estimated_minutes_per_set": 1.25,
     },
     "Laying Down Crunches": {
@@ -172,6 +181,10 @@ REFERENCE_EXERCISE_FIXUPS: dict[str, dict[str, object]] = {
     "Farmers Carry": {
         "load_input_mode": "carry",
         "external_load_multiplier": 2.0,
+        "variant_group": "loaded_carry",
+        "grip_style": "neutral",
+        "support_style": "unsupported",
+        "set_metric_mode": "distance",
         "estimated_minutes_per_set": 1.0,
         "mappings": [
             mapping("flexor_digitorum_superficialis", "primary", 0.85),
@@ -250,6 +263,9 @@ REFERENCE_EXERCISE_FIXUPS: dict[str, dict[str, object]] = {
         ],
     },
     "Single-Arm Cable Curl": {
+        "variant_group": "single_arm_curl",
+        "grip_style": "neutral",
+        "support_style": "cable_stabilized",
         "mappings": [
             mapping("biceps_long_head", "primary", 0.7),
             mapping("biceps_short_head", "primary", 0.7),

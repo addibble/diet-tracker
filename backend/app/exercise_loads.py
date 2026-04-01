@@ -34,7 +34,7 @@ def effective_weight(
     external_multiplier = exercise.external_load_multiplier or 1.0
     external = (workout_set.weight or 0.0) * external_multiplier
     bodyweight = latest_bodyweight(bodyweight_lookup, workout_date)
-    bodyweight_component = bodyweight * (exercise.bodyweight_fraction or 0.0)
+    bodyweight_component = effective_bodyweight_component(exercise, bodyweight)
     mode = exercise.load_input_mode or "external_weight"
     if mode == "bodyweight":
         return bodyweight_component
@@ -47,9 +47,63 @@ def effective_weight(
     return external
 
 
+def effective_bodyweight_component(exercise: Exercise, bodyweight_lb: float) -> float:
+    return bodyweight_lb * (exercise.bodyweight_fraction or 0.0)
+
+
+def entered_weight_for_effective_weight(
+    exercise: Exercise,
+    *,
+    effective_weight_lb: float,
+    bodyweight_lb: float,
+) -> float | None:
+    """Convert effective target load back into the user-entered weight field.
+
+    The planner and training model operate on effective load, but the UI stores
+    what the user actually types into the weight field. Those differ for
+    assisted bodyweight, mixed bodyweight + external load, and exercises where a
+    single entered weight represents multiple implements.
+    """
+    mode = exercise.load_input_mode or "external_weight"
+    multiplier = exercise.external_load_multiplier or 1.0
+    if multiplier <= 0:
+        multiplier = 1.0
+
+    bodyweight_component = effective_bodyweight_component(exercise, bodyweight_lb)
+
+    if mode == "bodyweight":
+        return None
+    if mode == "mixed":
+        external_effective = max(0.0, effective_weight_lb - bodyweight_component)
+        return max(0.0, external_effective / multiplier)
+    if mode == "assisted_bodyweight":
+        assist_effective = max(0.0, bodyweight_component - effective_weight_lb)
+        return max(0.0, assist_effective / multiplier)
+    return max(0.0, effective_weight_lb / multiplier)
+
+
+def load_progression_direction(exercise: Exercise) -> int:
+    """Return 1 when higher entered weight is harder, -1 when lower is harder."""
+    return -1 if (exercise.load_input_mode or "external_weight") == "assisted_bodyweight" else 1
+
+
 def effective_set_units(exercise: Exercise, workout_set: WorkoutSet) -> float:
-    del exercise
+    metric_mode = exercise.set_metric_mode or "reps"
     reps = float(workout_set.reps or 0)
+    if metric_mode == "distance":
+        if workout_set.distance_steps is not None and workout_set.distance_steps > 0:
+            return max(1.0, workout_set.distance_steps / 2.0)
+        return reps
+    if metric_mode == "duration":
+        if workout_set.duration_secs is not None and workout_set.duration_secs > 0:
+            return max(1.0, workout_set.duration_secs / 5.0)
+        return reps
+    if metric_mode == "hybrid":
+        if workout_set.distance_steps is not None and workout_set.distance_steps > 0:
+            return max(1.0, workout_set.distance_steps / 2.0)
+        if workout_set.duration_secs is not None and workout_set.duration_secs > 0:
+            return max(reps, workout_set.duration_secs / 5.0)
+        return reps
     if workout_set.distance_steps is not None and workout_set.distance_steps > 0:
         return max(1.0, workout_set.distance_steps / 2.0)
     if workout_set.duration_secs is not None and workout_set.duration_secs > 0:
@@ -79,8 +133,11 @@ def effective_set_load(
 def supports_strength_estimate(exercise: Exercise, workout_set: WorkoutSet) -> bool:
     if workout_set.reps is None or workout_set.reps < 1:
         return False
-    if workout_set.duration_secs is not None:
+    metric_mode = exercise.set_metric_mode or "reps"
+    if metric_mode in {"duration", "distance"}:
         return False
-    if workout_set.distance_steps is not None:
+    if workout_set.duration_secs is not None and metric_mode != "hybrid":
+        return False
+    if workout_set.distance_steps is not None and metric_mode != "hybrid":
         return False
     return (exercise.load_input_mode or "external_weight") != "carry"

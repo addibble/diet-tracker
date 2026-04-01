@@ -17,6 +17,8 @@ RUNTIME_REQUIRED_TABLES = {
     "tracked_tissues",
     "rehab_plans",
     "rehab_check_ins",
+    "tissue_relationships",
+    "workout_set_tissue_feedback",
 }
 
 RUNTIME_REQUIRED_COLUMNS = {
@@ -25,6 +27,11 @@ RUNTIME_REQUIRED_COLUMNS = {
         "laterality",
         "bodyweight_fraction",
         "external_load_multiplier",
+        "variant_group",
+        "grip_style",
+        "grip_width",
+        "support_style",
+        "set_metric_mode",
         "estimated_minutes_per_set",
     },
     "exercise_tissues": {
@@ -40,6 +47,8 @@ RUNTIME_REQUIRED_COLUMNS = {
     },
     "workout_sets": {
         "performed_side",
+        "started_at",
+        "completed_at",
     },
     "tissue_conditions": {
         "tracked_tissue_id",
@@ -160,6 +169,11 @@ def _migrate_add_columns():
                 "laterality": "ALTER TABLE exercises ADD COLUMN laterality TEXT DEFAULT 'bilateral'",
                 "bodyweight_fraction": "ALTER TABLE exercises ADD COLUMN bodyweight_fraction FLOAT DEFAULT 0.0",
                 "external_load_multiplier": "ALTER TABLE exercises ADD COLUMN external_load_multiplier FLOAT DEFAULT 1.0",
+                "variant_group": "ALTER TABLE exercises ADD COLUMN variant_group TEXT",
+                "grip_style": "ALTER TABLE exercises ADD COLUMN grip_style TEXT DEFAULT 'none'",
+                "grip_width": "ALTER TABLE exercises ADD COLUMN grip_width TEXT DEFAULT 'none'",
+                "support_style": "ALTER TABLE exercises ADD COLUMN support_style TEXT DEFAULT 'none'",
+                "set_metric_mode": "ALTER TABLE exercises ADD COLUMN set_metric_mode TEXT DEFAULT 'reps'",
                 "estimated_minutes_per_set": "ALTER TABLE exercises ADD COLUMN estimated_minutes_per_set FLOAT DEFAULT 2.0",
             },
             insp,
@@ -193,6 +207,8 @@ def _migrate_add_columns():
             "workout_sets",
             {
                 "performed_side": "ALTER TABLE workout_sets ADD COLUMN performed_side TEXT",
+                "started_at": "ALTER TABLE workout_sets ADD COLUMN started_at TIMESTAMP",
+                "completed_at": "ALTER TABLE workout_sets ADD COLUMN completed_at TIMESTAMP",
             },
             insp,
         )
@@ -296,6 +312,7 @@ def _seed_data():
         seed_tissue_model_configs,
         seed_tissue_recovery_hours,
         seed_tissue_regions,
+        seed_tissue_relationship_defaults,
         seed_tissues,
         seed_tracked_tissue_defaults,
     )
@@ -308,6 +325,7 @@ def _seed_data():
         seed_reference_exercises(session)
         seed_exercise_laterality_defaults(session)
         seed_exercise_tissue_model_defaults(session)
+        seed_tissue_relationship_defaults(session)
         seed_tissue_model_configs(session)
         seed_tracked_tissue_defaults(session)
         seed_default_training_exclusion_windows(session)

@@ -8,6 +8,9 @@ from app.models import (
     Exercise,
     ProgramDay,
     ProgramDayExercise,
+    RehabPlan,
+    Tissue,
+    TrackedTissue,
     TrainingProgram,
     WorkoutSession,
     WorkoutSet,
@@ -153,6 +156,103 @@ def test_add_set_keeps_explicit_unilateral_side(client, session: Session, workou
     )
     assert resp.status_code == 201
     assert resp.json()["performed_side"] == "left"
+
+
+def test_add_set_response_includes_timestamps_and_tissue_feedback(client, session: Session, workout_session: WorkoutSession):
+    tissue = Tissue(name="biceps_long_head", display_name="Biceps Long Head", type="muscle", recovery_hours=48.0)
+    exercise = Exercise(
+        name="Single-Arm Cable Curl",
+        load_input_mode="external_weight",
+        laterality="unilateral",
+    )
+    session.add(tissue)
+    session.add(exercise)
+    session.commit()
+    session.refresh(tissue)
+    session.refresh(exercise)
+
+    tracked = TrackedTissue(
+        tissue_id=tissue.id,
+        side="left",
+        display_name="Left Biceps Long Head",
+        active=True,
+    )
+    session.add(tracked)
+    session.commit()
+    session.refresh(tracked)
+
+    session.add(
+        RehabPlan(
+            tracked_tissue_id=tracked.id,
+            protocol_id="cervical-radiculopathy-deltoid",
+            stage_id="strength-rebuild",
+            pain_monitoring_threshold=2,
+        )
+    )
+    session.commit()
+
+    resp = client.post(
+        f"/api/workout-sessions/{workout_session.id}/sets",
+        json={
+            "exercise_id": exercise.id,
+            "reps": 10,
+            "performed_side": "left",
+            "tissue_feedback": [
+                {
+                    "tracked_tissue_id": tracked.id,
+                    "pain_0_10": 4,
+                    "symptom_note": "pulling at distal tendon",
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["started_at"] is None
+    assert data["completed_at"] is None
+    assert len(data["tissue_feedback"]) == 1
+    assert data["tissue_feedback"][0]["tracked_tissue_id"] == tracked.id
+    assert data["tissue_feedback"][0]["pain_0_10"] == 4
+    assert data["tissue_feedback"][0]["above_threshold"] is True
+
+
+def test_update_set_sets_completed_at_and_reorders_session(client, session: Session, exercise: Exercise, workout_session: WorkoutSession):
+    later = WorkoutSet(
+        session_id=workout_session.id,
+        exercise_id=exercise.id,
+        set_order=2,
+        reps=None,
+    )
+    earlier = WorkoutSet(
+        session_id=workout_session.id,
+        exercise_id=exercise.id,
+        set_order=1,
+        reps=None,
+    )
+    session.add(later)
+    session.add(earlier)
+    session.commit()
+    session.refresh(later)
+    session.refresh(earlier)
+
+    first_done = client.patch(
+        f"/api/workout-sets/{later.id}",
+        json={"reps": 12, "completed_at": "2026-03-15T10:05:00Z"},
+    )
+    assert first_done.status_code == 200
+    assert first_done.json()["completed_at"].startswith("2026-03-15T10:05:00")
+
+    second_done = client.patch(
+        f"/api/workout-sets/{earlier.id}",
+        json={"reps": 10, "completed_at": "2026-03-15T10:10:00Z"},
+    )
+    assert second_done.status_code == 200
+
+    session_response = client.get(f"/api/workout-sessions/{workout_session.id}")
+    assert session_response.status_code == 200
+    ordered_ids = [row["id"] for row in session_response.json()["sets"]]
+    assert ordered_ids == [later.id, earlier.id]
+    assert [row["set_order"] for row in session_response.json()["sets"]] == [1, 2]
 
 
 def test_add_set_infers_side_from_unilateral_exercise_name(client, session: Session, workout_session: WorkoutSession):

@@ -5,9 +5,12 @@ from sqlmodel import select
 from app.models import (
     Exercise,
     ExerciseTissue,
+    RehabCheckIn,
+    RehabPlan,
     Tissue,
     TissueCondition,
     TissueModelConfig,
+    TrackedTissue,
     TrainingExclusionWindow,
     WeightLog,
     WorkoutSession,
@@ -434,3 +437,125 @@ def test_training_model_respects_active_tissue_condition_in_exercise_ranking(cli
     assert press["recommendation"] == "avoid"
     assert "Supraspinatus" in press["blocked_tissues"]
     assert leg["recommendation"] == "good"
+
+
+def test_training_model_prefers_supported_neutral_variant_for_symptomatic_tracked_tissue(client, session):
+    brachioradialis = Tissue(
+        name="brachioradialis",
+        display_name="Brachioradialis",
+        type="muscle",
+        recovery_hours=72.0,
+        tracking_mode="paired",
+    )
+    session.add(brachioradialis)
+    session.commit()
+    session.refresh(brachioradialis)
+
+    neutral = Exercise(
+        name="Neutral Grip Cable Curl",
+        laterality="unilateral",
+        variant_group="curl_family",
+        grip_style="neutral",
+        support_style="cable_stabilized",
+    )
+    pronated = Exercise(
+        name="Pronated Cable Curl",
+        laterality="unilateral",
+        variant_group="curl_family",
+        grip_style="pronated",
+        support_style="unsupported",
+    )
+    session.add(neutral)
+    session.add(pronated)
+    session.commit()
+    session.refresh(neutral)
+    session.refresh(pronated)
+
+    session.add(
+        ExerciseTissue(
+            exercise_id=neutral.id,
+            tissue_id=brachioradialis.id,
+            role="secondary",
+            loading_factor=0.18,
+            routing_factor=0.18,
+            fatigue_factor=0.18,
+            joint_strain_factor=0.18,
+            tendon_strain_factor=0.18,
+            laterality_mode="selected_side_only",
+        )
+    )
+    session.add(
+        ExerciseTissue(
+            exercise_id=pronated.id,
+            tissue_id=brachioradialis.id,
+            role="primary",
+            loading_factor=0.6,
+            routing_factor=0.6,
+            fatigue_factor=0.6,
+            joint_strain_factor=0.6,
+            tendon_strain_factor=0.6,
+            laterality_mode="selected_side_only",
+        )
+    )
+    session.commit()
+
+    left = TrackedTissue(
+        tissue_id=brachioradialis.id,
+        side="left",
+        display_name="Left Brachioradialis",
+    )
+    right = TrackedTissue(
+        tissue_id=brachioradialis.id,
+        side="right",
+        display_name="Right Brachioradialis",
+    )
+    session.add(left)
+    session.add(right)
+    session.commit()
+    session.refresh(left)
+
+    session.add(
+        TissueCondition(
+            tissue_id=brachioradialis.id,
+            tracked_tissue_id=left.id,
+            status="tender",
+            severity=2,
+            max_loading_factor=0.25,
+            updated_at=datetime(2026, 4, 1, 8, 0, tzinfo=UTC),
+        )
+    )
+    session.add(
+        RehabPlan(
+            tracked_tissue_id=left.id,
+            protocol_id="lateral-elbow-brachioradialis",
+            stage_id="eccentric-concentric",
+            status="active",
+        )
+    )
+    session.add(
+        RehabCheckIn(
+            tracked_tissue_id=left.id,
+            pain_0_10=5,
+            during_load_pain_0_10=5,
+            next_day_flare=2,
+            recorded_at=datetime(2026, 4, 1, 9, 0, tzinfo=UTC),
+        )
+    )
+    session.commit()
+
+    response = client.get(
+        "/api/training-model/exercises?as_of=2026-04-01&sort_by=suitability&direction=desc"
+    )
+    assert response.status_code == 200
+    rows = {row["name"]: row for row in response.json()}
+
+    neutral_row = rows["Neutral Grip Cable Curl"]
+    pronated_row = rows["Pronated Cable Curl"]
+
+    assert neutral_row["recommendation"] != "avoid"
+    assert pronated_row["recommendation"] == "avoid"
+    assert neutral_row["suitability_score"] > pronated_row["suitability_score"]
+    assert any(
+        "safer variant" in detail.lower() or "ceiling" in detail.lower()
+        for detail in neutral_row["recommendation_details"] + pronated_row["recommendation_details"]
+    )

@@ -9,6 +9,7 @@ from app.models import (
     ExerciseTissue,
     Tissue,
     TissueModelConfig,
+    TissueRelationship,
     TrainingExclusionWindow,
 )
 from app.reference_exercises import (
@@ -392,6 +393,11 @@ def seed_reference_exercises(session: Session) -> None:
             "laterality",
             "bodyweight_fraction",
             "external_load_multiplier",
+            "variant_group",
+            "grip_style",
+            "grip_width",
+            "support_style",
+            "set_metric_mode",
             "estimated_minutes_per_set",
         )
         for field_name in metadata_fields:
@@ -561,6 +567,56 @@ def seed_exercise_laterality_defaults(session: Session) -> None:
 
 def seed_tracked_tissue_defaults(session: Session) -> None:
     seed_tracked_tissues(session)
+
+
+def seed_tissue_relationship_defaults(session: Session) -> None:
+    tissue_lookup = {
+        tissue.name: tissue
+        for tissue in session.exec(select(Tissue)).all()
+    }
+    relationships = [
+        ("brachioradialis", "common_extensor_tendon", "muscle_to_tendon"),
+        ("brachioradialis", "elbow_joint", "agonist_chain"),
+        ("brachioradialis", "wrist_joint", "agonist_chain"),
+        ("biceps_long_head", "biceps_long_head_tendon", "muscle_to_tendon"),
+        ("biceps_short_head", "biceps_long_head_tendon", "agonist_chain"),
+        ("biceps_long_head", "elbow_joint", "agonist_chain"),
+        ("biceps_short_head", "elbow_joint", "agonist_chain"),
+        ("anterior_deltoid", "shoulder_joint", "agonist_chain"),
+        ("lateral_deltoid", "shoulder_joint", "agonist_chain"),
+        ("posterior_deltoid", "shoulder_joint", "agonist_chain"),
+        ("supraspinatus", "supraspinatus_tendon", "muscle_to_tendon"),
+        ("supraspinatus_tendon", "shoulder_joint", "tendon_to_joint"),
+        ("gastrocnemius", "achilles_tendon", "muscle_to_tendon"),
+        ("soleus", "achilles_tendon", "muscle_to_tendon"),
+        ("achilles_tendon", "ankle_joint", "tendon_to_joint"),
+    ]
+    changed = False
+    for source_name, target_name, relationship_type in relationships:
+        source = tissue_lookup.get(source_name)
+        target = tissue_lookup.get(target_name)
+        if not source or not target:
+            continue
+        existing = session.exec(
+            select(TissueRelationship).where(
+                TissueRelationship.source_tissue_id == source.id,
+                TissueRelationship.target_tissue_id == target.id,
+                TissueRelationship.relationship_type == relationship_type,
+            )
+        ).first()
+        if existing:
+            continue
+        session.add(
+            TissueRelationship(
+                source_tissue_id=source.id,
+                target_tissue_id=target.id,
+                relationship_type=relationship_type,
+                required_for_mapping_warning=True,
+            )
+        )
+        changed = True
+    if changed:
+        session.commit()
 
 
 def seed_default_training_exclusion_windows(session: Session) -> None:

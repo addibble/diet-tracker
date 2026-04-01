@@ -13,6 +13,10 @@ from app.exercise_loads import (
     effective_weight,
     supports_strength_estimate,
 )
+from app.exercise_protection import (
+    build_tracked_protection_profiles,
+    evaluate_exercise_protection,
+)
 from app.models import (
     Exercise,
     ExerciseTissue,
@@ -159,6 +163,10 @@ def build_exercise_risk_ranking(
     context: dict | None = None,
 ) -> list[dict]:
     context = context or _build_context(session, as_of=as_of)
+    protection_profiles = build_tracked_protection_profiles(
+        session,
+        as_of=context["as_of"],
+    )
     tissue_current = {
         tissue_id: states[-1]
         for tissue_id, states in context["states_by_tissue"].items()
@@ -182,10 +190,34 @@ def build_exercise_risk_ranking(
             stats = context["exercise_tissue_stats"].get((exercise.id, mapping.tissue_id), {})
             factors = _mapping_factors(mapping, tissue.type)
             routing = factors["routing"]
+            mapping_load = max(
+                routing,
+                factors["joint_strain"],
+                factors["tendon_strain"],
+                float(mapping.loading_factor or 0.0),
+            )
             current_condition = context["conditions"].get(mapping.tissue_id)
             condition_status = current_condition["status"] if current_condition else None
-            condition_floor_7d = _condition_risk_floor(condition_status, horizon_days=7)
-            condition_floor_14d = _condition_risk_floor(condition_status, horizon_days=14)
+            condition_floor_7d = _condition_risk_floor_for_mapping(
+                condition_status,
+                horizon_days=7,
+                mapping_load=mapping_load,
+                max_loading_factor=(
+                    current_condition.get("max_loading_factor")
+                    if current_condition
+                    else None
+                ),
+            )
+            condition_floor_14d = _condition_risk_floor_for_mapping(
+                condition_status,
+                horizon_days=14,
+                mapping_load=mapping_load,
+                max_loading_factor=(
+                    current_condition.get("max_loading_factor")
+                    if current_condition
+                    else None
+                ),
+            )
             tissue_risk_7d = max(state.risk_7d if state else 0, condition_floor_7d)
             tissue_risk_14d = max(state.risk_14d if state else 0, condition_floor_14d)
             tissue_norm = state.normalized_load if state else 0.0
@@ -196,11 +228,14 @@ def build_exercise_risk_ranking(
             exceeds_condition_loading_limit = bool(
                 current_condition
                 and current_condition.get("max_loading_factor") is not None
-                and (mapping.loading_factor or routing) > current_condition["max_loading_factor"]
+                and mapping_load > current_condition["max_loading_factor"]
             )
             if is_significant_mapping and (
                 tissue_risk_7d >= 60
-                or condition_status in {"injured", "tender"}
+                or (
+                    condition_status == "injured"
+                    and mapping_load >= 0.2
+                )
                 or exceeds_condition_loading_limit
             ):
                 blocked_tissues.append(tissue.display_name)
@@ -217,7 +252,11 @@ def build_exercise_risk_ranking(
                     "tissue_name": tissue.name,
                     "tissue_display_name": tissue.display_name,
                     "tissue_type": tissue.type,
+                    "loading_factor": round(float(mapping.loading_factor or 0.0), 4),
                     "routing_factor": round(routing, 4),
+                    "fatigue_factor": round(factors["fatigue"], 4),
+                    "joint_strain_factor": round(factors["joint_strain"], 4),
+                    "tendon_strain_factor": round(factors["tendon_strain"], 4),
                     "laterality_mode": mapping.laterality_mode,
                     "tissue_risk_7d": tissue_risk_7d,
                     "tissue_risk_14d": tissue_risk_14d,
@@ -232,15 +271,31 @@ def build_exercise_risk_ranking(
         weighted_risk_7d = risk_numerator / risk_denominator
         weighted_risk_14d = risk14_numerator / risk_denominator
         weighted_normalized_load = normalized_numerator / risk_denominator
+        protection_eval = evaluate_exercise_protection(
+            exercise,
+            {"tissues": mappings},
+            protection_profiles,
+        )
         suitability = _clamp(
-            100.0 - weighted_risk_7d - (max_tissue_risk * 0.2) + (recovering_bonus * 10.0),
+            100.0
+            - weighted_risk_7d
+            - (max_tissue_risk * 0.2)
+            + (recovering_bonus * 10.0)
+            + (float(protection_eval.get("score_bonus") or 0.0) * 100.0),
             0.0,
             100.0,
         )
+        blocked_tissues = list(dict.fromkeys(blocked_tissues))
+        favored_tissues = list(dict.fromkeys(favored_tissues))
+        if protection_eval["blocked"]:
+            for tissue_name in protection_eval["protected_tissues"]:
+                if tissue_name not in blocked_tissues:
+                    blocked_tissues.append(tissue_name)
         recommendation = _recommend_exercise(
             weighted_risk_7d,
             significant_max_tissue_risk,
             blocked_tissues,
+            protection_blocked=bool(protection_eval["blocked"]),
         )
         recommendation_reason, recommendation_details = _build_recommendation_reason(
             recommendation=recommendation,
@@ -250,6 +305,20 @@ def build_exercise_risk_ranking(
             favored_tissues=favored_tissues,
             weighted_normalized_load=weighted_normalized_load,
         )
+        if protection_eval["blocked"] and protection_eval["gating_reason"]:
+            recommendation_details = [
+                str(protection_eval["gating_reason"]),
+                *recommendation_details,
+            ][:4]
+        elif (
+            protection_eval["protected_tissues"]
+            and float(protection_eval.get("score_bonus") or 0.0) > 0
+        ):
+            recommendation_details = [
+                "safer variant for "
+                + ", ".join(protection_eval["protected_tissues"][:2]),
+                *recommendation_details,
+            ][:4]
         # e1RM summary for this exercise
         e1rm_series = context.get("e1rm_by_exercise", {}).get(exercise.id, [])
         current_e1rm = round(e1rm_series[-1][1], 2) if e1rm_series else None
@@ -261,6 +330,13 @@ def build_exercise_risk_ranking(
                 "equipment": exercise.equipment,
                 "load_input_mode": exercise.load_input_mode,
                 "laterality": exercise.laterality,
+                "bodyweight_fraction": exercise.bodyweight_fraction,
+                "external_load_multiplier": exercise.external_load_multiplier,
+                "variant_group": exercise.variant_group,
+                "grip_style": exercise.grip_style,
+                "grip_width": exercise.grip_width,
+                "support_style": exercise.support_style,
+                "set_metric_mode": exercise.set_metric_mode,
                 "estimated_minutes_per_set": exercise.estimated_minutes_per_set,
                 "in_active_program": exercise.id in context.get(
                     "active_program_exercise_ids", set()
@@ -1374,6 +1450,25 @@ def _condition_risk_floor(status: str | None, *, horizon_days: int) -> int:
     return 0
 
 
+def _condition_risk_floor_for_mapping(
+    status: str | None,
+    *,
+    horizon_days: int,
+    mapping_load: float,
+    max_loading_factor: float | None,
+) -> int:
+    base = _condition_risk_floor(status, horizon_days=horizon_days)
+    if not base:
+        return 0
+    if status == "injured":
+        scale = max(0.75, min(mapping_load / 0.35, 1.0))
+    else:
+        ceiling = max_loading_factor if max_loading_factor is not None else 0.5
+        ceiling = max(ceiling, 0.15)
+        scale = min(mapping_load / ceiling, 1.0)
+    return int(round(base * max(scale, 0.0)))
+
+
 def _apply_condition_floor(
     *,
     risk: int,
@@ -1541,7 +1636,11 @@ def _recommend_exercise(
     weighted_risk_7d: float,
     max_tissue_risk: int,
     blocked_tissues: list[str],
+    *,
+    protection_blocked: bool = False,
 ) -> str:
+    if protection_blocked:
+        return "avoid"
     if blocked_tissues and (max_tissue_risk >= 75 or weighted_risk_7d >= 60):
         return "avoid"
     if max_tissue_risk >= 55 or weighted_risk_7d >= 40:

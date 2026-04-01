@@ -14,7 +14,20 @@ from datetime import date, timedelta
 
 from sqlmodel import Session, col, select
 
-from app.exercise_loads import bodyweight_by_date, latest_bodyweight
+from app.exercise_loads import bodyweight_by_date, entered_weight_for_effective_weight, latest_bodyweight, load_progression_direction
+from app.exercise_protection import (
+    EARLY_REHAB_STAGES as _EARLY_REHAB_STAGES,
+)
+from app.exercise_protection import (
+    LATE_REHAB_STAGES as _LATE_REHAB_STAGES,
+)
+from app.exercise_protection import (
+    MID_REHAB_STAGES as _MID_REHAB_STAGES,
+)
+from app.exercise_protection import (
+    build_tracked_protection_profiles,
+    evaluate_exercise_protection,
+)
 from app.models import (
     Exercise,
     ExerciseTissue,
@@ -27,6 +40,7 @@ from app.models import (
     WeightLog,
     WorkoutSession,
     WorkoutSet,
+    WorkoutSetTissueFeedback,
 )
 from app.tracked_tissues import (
     default_performed_side,
@@ -68,24 +82,6 @@ _TISSUE_FATIGUE_HARD_FLOOR = 0.4
 _TISSUE_FATIGUE_SOFT_FLOOR = 0.7
 _TRACKED_DIRECT_PROTECTION_THRESHOLD = 0.25
 _TRACKED_CROSS_SUPPORT_THRESHOLD = 0.1
-_EARLY_REHAB_STAGES = {
-    "calm-and-isometric",
-    "protected-range",
-    "tolerance-building",
-    "neural-calming",
-}
-_MID_REHAB_STAGES = {
-    "rebuild-capacity",
-    "controlled-dynamic",
-    "activation-and-control",
-    "eccentric-concentric",
-}
-_LATE_REHAB_STAGES = {
-    "return-to-heavy-slow",
-    "return-to-overhead",
-    "return-to-grip-load",
-    "strength-rebuild",
-}
 _CROSS_EDUCATION_ALLOWED_STAGES = _EARLY_REHAB_STAGES | _MID_REHAB_STAGES | {"high-intent-support"}
 
 
@@ -130,6 +126,7 @@ def suggest_today(session: Session, *, as_of: date | None = None) -> dict:
         tracked_conditions=tracked_conditions,
         active_rehab_plans=active_rehab_plans,
     )
+    protection_profiles = build_tracked_protection_profiles(session, as_of=today)
 
     # Find when each region was last trained
     region_last_trained = _region_last_trained_by_exercise(
@@ -166,6 +163,7 @@ def suggest_today(session: Session, *, as_of: date | None = None) -> dict:
         blocked_regions,
         exercise_region_map,
         rehab_priorities=rehab_priorities,
+        protection_profiles=protection_profiles,
     )
 
     # Prescribe rep schemes
@@ -271,6 +269,9 @@ def save_plan(
                 "target_weight": ex.get("target_weight"),
                 "performed_side": ex.get("performed_side"),
                 "side_explanation": ex.get("side_explanation"),
+                "selection_note": ex.get("selection_note"),
+                "blocked_variant": ex.get("blocked_variant"),
+                "protected_tissues": ex.get("protected_tissues"),
             }),
         )
         session.add(pde)
@@ -339,6 +340,9 @@ def add_exercises_to_plan(
                 "target_weight": ex.get("target_weight"),
                 "performed_side": ex.get("performed_side"),
                 "side_explanation": ex.get("side_explanation"),
+                "selection_note": ex.get("selection_note"),
+                "blocked_variant": ex.get("blocked_variant"),
+                "protected_tissues": ex.get("protected_tissues"),
             }),
         )
         session.add(pde)
@@ -539,6 +543,10 @@ def _serialize_saved_plan(session: Session, planned: PlannedSession) -> dict:
             .where(WorkoutSet.session_id == planned.workout_session_id)
             .order_by(WorkoutSet.set_order)
         ).all()
+        feedback_rows = session.exec(select(WorkoutSetTissueFeedback)).all()
+        feedback_by_set: dict[int, list[WorkoutSetTissueFeedback]] = defaultdict(list)
+        for row in feedback_rows:
+            feedback_by_set[row.workout_set_id].append(row)
         for s in sets:
             logged_sets[s.exercise_id].append({
                 "id": s.id,
@@ -546,9 +554,22 @@ def _serialize_saved_plan(session: Session, planned: PlannedSession) -> dict:
                 "performed_side": s.performed_side,
                 "reps": s.reps,
                 "weight": s.weight,
+                "duration_secs": s.duration_secs,
+                "distance_steps": s.distance_steps,
+                "started_at": s.started_at,
+                "completed_at": s.completed_at,
                 "rpe": s.rpe,
                 "rep_completion": s.rep_completion,
                 "notes": s.notes,
+                "tissue_feedback": [
+                    {
+                        "tracked_tissue_id": row.tracked_tissue_id,
+                        "pain_0_10": row.pain_0_10,
+                        "symptom_note": row.symptom_note,
+                        "recorded_at": row.recorded_at,
+                    }
+                    for row in feedback_by_set.get(s.id or 0, [])
+                ],
             })
 
     exercises = []
@@ -578,6 +599,9 @@ def _serialize_saved_plan(session: Session, planned: PlannedSession) -> dict:
             "target_weight": meta.get("target_weight"),
             "performed_side": meta.get("performed_side"),
             "side_explanation": meta.get("side_explanation"),
+            "selection_note": meta.get("selection_note"),
+            "blocked_variant": meta.get("blocked_variant"),
+            "protected_tissues": meta.get("protected_tissues") or [],
             "completed_sets": completed_sets,
             "sets_done": len(completed_sets),
             "done": len(completed_sets) >= pde.target_sets,
@@ -812,6 +836,7 @@ def _select_exercises(
     blocked_regions: set[str],
     exercise_region_map: dict[int, list[dict]],
     rehab_priorities: dict[int, dict] | None = None,
+    protection_profiles: dict[int, list[object]] | None = None,
 ) -> list[dict]:
     """Select up to MAX_CANDIDATES exercises, prioritizing target regions.
 
@@ -823,6 +848,8 @@ def _select_exercises(
     adjacent_candidates: list[dict] = []
     rehab_candidates: list[dict] = []
     rehab_priorities = rehab_priorities or {}
+    protection_profiles = protection_profiles or {}
+    best_blocked_by_variant_group: dict[str, dict] = {}
 
     for ex in exercises_data:
         rec = ex.get("recommendation", "good")
@@ -840,6 +867,17 @@ def _select_exercises(
             m["region"] for m in region_mappings if m["role"] == "primary"
         }
         mapped_regions = {m["region"] for m in region_mappings}
+        rehab_priority = rehab_priorities.get(exercise_id)
+        protection_eval = evaluate_exercise_protection(
+            ex,
+            ex,
+            protection_profiles,
+            preferred_side=(
+                rehab_priority.get("preferred_side")
+                if rehab_priority
+                else None
+            ),
+        )
 
         # Skip if any PRIMARY mapping is in a blocked region
         has_blocked_primary = any(
@@ -870,6 +908,7 @@ def _select_exercises(
             / (_TISSUE_FATIGUE_SOFT_FLOOR - _TISSUE_FATIGUE_HARD_FLOOR),
             1.0,
         )
+        fatigue_factor = max(fatigue_factor, 0.0)
 
         # Score hits on target regions
         target_hits = []
@@ -897,9 +936,30 @@ def _select_exercises(
         # Normalize suitability to [0, 1] to deprioritize exercises that load
         # fatigued or at-risk tissues (lower suitability = more tissue risk).
         suitability_norm = min(ex.get("suitability_score", 70) / 100.0, 1.0)
-        rehab_priority = rehab_priorities.get(exercise_id)
         if not target_hits and not adj_hits and not rehab_priority:
             continue
+        selection_reason = protection_eval.get("gating_reason")
+        protected_tissues = protection_eval.get("protected_tissues", [])
+        if protection_eval["blocked"]:
+            variant_group = ex.get("variant_group")
+            if variant_group:
+                blocked_record = {
+                    **ex,
+                    "target_hits": set(target_hits) if target_hits else set(adj_hits),
+                    "primary_regions": set(target_primary_hits) or set(adj_primary_hits) or primary_region_hits or mapped_regions,
+                    "blocked_variant": ex.get("name"),
+                    "protected_tissues": protected_tissues,
+                    "gating_reason": selection_reason,
+                    "gating_code": protection_eval.get("gating_code"),
+                    "selection_mode": rehab_priority.get("mode") if rehab_priority else None,
+                    "performed_side": protection_eval.get("preferred_side"),
+                }
+                current = best_blocked_by_variant_group.get(variant_group)
+                if current is None or _blocked_reason_priority(blocked_record) > _blocked_reason_priority(current):
+                    best_blocked_by_variant_group[variant_group] = blocked_record
+            continue
+
+        protection_bonus = float(protection_eval.get("score_bonus") or 0.0)
         if rehab_priority:
             priority_load = min(float(rehab_priority.get("priority_load") or 0.0), 1.0)
             priority_bonus = 0.6 if rehab_priority.get("mode") == "direct_rehab" else 0.48
@@ -908,6 +968,7 @@ def _select_exercises(
                 + rec_bonus * 0.15
                 + priority_load * 0.2
                 + suitability_norm * 0.15
+                + protection_bonus
             ) * fatigue_factor
             rehab_candidates.append({
                 **ex,
@@ -915,6 +976,13 @@ def _select_exercises(
                 "primary_regions": primary_region_hits or mapped_regions,
                 "selection_score": score,
                 "selection_mode": rehab_priority.get("mode"),
+                "gating_reason": selection_reason,
+                "gating_code": protection_eval.get("gating_code"),
+                "protected_tissues": protected_tissues,
+                "performed_side": (
+                    rehab_priority.get("preferred_side")
+                    or protection_eval.get("preferred_side")
+                ),
             })
 
         if target_hits:
@@ -924,12 +992,17 @@ def _select_exercises(
                 + rec_bonus * 0.25
                 + min(target_routing, 1.0) * 0.25
                 + suitability_norm * 0.15
+                + protection_bonus
             ) * fatigue_factor
             primary_candidates.append({
                 **ex,
                 "target_hits": set(target_hits),
                 "primary_regions": set(target_primary_hits) or set(target_hits),
                 "selection_score": score,
+                "gating_reason": selection_reason,
+                "gating_code": protection_eval.get("gating_code"),
+                "protected_tissues": protected_tissues,
+                "performed_side": protection_eval.get("preferred_side"),
             })
         else:
             coverage = len(set(adj_hits)) / max(len(adjacent_regions), 1)
@@ -938,12 +1011,17 @@ def _select_exercises(
                 + rec_bonus * 0.25
                 + min(adj_routing, 1.0) * 0.20
                 + suitability_norm * 0.10
+                + protection_bonus
             ) * fatigue_factor
             adjacent_candidates.append({
                 **ex,
                 "target_hits": set(adj_hits),
                 "primary_regions": set(adj_primary_hits) or set(adj_hits),
                 "selection_score": score,
+                "gating_reason": selection_reason,
+                "gating_code": protection_eval.get("gating_code"),
+                "protected_tissues": protected_tissues,
+                "performed_side": protection_eval.get("preferred_side"),
             })
 
     # Sort each pool by score descending
@@ -974,6 +1052,36 @@ def _select_exercises(
         append_pool(primary_candidates)
     if len(combined) < MAX_CANDIDATES:
         append_pool(adjacent_candidates)
+
+    for variant_group, blocked in best_blocked_by_variant_group.items():
+        substitute = next(
+            (
+                candidate
+                for candidate in combined
+                if candidate.get("variant_group") == variant_group
+                and (candidate.get("exercise_id") or candidate.get("id"))
+                != (blocked.get("exercise_id") or blocked.get("id"))
+            ),
+            None,
+        )
+        if not substitute:
+            continue
+        substitute["blocked_variant"] = blocked.get("blocked_variant")
+        substitute["gating_reason"] = blocked.get("gating_reason") or substitute.get("gating_reason")
+        substitute["gating_code"] = blocked.get("gating_code") or substitute.get("gating_code")
+        merged_tissues = list(
+            dict.fromkeys(
+                list(substitute.get("protected_tissues", []))
+                + list(blocked.get("protected_tissues", []))
+            )
+        )
+        substitute["protected_tissues"] = merged_tissues[:5]
+        substitute["selection_note"] = _build_selection_note(
+            blocked_variant=blocked.get("blocked_variant"),
+            substitute_variant=substitute.get("name"),
+            gating_reason=substitute.get("gating_reason"),
+            protected_tissues=substitute.get("protected_tissues", []),
+        )
 
     # Mark first DEFAULT_SELECTED as selected
     for i, c in enumerate(combined):
@@ -1008,6 +1116,7 @@ def _prescribe_all(
         tracked.id: tracked
         for tracked in get_tracked_tissue_lookup(session).values()
     }
+    protection_profiles = build_tracked_protection_profiles(session, as_of=today)
 
     # Load current bodyweight for mixed/bodyweight exercise adjustments
     weight_rows = list(
@@ -1050,8 +1159,31 @@ def _prescribe_all(
             tracked_conditions=tracked_conditions,
             active_rehab_plans=active_rehab_plans,
         )
+        if preferred_side is None and ex.get("performed_side") in {"left", "right", "center", "bilateral"}:
+            preferred_side = ex.get("performed_side")
+        if side_explanation is None and ex.get("side_explanation"):
+            side_explanation = ex.get("side_explanation")
         if preferred_side == "block":
             continue
+        protection_eval = evaluate_exercise_protection(
+            exercise,
+            ex,
+            protection_profiles,
+            preferred_side=preferred_side,
+            estimated_sets=3,
+        )
+        if protection_eval["blocked"]:
+            continue
+        if side_explanation is None and protection_eval.get("side_explanation"):
+            side_explanation = protection_eval.get("side_explanation")
+        selection_note = ex.get("selection_note")
+        if not selection_note and (ex.get("blocked_variant") or ex.get("gating_reason")):
+            selection_note = _build_selection_note(
+                blocked_variant=ex.get("blocked_variant"),
+                substitute_variant=ex.get("name") or exercise.name,
+                gating_reason=ex.get("gating_reason"),
+                protected_tissues=list(ex.get("protected_tissues", [])),
+            )
 
         suitability_value = ex.get("suitability_score", ex.get("suitability", 70))
         suitability = suitability_value / 100 if suitability_value > 1 else suitability_value
@@ -1141,25 +1273,24 @@ def _prescribe_all(
         target_weight = None
         if current_e1rm > 0:
             intensity = (intensity_range[0] + intensity_range[1]) / 2
-            raw_weight = current_e1rm * intensity * min_condition_factor
-            # For mixed exercises the e1RM includes bodyweight, but target_weight
-            # must represent the *external* load only — subtract the bodyweight
-            # component so the suggestion isn't inflated by the user's body mass.
-            if exercise.load_input_mode == "mixed" and current_bw > 0:
-                bw_component = current_bw * (exercise.bodyweight_fraction or 0.0)
-                raw_weight = max(0.0, raw_weight - bw_component)
-            if exercise.equipment == "barbell":
-                target_weight = round(raw_weight / 5) * 5
-            elif exercise.equipment == "dumbbell":
-                target_weight = round(raw_weight / 2.5) * 2.5
-            else:
-                target_weight = round(raw_weight / 5) * 5
-            target_weight = max(target_weight, 0)
+            effective_target_weight = current_e1rm * intensity * min_condition_factor
+            entered_target = entered_weight_for_effective_weight(
+                exercise,
+                effective_weight_lb=effective_target_weight,
+                bodyweight_lb=current_bw,
+            )
+            if entered_target is not None:
+                target_weight = _round_target_weight(
+                    exercise.equipment,
+                    entered_target,
+                )
 
         last_perf = _get_last_performance(session, exercise_id)
         last_weight = float(last_perf.get("max_weight", 0.0)) if last_perf else 0.0
         last_session_peak_reps = _last_session_peak_reps(last_perf)
         overload_note = None
+        progression_direction = load_progression_direction(exercise)
+        used_high_rep_blend = False
         if (
             rep_scheme == "heavy"
             and target_weight
@@ -1168,31 +1299,68 @@ def _prescribe_all(
             and last_session_peak_reps >= _HIGH_REP_STRENGTH_ANCHOR_THRESHOLD
             and weight_adjustment_note is None
         ):
+            used_high_rep_blend = True
+            blended_target = _blend_heavy_weight_target(
+                heavy_target=target_weight,
+                recent_weight=last_weight,
+                progression_direction=progression_direction,
+            )
             target_weight = _round_target_weight(
                 exercise.equipment,
-                _blend_heavy_weight_target(
-                    heavy_target=target_weight,
-                    recent_weight=last_weight,
-                ),
+                blended_target,
             )
+            increment = _weight_increment(exercise.equipment)
+            if progression_direction < 0 and target_weight >= last_weight and blended_target < last_weight:
+                target_weight = max(0.0, last_weight - increment)
+            elif progression_direction > 0 and target_weight <= last_weight and blended_target > last_weight:
+                target_weight = last_weight + increment
             overload_note = (
                 f"Heavy target blends e1RM with your recent {last_session_peak_reps}-rep working weight"
             )
         # Skip progressive overload when a tissue condition restricts loading.
         if not weight_adjustment_note and last_perf and target_weight and target_weight > 0:
             all_full = last_perf.get("all_full", False)
+            progressed_past_last = (
+                (progression_direction > 0 and target_weight > last_weight)
+                or (progression_direction < 0 and target_weight < last_weight)
+            )
             if (
-                rep_scheme == "heavy"
-                and last_session_peak_reps >= _HIGH_REP_STRENGTH_ANCHOR_THRESHOLD
+                used_high_rep_blend
+                and all_full
+                and last_weight
+                and not progressed_past_last
             ):
+                increment = _weight_increment(exercise.equipment)
+                target_weight = max(0.0, last_weight + increment * progression_direction)
+                overload_note = (
+                    f"-{increment} lbs assist (progressive overload)"
+                    if progression_direction < 0
+                    else f"+{increment} lbs (progressive overload)"
+                )
+            elif used_high_rep_blend:
                 pass
-            elif all_full and last_weight and last_weight >= target_weight:
-                increment = 5.0 if exercise.equipment == "barbell" else 2.5
-                target_weight = last_weight + increment
-                overload_note = f"+{increment} lbs (progressive overload)"
+            elif (
+                all_full
+                and last_weight
+                and (
+                    (progression_direction > 0 and last_weight >= target_weight)
+                    or (progression_direction < 0 and last_weight <= target_weight)
+                )
+            ):
+                increment = _weight_increment(exercise.equipment)
+                target_weight = max(0.0, last_weight + increment * progression_direction)
+                overload_note = (
+                    f"-{increment} lbs assist (progressive overload)"
+                    if progression_direction < 0
+                    else f"+{increment} lbs (progressive overload)"
+                )
             elif not all_full and last_weight:
                 target_weight = last_weight
-                overload_note = "Same weight, aim for full completion"
+                overload_note = (
+                    "Same assist, aim for full completion"
+                    if progression_direction < 0
+                    else "Same weight, aim for full completion"
+                )
 
         if rep_scheme == "heavy":
             target_sets = 3
@@ -1219,6 +1387,9 @@ def _prescribe_all(
             "overload_note": overload_note,
             "weight_adjustment_note": weight_adjustment_note,
             "side_explanation": side_explanation,
+            "selection_note": selection_note,
+            "blocked_variant": ex.get("blocked_variant"),
+            "protected_tissues": ex.get("protected_tissues", []),
             "current_e1rm": round(current_e1rm, 2) if current_e1rm else None,
             "selected": ex.get("selected", True),
         })
@@ -1306,19 +1477,57 @@ def _last_session_peak_reps(last_perf: dict | None) -> int:
     )
 
 
-def _blend_heavy_weight_target(*, heavy_target: float, recent_weight: float) -> float:
-    return max(
-        recent_weight,
-        recent_weight + (heavy_target - recent_weight) * _HEAVY_WEIGHT_BLEND_RATIO,
-    )
+def _blend_heavy_weight_target(*, heavy_target: float, recent_weight: float, progression_direction: int = 1) -> float:
+    blended = recent_weight + (heavy_target - recent_weight) * _HEAVY_WEIGHT_BLEND_RATIO
+    if progression_direction < 0:
+        return min(recent_weight, blended)
+    return max(recent_weight, blended)
 
 
-def _round_target_weight(equipment: str | None, raw_weight: float) -> float:
-    if equipment == "barbell":
-        return max(round(raw_weight / 5) * 5, 0)
-    if equipment == "dumbbell":
-        return max(round(raw_weight / 2.5) * 2.5, 0)
-    return max(round(raw_weight / 5) * 5, 0)
+def _weight_increment(equipment: str | None) -> float:
+    return 2.5 if equipment == "dumbbell" else 5.0
+
+
+def _round_target_weight(
+    equipment: str | None,
+    raw_weight: float,
+) -> float:
+    increment = _weight_increment(equipment)
+    return max(round(raw_weight / increment) * increment, 0)
+
+
+def _blocked_reason_priority(candidate: dict) -> tuple[int, float]:
+    reason = str(candidate.get("gating_code") or "")
+    priority = {
+        "session_budget_exhausted": 5,
+        "during_workout_pain_threshold": 4,
+        "symptom_ceiling": 3,
+        "loading_cap": 2,
+        "protected_variant_required": 1,
+    }.get(reason, 0)
+    score = float(candidate.get("selection_score") or 0.0)
+    return priority, score
+
+
+def _build_selection_note(
+    *,
+    blocked_variant: str | None,
+    substitute_variant: str | None,
+    gating_reason: str | None,
+    protected_tissues: list[str],
+) -> str | None:
+    if not blocked_variant and not gating_reason:
+        return None
+    tissue_note = ""
+    if protected_tissues:
+        tissue_note = f" for {', '.join(protected_tissues[:2])}"
+    if blocked_variant and substitute_variant and blocked_variant != substitute_variant:
+        if gating_reason:
+            return f"Swapped {blocked_variant} to {substitute_variant} because {gating_reason}{tissue_note}."
+        return f"Swapped {blocked_variant} to {substitute_variant}{tissue_note}."
+    if gating_reason:
+        return f"Adjusted selection because {gating_reason}{tissue_note}."
+    return None
 
 
 def _get_last_performance(session: Session, exercise_id: int) -> dict | None:

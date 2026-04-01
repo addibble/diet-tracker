@@ -6,12 +6,13 @@ from sqlmodel import Session, col, select
 
 from app.auth import get_current_user
 from app.database import get_session
-from app.exercise_loads import bodyweight_by_date
+from app.exercise_loads import bodyweight_by_date, effective_bodyweight_component
 from app.exercise_loads import effective_weight as calc_effective_weight
 from app.models import (
     Exercise,
     ExerciseTissue,
     Tissue,
+    TissueRelationship,
     WeightLog,
     WorkoutSession,
     WorkoutSet,
@@ -39,6 +40,12 @@ class ExerciseCreate(BaseModel):
     load_input_mode: str = "external_weight"
     laterality: str | None = None
     bodyweight_fraction: float = 0.0
+    external_load_multiplier: float = 1.0
+    variant_group: str | None = None
+    grip_style: str = "none"
+    grip_width: str = "none"
+    support_style: str = "none"
+    set_metric_mode: str = "reps"
     estimated_minutes_per_set: float = 2.0
     notes: str | None = None
     tissues: list[TissueMappingInput] = []
@@ -50,6 +57,12 @@ class ExerciseUpdate(BaseModel):
     load_input_mode: str | None = None
     laterality: str | None = None
     bodyweight_fraction: float | None = None
+    external_load_multiplier: float | None = None
+    variant_group: str | None = None
+    grip_style: str | None = None
+    grip_width: str | None = None
+    support_style: str | None = None
+    set_metric_mode: str | None = None
     estimated_minutes_per_set: float | None = None
     notes: str | None = None
     tissues: list[TissueMappingInput] | None = None
@@ -57,9 +70,13 @@ class ExerciseUpdate(BaseModel):
 
 def _build_exercise_response(exercise: Exercise, session: Session) -> dict:
     mappings = get_current_exercise_tissues(session, exercise.id)  # type: ignore[arg-type]
+    tissues_by_id = {
+        tissue.id: tissue
+        for tissue in session.exec(select(Tissue)).all()
+    }
     tissues = []
     for m in mappings:
-        tissue = session.get(Tissue, m.tissue_id)
+        tissue = tissues_by_id.get(m.tissue_id)
         tissues.append({
             "tissue_id": m.tissue_id,
             "tissue_name": tissue.name if tissue else "unknown",
@@ -73,6 +90,12 @@ def _build_exercise_response(exercise: Exercise, session: Session) -> dict:
             "tendon_strain_factor": m.tendon_strain_factor,
             "laterality_mode": m.laterality_mode,
         })
+    mapping_warnings = _mapping_warnings_for_exercise(
+        exercise=exercise,
+        mappings=mappings,
+        tissues_by_id=tissues_by_id,
+        session=session,
+    )
     return {
         "id": exercise.id,
         "name": exercise.name,
@@ -80,11 +103,143 @@ def _build_exercise_response(exercise: Exercise, session: Session) -> dict:
         "load_input_mode": exercise.load_input_mode,
         "laterality": exercise.laterality,
         "bodyweight_fraction": exercise.bodyweight_fraction,
+        "external_load_multiplier": exercise.external_load_multiplier,
+        "variant_group": exercise.variant_group,
+        "grip_style": exercise.grip_style,
+        "grip_width": exercise.grip_width,
+        "support_style": exercise.support_style,
+        "set_metric_mode": exercise.set_metric_mode,
         "estimated_minutes_per_set": exercise.estimated_minutes_per_set,
+        "load_preview": _build_load_preview(exercise),
         "notes": exercise.notes,
         "created_at": exercise.created_at,
         "tissues": tissues,
+        "mapping_warnings": mapping_warnings,
     }
+
+
+def _build_load_preview(exercise: Exercise) -> dict:
+    sample_bodyweight = 180.0
+    bodyweight_component = effective_bodyweight_component(exercise, sample_bodyweight)
+    sample_input = 50.0
+    external_component = sample_input * (exercise.external_load_multiplier or 1.0)
+    mode = exercise.load_input_mode or "external_weight"
+    if mode == "bodyweight":
+        effective_input = bodyweight_component
+    elif mode == "mixed":
+        effective_input = bodyweight_component + external_component
+    elif mode == "assisted_bodyweight":
+        effective_input = max(0.0, bodyweight_component - external_component)
+    else:
+        effective_input = external_component
+    return {
+        "sample_input_weight": sample_input if mode != "bodyweight" else None,
+        "sample_bodyweight": sample_bodyweight,
+        "bodyweight_component": round(bodyweight_component, 2),
+        "effective_weight": round(effective_input, 2),
+        "set_metric_mode": exercise.set_metric_mode or "reps",
+        "external_load_multiplier": exercise.external_load_multiplier or 1.0,
+    }
+
+
+def _mapping_warnings_for_exercise(
+    *,
+    exercise: Exercise,
+    mappings: list[ExerciseTissue],
+    tissues_by_id: dict[int, Tissue],
+    session: Session,
+) -> list[dict]:
+    warnings: list[dict] = []
+    mapping_ids = {mapping.tissue_id for mapping in mappings}
+    relationships = session.exec(select(TissueRelationship)).all()
+    exercises_by_variant = {}
+    if exercise.variant_group:
+        siblings = session.exec(
+            select(Exercise).where(Exercise.variant_group == exercise.variant_group)
+        ).all()
+        for sibling in siblings:
+            if sibling.id == exercise.id:
+                continue
+            sibling_mappings = get_current_exercise_tissues(session, sibling.id)  # type: ignore[arg-type]
+            exercises_by_variant[sibling.id] = sibling_mappings
+
+    for mapping in mappings:
+        tissue = tissues_by_id.get(mapping.tissue_id)
+        if tissue is None:
+            continue
+        if exercise.laterality == "unilateral" and mapping.laterality_mode == "bilateral_equal":
+            warnings.append({
+                "code": "unilateral-bilateral-equal",
+                "message": f"{exercise.name} is unilateral but {tissue.display_name} still uses bilateral_equal laterality.",
+                "source_tissue_id": tissue.id,
+                "target_tissue_id": tissue.id,
+            })
+        if mapping.loading_factor < 0.3 and mapping.routing_factor < 0.3:
+            continue
+        related_rows = [
+            row for row in relationships
+            if row.source_tissue_id == mapping.tissue_id and row.required_for_mapping_warning
+        ]
+        for row in related_rows:
+            if row.target_tissue_id in mapping_ids:
+                continue
+            target = tissues_by_id.get(row.target_tissue_id)
+            if not target:
+                continue
+            warnings.append({
+                "code": "missing-related-tissue",
+                "message": (
+                    f"{tissue.display_name} is mapped but related {target.display_name} "
+                    f"({row.relationship_type}) is missing."
+                ),
+                "source_tissue_id": tissue.id,
+                "target_tissue_id": target.id,
+            })
+
+    if exercise.variant_group and exercises_by_variant:
+        current_roles = {
+            mapping.tissue_id: mapping.role
+            for mapping in mappings
+            if (mapping.loading_factor or 0) >= 0.25 or (mapping.routing_factor or 0) >= 0.25
+        }
+        for sibling_id, sibling_mappings in exercises_by_variant.items():
+            sibling = session.get(Exercise, sibling_id)
+            if sibling is None:
+                continue
+            sibling_roles = {
+                mapping.tissue_id: mapping.role
+                for mapping in sibling_mappings
+                if (mapping.loading_factor or 0) >= 0.25 or (mapping.routing_factor or 0) >= 0.25
+            }
+            missing_from_current = [
+                tissue_id
+                for tissue_id in sibling_roles
+                if tissue_id not in current_roles
+            ]
+            missing_from_sibling = [
+                tissue_id
+                for tissue_id in current_roles
+                if tissue_id not in sibling_roles
+            ]
+            if not missing_from_current and not missing_from_sibling:
+                continue
+            target_tissue_id = (
+                missing_from_current[0]
+                if missing_from_current
+                else missing_from_sibling[0]
+            )
+            warnings.append({
+                "code": "variant-mapping-divergence",
+                "message": (
+                    f"{exercise.name} and sibling variant {sibling.name} in {exercise.variant_group} "
+                    "have meaningfully different mapping coverage."
+                ),
+                "source_tissue_id": target_tissue_id,
+                "target_tissue_id": target_tissue_id,
+            })
+            break
+
+    return warnings
 
 
 @router.get("")
@@ -128,6 +283,12 @@ def create_exercise(
         load_input_mode=data.load_input_mode,
         laterality=data.laterality or infer_exercise_laterality(data.name),
         bodyweight_fraction=data.bodyweight_fraction,
+        external_load_multiplier=data.external_load_multiplier,
+        variant_group=data.variant_group,
+        grip_style=data.grip_style,
+        grip_width=data.grip_width,
+        support_style=data.support_style,
+        set_metric_mode=data.set_metric_mode,
         estimated_minutes_per_set=data.estimated_minutes_per_set,
         notes=data.notes,
     )
@@ -177,6 +338,18 @@ def update_exercise(
         exercise.laterality = data.laterality
     if data.bodyweight_fraction is not None:
         exercise.bodyweight_fraction = data.bodyweight_fraction
+    if data.external_load_multiplier is not None:
+        exercise.external_load_multiplier = data.external_load_multiplier
+    if data.variant_group is not None:
+        exercise.variant_group = data.variant_group
+    if data.grip_style is not None:
+        exercise.grip_style = data.grip_style
+    if data.grip_width is not None:
+        exercise.grip_width = data.grip_width
+    if data.support_style is not None:
+        exercise.support_style = data.support_style
+    if data.set_metric_mode is not None:
+        exercise.set_metric_mode = data.set_metric_mode
     if data.estimated_minutes_per_set is not None:
         exercise.estimated_minutes_per_set = data.estimated_minutes_per_set
     if data.notes is not None:

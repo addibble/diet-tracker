@@ -1,8 +1,18 @@
-from datetime import date
+from datetime import UTC, date, datetime
 
 from sqlmodel import select
 
-from app.models import Exercise, RehabPlan, Tissue, TissueCondition, TrackedTissue, WorkoutSession, WorkoutSet
+from app.models import (
+    Exercise,
+    RehabCheckIn,
+    RehabPlan,
+    Tissue,
+    TissueCondition,
+    TrackedTissue,
+    WeightLog,
+    WorkoutSession,
+    WorkoutSet,
+)
 from app.planner import _build_rehab_priority_map, _planner_preferred_side, _prescribe_all, _select_exercises
 
 
@@ -540,6 +550,310 @@ def test_select_exercises_prefers_direct_rehab_in_late_stage_over_cross_educatio
     assert prescription_mode == "direct_rehab"
 
 
+def test_select_exercises_swaps_blocked_variant_for_safer_sibling(session):
+    tissue = Tissue(
+        name="brachioradialis",
+        display_name="Brachioradialis",
+        type="muscle",
+        tracking_mode="paired",
+        region="forearms",
+    )
+    neutral = Exercise(
+        name="Neutral Grip Cable Curl",
+        equipment="cable",
+        laterality="unilateral",
+        variant_group="curl_family",
+        grip_style="neutral",
+        support_style="cable_stabilized",
+    )
+    pronated = Exercise(
+        name="Pronated Cable Curl",
+        equipment="cable",
+        laterality="unilateral",
+        variant_group="curl_family",
+        grip_style="pronated",
+        support_style="unsupported",
+    )
+    session.add(tissue)
+    session.add(neutral)
+    session.add(pronated)
+    session.commit()
+    session.refresh(tissue)
+    session.refresh(neutral)
+    session.refresh(pronated)
+
+    left = TrackedTissue(tissue_id=tissue.id, side="left", display_name="Left Brachioradialis")
+    right = TrackedTissue(tissue_id=tissue.id, side="right", display_name="Right Brachioradialis")
+    session.add(left)
+    session.add(right)
+    session.commit()
+    session.refresh(left)
+
+    session.add(
+        TissueCondition(
+            tissue_id=tissue.id,
+            tracked_tissue_id=left.id,
+            status="tender",
+            severity=2,
+            max_loading_factor=0.25,
+        )
+    )
+    session.add(
+        RehabPlan(
+            tracked_tissue_id=left.id,
+            protocol_id="lateral-elbow-brachioradialis",
+            stage_id="eccentric-concentric",
+            status="active",
+        )
+    )
+    session.add(
+        RehabCheckIn(
+            tracked_tissue_id=left.id,
+            pain_0_10=5,
+            during_load_pain_0_10=5,
+            recorded_at=datetime(2026, 4, 1, 9, 0, tzinfo=UTC),
+        )
+    )
+    session.commit()
+
+    exercises_data = [
+        {
+            "id": pronated.id,
+            "name": pronated.name,
+            "laterality": "unilateral",
+            "variant_group": "curl_family",
+            "grip_style": "pronated",
+            "support_style": "unsupported",
+            "suitability_score": 88,
+            "recommendation": "good",
+            "weighted_risk_7d": 12.0,
+            "tissues": [
+                {
+                    "tissue_id": tissue.id,
+                    "tissue_display_name": tissue.display_name,
+                    "tissue_type": "muscle",
+                    "loading_factor": 0.6,
+                    "routing_factor": 0.6,
+                    "fatigue_factor": 0.6,
+                    "joint_strain_factor": 0.6,
+                    "tendon_strain_factor": 0.6,
+                    "laterality_mode": "selected_side_only",
+                    "recovery_state": 0.9,
+                }
+            ],
+        },
+        {
+            "id": neutral.id,
+            "name": neutral.name,
+            "laterality": "unilateral",
+            "variant_group": "curl_family",
+            "grip_style": "neutral",
+            "support_style": "cable_stabilized",
+            "suitability_score": 74,
+            "recommendation": "good",
+            "weighted_risk_7d": 16.0,
+            "tissues": [
+                {
+                    "tissue_id": tissue.id,
+                    "tissue_display_name": tissue.display_name,
+                    "tissue_type": "muscle",
+                    "loading_factor": 0.18,
+                    "routing_factor": 0.18,
+                    "fatigue_factor": 0.18,
+                    "joint_strain_factor": 0.18,
+                    "tendon_strain_factor": 0.18,
+                    "laterality_mode": "selected_side_only",
+                    "recovery_state": 0.9,
+                }
+            ],
+        },
+    ]
+    exercise_region_map = {
+        pronated.id: [{"region": "forearms", "role": "primary", "routing": 1.0}],
+        neutral.id: [{"region": "forearms", "role": "primary", "routing": 1.0}],
+    }
+
+    result = _select_exercises(
+        exercises_data,
+        target_regions={"forearms"},
+        adjacent_regions=set(),
+        blocked_regions=set(),
+        exercise_region_map=exercise_region_map,
+        protection_profiles=__import__(
+            "app.exercise_protection",
+            fromlist=["build_tracked_protection_profiles"],
+        ).build_tracked_protection_profiles(session, as_of=date(2026, 4, 1)),
+    )
+
+    assert result[0]["name"] == "Neutral Grip Cable Curl"
+    assert result[0]["blocked_variant"] == "Pronated Cable Curl"
+    assert "Swapped Pronated Cable Curl" in (result[0]["selection_note"] or "")
+
+
+def test_select_exercises_blocks_later_accessory_when_session_budget_is_spent(session):
+    tissue = Tissue(
+        name="brachioradialis",
+        display_name="Brachioradialis",
+        type="muscle",
+        tracking_mode="paired",
+        region="forearms",
+    )
+    first = Exercise(
+        name="Neutral Grip Cable Curl",
+        equipment="cable",
+        laterality="unilateral",
+        grip_style="neutral",
+        support_style="cable_stabilized",
+    )
+    second = Exercise(
+        name="Face Pull",
+        equipment="cable",
+        laterality="bilateral",
+        grip_style="neutral",
+        support_style="cable_stabilized",
+    )
+    session.add(tissue)
+    session.add(first)
+    session.add(second)
+    session.commit()
+    session.refresh(tissue)
+    session.refresh(first)
+    session.refresh(second)
+
+    left = TrackedTissue(tissue_id=tissue.id, side="left", display_name="Left Brachioradialis")
+    right = TrackedTissue(tissue_id=tissue.id, side="right", display_name="Right Brachioradialis")
+    session.add(left)
+    session.add(right)
+    session.commit()
+    session.refresh(left)
+
+    session.add(
+        TissueCondition(
+            tissue_id=tissue.id,
+            tracked_tissue_id=left.id,
+            status="tender",
+            severity=2,
+            max_loading_factor=0.3,
+        )
+    )
+    session.add(
+        RehabPlan(
+            tracked_tissue_id=left.id,
+            protocol_id="lateral-elbow-brachioradialis",
+            stage_id="eccentric-concentric",
+            status="active",
+        )
+    )
+    session.add(
+        RehabCheckIn(
+            tracked_tissue_id=left.id,
+            pain_0_10=5,
+            during_load_pain_0_10=5,
+            recorded_at=datetime(2026, 4, 1, 8, 30, tzinfo=UTC),
+        )
+    )
+    session.commit()
+
+    workout = WorkoutSession(date=date(2026, 4, 1))
+    session.add(workout)
+    session.commit()
+    session.refresh(workout)
+    logged = WorkoutSet(
+        session_id=workout.id,
+        exercise_id=first.id,
+        set_order=0,
+        performed_side="left",
+        reps=12,
+        weight=25.0,
+        completed_at=datetime(2026, 4, 1, 9, 15, tzinfo=UTC),
+    )
+    session.add(logged)
+    session.add(
+        WorkoutSet(
+            session_id=workout.id,
+            exercise_id=first.id,
+            set_order=1,
+            performed_side="left",
+            reps=12,
+            weight=25.0,
+            completed_at=datetime(2026, 4, 1, 9, 18, tzinfo=UTC),
+        )
+    )
+    session.commit()
+    session.refresh(logged)
+
+    exercises_data = [
+        {
+            "id": first.id,
+            "name": first.name,
+            "laterality": "unilateral",
+            "grip_style": "neutral",
+            "support_style": "cable_stabilized",
+            "suitability_score": 72,
+            "recommendation": "good",
+            "weighted_risk_7d": 15.0,
+            "tissues": [
+                {
+                    "tissue_id": tissue.id,
+                    "tissue_display_name": tissue.display_name,
+                    "tissue_type": "muscle",
+                    "loading_factor": 0.18,
+                    "routing_factor": 0.18,
+                    "fatigue_factor": 0.18,
+                    "joint_strain_factor": 0.18,
+                    "tendon_strain_factor": 0.18,
+                    "laterality_mode": "selected_side_only",
+                    "recovery_state": 0.9,
+                }
+            ],
+        },
+        {
+            "id": second.id,
+            "name": second.name,
+            "laterality": "bilateral",
+            "grip_style": "neutral",
+            "support_style": "cable_stabilized",
+            "suitability_score": 80,
+            "recommendation": "good",
+            "weighted_risk_7d": 10.0,
+            "tissues": [
+                {
+                    "tissue_id": tissue.id,
+                    "tissue_display_name": tissue.display_name,
+                    "tissue_type": "muscle",
+                    "loading_factor": 0.28,
+                    "routing_factor": 0.28,
+                    "fatigue_factor": 0.28,
+                    "joint_strain_factor": 0.28,
+                    "tendon_strain_factor": 0.28,
+                    "laterality_mode": "bilateral_equal",
+                    "recovery_state": 0.9,
+                }
+            ],
+        },
+    ]
+    exercise_region_map = {
+        first.id: [{"region": "forearms", "role": "primary", "routing": 1.0}],
+        second.id: [{"region": "shoulders", "role": "secondary", "routing": 0.5}],
+    }
+
+    result = _select_exercises(
+        exercises_data,
+        target_regions={"forearms"},
+        adjacent_regions={"shoulders"},
+        blocked_regions=set(),
+        exercise_region_map=exercise_region_map,
+        protection_profiles=__import__(
+            "app.exercise_protection",
+            fromlist=["build_tracked_protection_profiles"],
+        ).build_tracked_protection_profiles(session, as_of=date(2026, 4, 1)),
+    )
+
+    names = [row["name"] for row in result]
+    assert "Neutral Grip Cable Curl" in names
+    assert "Face Pull" not in names
+
+
 # ── _prescribe_all: weight reduction for tissue conditions ───────────────────
 
 
@@ -1025,3 +1339,65 @@ def test_prescribe_all_blends_heavy_target_with_recent_high_rep_weight(session):
     assert result["rep_scheme"] == "heavy"
     assert result["target_weight"] == 130
     assert "blends e1RM" in (result["overload_note"] or "")
+
+
+def test_prescribe_all_reduces_assist_for_progressive_overload(session):
+    exercise = Exercise(
+        name="Assisted Pull-Ups",
+        equipment="machine",
+        load_input_mode="assisted_bodyweight",
+        bodyweight_fraction=1.0,
+    )
+    session.add(exercise)
+    session.add(WeightLog(weight_lb=200.0, logged_at=datetime(2026, 3, 29, 12, 0, tzinfo=UTC)))
+    session.commit()
+    session.refresh(exercise)
+
+    workout = WorkoutSession(date=date(2026, 3, 30))
+    session.add(workout)
+    session.commit()
+    session.refresh(workout)
+    for set_order in range(3):
+        session.add(
+            WorkoutSet(
+                session_id=workout.id,
+                exercise_id=exercise.id,
+                set_order=set_order,
+                reps=12,
+                weight=50.0,
+                rep_completion="full",
+            )
+        )
+    session.commit()
+
+    original_build_exercise_strength = __import__("app.planner", fromlist=["build_exercise_strength"]).build_exercise_strength
+
+    def fake_strength(_session, _exercise_id, as_of=None):  # noqa: ARG001
+        return {"current_e1rm": 180.0}
+
+    import app.planner as planner_module
+
+    planner_module.build_exercise_strength = fake_strength
+    try:
+        prescribed = _prescribe_all(
+            session,
+            [
+                {
+                    "id": exercise.id,
+                    "name": exercise.name,
+                    "suitability_score": 95,
+                    "recommendation": "good",
+                    "weighted_risk_7d": 5.0,
+                    "target_hits": {"upper_back"},
+                    "primary_regions": {"upper_back"},
+                    "tissues": [],
+                }
+            ],
+            [],
+        )
+    finally:
+        planner_module.build_exercise_strength = original_build_exercise_strength
+
+    result = prescribed[0]
+    assert result["target_weight"] == 45.0
+    assert "assist" in (result["overload_note"] or "").lower()

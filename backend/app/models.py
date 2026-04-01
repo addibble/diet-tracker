@@ -103,6 +103,11 @@ class Exercise(SQLModel, table=True):
     laterality: str = "bilateral"  # "bilateral", "unilateral", "either"
     bodyweight_fraction: float = 0.0
     external_load_multiplier: float = 1.0
+    variant_group: str | None = Field(default=None, index=True)
+    grip_style: str = "none"  # "none", "neutral", "pronated", "supinated", "mixed"
+    grip_width: str = "none"  # "none", "narrow", "shoulder_width", "wide", "variable"
+    support_style: str = "none"  # "none", "unsupported", "chest_supported", "bench_supported", "cable_stabilized", "machine"
+    set_metric_mode: str = "reps"  # "reps", "duration", "distance", "hybrid"
     estimated_minutes_per_set: float = 2.0
     notes: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
@@ -154,6 +159,21 @@ class ExerciseTissue(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=_utcnow)
 
 
+class TissueRelationship(SQLModel, table=True):
+    __tablename__ = "tissue_relationships"
+    __table_args__ = (
+        UniqueConstraint("source_tissue_id", "target_tissue_id", "relationship_type"),
+    )
+    id: int | None = Field(default=None, primary_key=True)
+    source_tissue_id: int = Field(foreign_key="tissues.id", index=True)
+    target_tissue_id: int = Field(foreign_key="tissues.id", index=True)
+    relationship_type: str = Field(index=True)  # "muscle_to_tendon", "tendon_to_joint", "shares_neural_pathway", "agonist_chain"
+    required_for_mapping_warning: bool = True
+    notes: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
 class WorkoutSession(SQLModel, table=True):
     __tablename__ = "workout_sessions"
     id: int | None = Field(default=None, primary_key=True)
@@ -175,10 +195,25 @@ class WorkoutSet(SQLModel, table=True):
     weight: float | None = None  # lbs, null for bodyweight
     duration_secs: int | None = None
     distance_steps: int | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
     rpe: float | None = None  # 1-10
     rep_completion: str | None = None  # "full", "partial", "failed"
     notes: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
+
+
+class WorkoutSetTissueFeedback(SQLModel, table=True):
+    __tablename__ = "workout_set_tissue_feedback"
+    __table_args__ = (
+        UniqueConstraint("workout_set_id", "tracked_tissue_id"),
+    )
+    id: int | None = Field(default=None, primary_key=True)
+    workout_set_id: int = Field(foreign_key="workout_sets.id", index=True)
+    tracked_tissue_id: int = Field(foreign_key="tracked_tissues.id", index=True)
+    pain_0_10: int = 0
+    symptom_note: str | None = None
+    recorded_at: datetime = Field(default_factory=_utcnow, index=True)
 
 
 class TissueCondition(SQLModel, table=True):

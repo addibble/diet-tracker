@@ -4,14 +4,18 @@ import {
   addWorkoutSet,
   deleteWorkoutSet,
   getExercises,
+  getTrackedTissueReadiness,
   getWorkoutSession,
   removePlanExercise,
   reorderPlanExercises,
   updateProgramDayExercise,
   updateWorkoutSet,
   type SavedPlanExercise,
+  type TrackedTissueReadiness,
   type WkExercise,
   type WkSession,
+  type WkSetTissueFeedback,
+  type WorkoutSetUpdateInput,
 } from '../api'
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -41,18 +45,24 @@ interface EditableSet {
   weight: number | null
   duration_secs: number | null
   distance_steps: number | null
+  started_at: string | null
+  completed_at: string | null
   rpe: number | null
   rep_completion: string | null
   notes: string | null
+  tissue_feedback: WkSetTissueFeedback[]
   load_input_mode?: string
+  set_metric_mode?: string
   saving?: boolean
 }
 
 type ExerciseGroup = {
+  exercise?: WkExercise
   exercise_id: number
   exercise_name: string
   equipment: string | null
   load_input_mode: string
+  set_metric_mode: string
   laterality: 'bilateral' | 'unilateral' | 'either'
   sets: EditableSet[]
   // Plan targets (if available)
@@ -60,6 +70,9 @@ type ExerciseGroup = {
   target_reps?: string
   target_weight?: number | null
 }
+
+type SetSide = 'left' | 'right' | 'center' | 'bilateral' | null
+type SetPatch = WorkoutSetUpdateInput
 
 // ── Debounce hook ────────────────────────────────────────────────────
 
@@ -81,6 +94,120 @@ function useDebouncedCallback<T extends (...args: never[]) => unknown>(
     },
     [delayMs],
   ) as T
+}
+
+function weightFieldLabel(loadInputMode: string): string {
+  if (loadInputMode === 'assisted_bodyweight') return 'Assist'
+  if (loadInputMode === 'mixed') return 'Load'
+  if (loadInputMode === 'carry') return 'Carry'
+  return 'Weight'
+}
+
+function usesWeightInput(loadInputMode: string): boolean {
+  return loadInputMode !== 'bodyweight'
+}
+
+function primaryMetricFlags(setMetricMode: string) {
+  return {
+    showReps: setMetricMode === 'reps' || setMetricMode === 'hybrid',
+    showDuration: setMetricMode === 'duration' || setMetricMode === 'hybrid',
+    showDistance: setMetricMode === 'distance' || setMetricMode === 'hybrid',
+  }
+}
+
+function oppositeSide(side: SetSide): 'left' | 'right' | null {
+  if (side === 'left') return 'right'
+  if (side === 'right') return 'left'
+  return null
+}
+
+function trackedTissueNeedsFeedback(row: TrackedTissueReadiness): boolean {
+  return !!row.active_rehab_plan || (!!row.condition && row.condition.status !== 'healthy')
+}
+
+function mappingAppliesToTrackedSide(
+  lateralityMode: string,
+  trackedSide: 'left' | 'right' | 'center',
+  performedSide: SetSide,
+) {
+  if (trackedSide === 'center') return true
+  if (!performedSide || performedSide === 'bilateral' || performedSide === 'center') return true
+  if (lateralityMode === 'selected_side_only' || lateralityMode === 'selected_side_primary') {
+    return trackedSide === performedSide
+  }
+  if (lateralityMode === 'contralateral_carryover') {
+    return trackedSide === oppositeSide(performedSide)
+  }
+  return true
+}
+
+function relevantTrackedTissuesForSet(
+  exercise: WkExercise | undefined,
+  trackedReadiness: TrackedTissueReadiness[],
+  performedSide: SetSide,
+) {
+  if (!exercise) return []
+  const significantMappings = exercise.tissues.filter(
+    (mapping) => mapping.loading_factor > 0 || mapping.routing_factor > 0,
+  )
+  return trackedReadiness.filter((row) => {
+    if (!trackedTissueNeedsFeedback(row)) return false
+    return significantMappings.some(
+      (mapping) =>
+        mapping.tissue_id === row.tracked_tissue.tissue_id
+        && mappingAppliesToTrackedSide(
+          mapping.laterality_mode,
+          row.tracked_tissue.side,
+          performedSide,
+        ),
+    )
+  })
+}
+
+function formatTimestamp(timestamp: string | null): string {
+  if (!timestamp) return '—'
+  return new Date(timestamp).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
+function toDateTimeLocalValue(timestamp: string | null): string {
+  if (!timestamp) return ''
+  const date = new Date(timestamp)
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+function fromDateTimeLocalValue(value: string): string | null {
+  if (!value) return null
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString()
+}
+
+function normalizeFeedbackForUpdate(feedback: WkSetTissueFeedback[]): NonNullable<WorkoutSetUpdateInput['tissue_feedback']> {
+  return feedback.map((entry) => ({
+    tracked_tissue_id: entry.tracked_tissue_id,
+    pain_0_10: entry.pain_0_10,
+    symptom_note: entry.symptom_note ?? null,
+  }))
+}
+
+function optimisticFeedbackEntries(
+  feedback: NonNullable<WorkoutSetUpdateInput['tissue_feedback']>,
+  previous: WkSetTissueFeedback[],
+): WkSetTissueFeedback[] {
+  const previousById = new Map(previous.map((entry) => [entry.tracked_tissue_id, entry]))
+  return feedback.map((entry) => ({
+    tracked_tissue_id: entry.tracked_tissue_id,
+    tracked_tissue_display_name: previousById.get(entry.tracked_tissue_id)?.tracked_tissue_display_name,
+    pain_0_10: entry.pain_0_10,
+    symptom_note: entry.symptom_note ?? null,
+    recorded_at: previousById.get(entry.tracked_tissue_id)?.recorded_at,
+    above_threshold: previousById.get(entry.tracked_tissue_id)?.above_threshold,
+  }))
 }
 
 // ── Main component ───────────────────────────────────────────────────
@@ -362,6 +489,9 @@ function PlanExerciseRow({
       {ex.side_explanation && (
         <p className="mt-1.5 text-[11px] text-purple-600">{ex.side_explanation}</p>
       )}
+      {ex.selection_note && (
+        <p className="mt-1 text-[11px] text-blue-600">{ex.selection_note}</p>
+      )}
     </div>
   )
 }
@@ -383,6 +513,7 @@ function LogEditor({
     prefetchedSession ?? null,
   )
   const [exerciseCache, setExerciseCache] = useState<WkExercise[]>([])
+  const [trackedReadiness, setTrackedReadiness] = useState<TrackedTissueReadiness[]>([])
   const [loading, setLoading] = useState(!prefetchedSession)
   const [showAddExercise, setShowAddExercise] = useState(false)
 
@@ -402,6 +533,7 @@ function LogEditor({
   // Load exercises for picker
   useEffect(() => {
     getExercises().then(setExerciseCache).catch(() => {})
+    getTrackedTissueReadiness().then(setTrackedReadiness).catch(() => {})
   }, [])
 
   const exerciseLookup = useMemo(() => {
@@ -426,10 +558,12 @@ function LogEditor({
       const sets = map.get(eid)!
       const ex = exerciseLookup.get(eid)
       return {
+        exercise: ex,
         exercise_id: eid,
         exercise_name: sets[0].exercise_name,
         equipment: ex?.equipment ?? null,
         load_input_mode: ex?.load_input_mode ?? 'external_weight',
+        set_metric_mode: ex?.set_metric_mode ?? 'reps',
         laterality: ex?.laterality ?? 'bilateral',
         sets,
       }
@@ -448,19 +582,27 @@ function LogEditor({
   }, [session, onChanged])
 
   const handleUpdateSet = useCallback(
-    async (setId: number, field: string, value: number | string | null) => {
+    async (setId: number, patch: SetPatch) => {
       // Optimistic update
       setSession((prev) => {
         if (!prev) return prev
         return {
           ...prev,
           sets: prev.sets.map((s) =>
-            s.id === setId ? { ...s, [field]: value } : s,
+            s.id === setId
+              ? {
+                  ...s,
+                  ...patch,
+                  tissue_feedback: patch.tissue_feedback
+                    ? optimisticFeedbackEntries(patch.tissue_feedback, s.tissue_feedback)
+                    : s.tissue_feedback,
+                }
+              : s,
           ),
         }
       })
       try {
-        await updateWorkoutSet(setId, { [field]: value })
+        await updateWorkoutSet(setId, patch)
         onChanged?.()
       } catch {
         refreshSession() // rollback on error
@@ -499,6 +641,9 @@ function LogEditor({
           weight: templateSet?.weight ?? null,
           duration_secs: templateSet?.duration_secs ?? null,
           distance_steps: templateSet?.distance_steps ?? null,
+          tissue_feedback: templateSet?.tissue_feedback?.length
+            ? normalizeFeedbackForUpdate(templateSet.tissue_feedback)
+            : undefined,
         })
         await refreshSession()
       } catch {
@@ -564,6 +709,7 @@ function LogEditor({
         <LogExerciseGroup
           key={g.exercise_id}
           group={g}
+          trackedReadiness={trackedReadiness}
           compact={compact}
           onUpdateSet={handleUpdateSet}
           onAddSet={handleAddSet}
@@ -596,6 +742,7 @@ function LogEditor({
 
 function LogExerciseGroup({
   group,
+  trackedReadiness,
   compact,
   onUpdateSet,
   onAddSet,
@@ -603,13 +750,15 @@ function LogExerciseGroup({
   onDeleteExercise,
 }: {
   group: ExerciseGroup
+  trackedReadiness: TrackedTissueReadiness[]
   compact?: boolean
-  onUpdateSet: (setId: number, field: string, value: number | string | null) => void
+  onUpdateSet: (setId: number, patch: SetPatch) => void
   onAddSet: (exerciseId: number, templateSet?: EditableSet) => void
   onDeleteSet: (setId: number) => void
   onDeleteExercise: (exerciseId: number) => void
 }) {
   const mode = group.load_input_mode
+  const metrics = primaryMetricFlags(group.set_metric_mode)
 
   // Plan target reference line
   const targetRef = group.target_reps
@@ -650,18 +799,16 @@ function LogExerciseGroup({
       {/* Column headers */}
       <div className="px-2.5 pt-1 pb-0.5 flex items-center gap-1 text-[10px] text-gray-400 uppercase tracking-wider">
         <span className="w-6 text-center">#</span>
-        {(mode === 'external_weight' || mode === 'bodyweight' || mode === 'mixed' || mode === 'assisted_bodyweight') && (
-          <>
-            {(mode === 'external_weight' || mode === 'mixed' || mode === 'assisted_bodyweight') && (
-              <span className="w-16 text-center">{mode === 'assisted_bodyweight' ? 'Assist' : 'Weight'}</span>
-            )}
-            <span className="w-12 text-center">Reps</span>
-          </>
+        {usesWeightInput(mode) && (
+          <span className="w-16 text-center">{weightFieldLabel(mode)}</span>
         )}
-        {mode === 'timed_hold' && (
+        {metrics.showReps && (
+          <span className="w-12 text-center">Reps</span>
+        )}
+        {metrics.showDuration && (
           <span className="w-16 text-center">Secs</span>
         )}
-        {mode === 'distance' && (
+        {metrics.showDistance && (
           <span className="w-16 text-center">Steps</span>
         )}
         {group.laterality !== 'bilateral' && (
@@ -669,6 +816,7 @@ function LogExerciseGroup({
         )}
         <span className="w-14 text-center">RPE</span>
         <span className="w-14 text-center">Status</span>
+        <span className="w-16 text-center">Done</span>
         <span className="w-5" />
       </div>
 
@@ -680,8 +828,11 @@ function LogExerciseGroup({
             set={s}
             index={i + 1}
             mode={mode}
+            setMetricMode={group.set_metric_mode}
             laterality={group.laterality}
-            onUpdate={(field, value) => onUpdateSet(s.id, field, value)}
+            exercise={group.exercise}
+            trackedReadiness={trackedReadiness}
+            onUpdate={(patch) => onUpdateSet(s.id, patch)}
             onDelete={() => onDeleteSet(s.id)}
           />
         ))}
@@ -709,95 +860,205 @@ function SetRow({
   set,
   index,
   mode,
+  setMetricMode,
   laterality,
+  exercise,
+  trackedReadiness,
   onUpdate,
   onDelete,
 }: {
   set: EditableSet
   index: number
   mode: string
+  setMetricMode: string
   laterality: 'bilateral' | 'unilateral' | 'either'
-  onUpdate: (field: string, value: number | string | null) => void
+  exercise?: WkExercise
+  trackedReadiness: TrackedTissueReadiness[]
+  onUpdate: (patch: SetPatch) => void
   onDelete: () => void
 }) {
-  return (
-    <div className="flex items-center gap-1 py-0.5 group">
-      <span className="w-6 text-center text-[11px] text-gray-400 tabular-nums">
-        {index}
-      </span>
+  const metrics = primaryMetricFlags(setMetricMode)
+  const feedbackTargets = relevantTrackedTissuesForSet(exercise, trackedReadiness, set.performed_side)
+  const feedbackByTrackedId = useMemo(
+    () => new Map(set.tissue_feedback.map((entry) => [entry.tracked_tissue_id, entry])),
+    [set.tissue_feedback],
+  )
 
-      {(mode === 'external_weight' || mode === 'bodyweight' || mode === 'mixed' || mode === 'assisted_bodyweight') && (
-        <>
-          {(mode === 'external_weight' || mode === 'mixed' || mode === 'assisted_bodyweight') && (
-            <NumberInput
-              value={set.weight}
-              step={2.5}
-              min={0}
-              onChange={(v) => onUpdate('weight', v)}
-              className="w-16"
-              placeholder={mode === 'assisted_bodyweight' ? 'assist' : 'lb'}
-            />
-          )}
+  const updateFeedback = (trackedTissueId: number, patch: Partial<WkSetTissueFeedback>) => {
+    const current = feedbackByTrackedId.get(trackedTissueId)
+    const next = new Map(feedbackByTrackedId)
+    next.set(trackedTissueId, {
+      tracked_tissue_id: trackedTissueId,
+      tracked_tissue_display_name:
+        current?.tracked_tissue_display_name
+        ?? feedbackTargets.find((row) => row.tracked_tissue.id === trackedTissueId)?.tracked_tissue.display_name,
+      pain_0_10: patch.pain_0_10 ?? current?.pain_0_10 ?? 0,
+      symptom_note: patch.symptom_note ?? current?.symptom_note ?? null,
+      above_threshold: current?.above_threshold,
+      recorded_at: current?.recorded_at,
+    })
+    onUpdate({
+      tissue_feedback: normalizeFeedbackForUpdate(Array.from(next.values())),
+    })
+  }
+
+  return (
+    <div className="space-y-1 rounded-md px-1 py-1 group hover:bg-gray-50">
+      <div className="flex items-center gap-1">
+        <span className="w-6 text-center text-[11px] text-gray-400 tabular-nums">
+          {index}
+        </span>
+
+        {usesWeightInput(mode) && (
+          <NumberInput
+            value={set.weight}
+            step={2.5}
+            min={0}
+            onChange={(v) => onUpdate({ weight: v })}
+            className="w-16"
+            placeholder={weightFieldLabel(mode).toLowerCase()}
+          />
+        )}
+
+        {metrics.showReps && (
           <NumberInput
             value={set.reps}
             min={0}
-            onChange={(v) => onUpdate('reps', v)}
+            onChange={(v) => onUpdate({ reps: v })}
             className="w-12"
             placeholder="reps"
           />
-        </>
-      )}
+        )}
 
-      {mode === 'timed_hold' && (
+        {metrics.showDuration && (
+          <NumberInput
+            value={set.duration_secs}
+            min={0}
+            onChange={(v) => onUpdate({ duration_secs: v })}
+            className="w-16"
+            placeholder="sec"
+          />
+        )}
+
+        {metrics.showDistance && (
+          <NumberInput
+            value={set.distance_steps}
+            min={0}
+            onChange={(v) => onUpdate({ distance_steps: v })}
+            className="w-16"
+            placeholder="steps"
+          />
+        )}
+
+        {laterality !== 'bilateral' && (
+          <PerformedSideSelect
+            value={set.performed_side}
+            onChange={(v) => onUpdate({ performed_side: v })}
+          />
+        )}
+
         <NumberInput
-          value={set.duration_secs}
-          min={0}
-          onChange={(v) => onUpdate('duration_secs', v)}
-          className="w-16"
-          placeholder="sec"
+          value={set.rpe}
+          step={0.5}
+          min={1}
+          max={10}
+          onChange={(v) => onUpdate({ rpe: v })}
+          className="w-14"
+          placeholder="RPE"
         />
-      )}
 
-      {mode === 'distance' && (
-        <NumberInput
-          value={set.distance_steps}
-          min={0}
-          onChange={(v) => onUpdate('distance_steps', v)}
-          className="w-16"
-          placeholder="steps"
+        <RepCompletionSelect
+          value={set.rep_completion}
+          onChange={(v) => onUpdate({ rep_completion: v })}
         />
-      )}
 
-      {laterality !== 'bilateral' && (
-        <PerformedSideSelect
-          value={set.performed_side}
-          onChange={(v) => onUpdate('performed_side', v)}
+        <DateTimeInput
+          value={set.completed_at}
+          onChange={(value) => onUpdate({ completed_at: value, started_at: set.started_at ?? value })}
+          className="w-32"
         />
+
+        <button
+          onClick={onDelete}
+          className="w-5 h-5 flex items-center justify-center text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+          title="Delete set"
+        >
+          ×
+        </button>
+      </div>
+
+      <div className="ml-7 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-gray-500">
+        <span>Started {formatTimestamp(set.started_at)}</span>
+        <span>Finished {formatTimestamp(set.completed_at)}</span>
+      </div>
+
+      {feedbackTargets.length > 0 && (
+        <div className="ml-7 grid gap-1 rounded-md border border-amber-100 bg-amber-50/60 px-2 py-2">
+          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-amber-700">
+            Tissue check
+          </div>
+          {feedbackTargets.map((tracked) => {
+            const feedback = feedbackByTrackedId.get(tracked.tracked_tissue.id)
+            return (
+              <div
+                key={tracked.tracked_tissue.id}
+                className="grid gap-1 sm:grid-cols-[minmax(0,1fr)_70px_minmax(0,1fr)] sm:items-center"
+              >
+                <span className="text-[11px] text-amber-900">
+                  {tracked.tracked_tissue.display_name}
+                </span>
+                <NumberInput
+                  value={feedback?.pain_0_10 ?? null}
+                  min={0}
+                  max={10}
+                  onChange={(value) => updateFeedback(tracked.tracked_tissue.id, { pain_0_10: value ?? 0 })}
+                  className="w-full"
+                  placeholder="0-10"
+                />
+                <input
+                  type="text"
+                  value={feedback?.symptom_note ?? ''}
+                  onChange={(event) =>
+                    updateFeedback(tracked.tracked_tissue.id, { symptom_note: event.target.value || null })}
+                  placeholder="symptom note"
+                  className={`rounded border px-2 py-1 text-[11px] ${
+                    feedback?.above_threshold
+                      ? 'border-red-300 bg-red-50 text-red-700'
+                      : 'border-amber-200 bg-white text-gray-700'
+                  }`}
+                />
+              </div>
+            )
+          })}
+        </div>
       )}
-
-      <NumberInput
-        value={set.rpe}
-        step={0.5}
-        min={1}
-        max={10}
-        onChange={(v) => onUpdate('rpe', v)}
-        className="w-14"
-        placeholder="RPE"
-      />
-
-      <RepCompletionSelect
-        value={set.rep_completion}
-        onChange={(v) => onUpdate('rep_completion', v)}
-      />
-
-      <button
-        onClick={onDelete}
-        className="w-5 h-5 flex items-center justify-center text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-        title="Delete set"
-      >
-        ×
-      </button>
     </div>
+  )
+}
+
+function DateTimeInput({
+  value,
+  onChange,
+  className,
+}: {
+  value: string | null
+  onChange: (value: string | null) => void
+  className?: string
+}) {
+  const [local, setLocal] = useState(toDateTimeLocalValue(value))
+
+  useEffect(() => {
+    setLocal(toDateTimeLocalValue(value))
+  }, [value])
+
+  return (
+    <input
+      type="datetime-local"
+      value={local}
+      onChange={(event) => setLocal(event.target.value)}
+      onBlur={() => onChange(fromDateTimeLocalValue(local))}
+      className={`rounded border border-gray-200 bg-white px-1 py-0.5 text-[11px] text-gray-700 focus:outline-none focus:ring-1 focus:ring-teal-500 ${className ?? ''}`}
+    />
   )
 }
 

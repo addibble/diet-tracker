@@ -483,6 +483,22 @@ export const getMacroTargets = (startDate?: string, endDate?: string) => {
 
 // ── Workout Tracking ──
 
+export interface WkExerciseLoadPreview {
+  sample_input_weight: number | null;
+  sample_bodyweight: number;
+  bodyweight_component: number;
+  effective_weight: number;
+  set_metric_mode: string;
+  external_load_multiplier: number;
+}
+
+export interface WkExerciseMappingWarning {
+  code: string;
+  message: string;
+  source_tissue_id: number;
+  target_tissue_id: number;
+}
+
 export interface WkExercise {
   id: number;
   name: string;
@@ -490,9 +506,18 @@ export interface WkExercise {
   load_input_mode: string;
   laterality: 'bilateral' | 'unilateral' | 'either';
   bodyweight_fraction: number;
+  external_load_multiplier: number;
+  variant_group: string | null;
+  grip_style: string;
+  grip_width: string;
+  support_style: string;
+  set_metric_mode: string;
   estimated_minutes_per_set: number;
+  load_preview: WkExerciseLoadPreview;
   notes: string | null;
+  created_at?: string;
   tissues: WkExerciseTissueMapping[];
+  mapping_warnings: WkExerciseMappingWarning[];
 }
 
 export interface WkExerciseTissueMapping {
@@ -511,6 +536,7 @@ export interface WkExerciseTissueMapping {
 
 export interface WkSetDetail {
   id: number;
+  session_id?: number;
   exercise_id: number;
   exercise_name: string;
   set_order: number;
@@ -519,9 +545,12 @@ export interface WkSetDetail {
   weight: number | null;
   duration_secs: number | null;
   distance_steps: number | null;
+  started_at: string | null;
+  completed_at: string | null;
   rpe: number | null;
   rep_completion: string | null;
   notes: string | null;
+  tissue_feedback: WkSetTissueFeedback[];
 }
 
 export interface WkSession {
@@ -685,6 +714,16 @@ export interface TrackedTissueReadiness {
   }[];
 }
 
+export interface WkSetTissueFeedback {
+  id?: number;
+  tracked_tissue_id: number;
+  tracked_tissue_display_name?: string;
+  pain_0_10: number;
+  symptom_note: string | null;
+  recorded_at?: string;
+  above_threshold?: boolean;
+}
+
 export interface WkExerciseHistory {
   exercise: WkExercise;
   sessions: {
@@ -734,6 +773,14 @@ export interface TrainingModelExerciseInsight {
   name: string;
   equipment: string | null;
   load_input_mode: string;
+  laterality: 'bilateral' | 'unilateral' | 'either';
+  bodyweight_fraction: number;
+  external_load_multiplier: number;
+  variant_group: string | null;
+  grip_style: string;
+  grip_width: string;
+  support_style: string;
+  set_metric_mode: string;
   estimated_minutes_per_set: number;
   in_active_program: boolean;
   weighted_risk_7d: number;
@@ -858,6 +905,9 @@ export interface PlannerExercisePrescription {
   overload_note: string | null;
   weight_adjustment_note?: string | null;
   side_explanation?: string | null;
+  selection_note?: string | null;
+  blocked_variant?: string | null;
+  protected_tissues?: string[];
   selected: boolean;
   last_performance: {
     date: string;
@@ -882,6 +932,12 @@ export const updateExercise = (id: number, data: {
   load_input_mode?: string;
   laterality?: 'bilateral' | 'unilateral' | 'either';
   bodyweight_fraction?: number;
+  external_load_multiplier?: number;
+  variant_group?: string | null;
+  grip_style?: string;
+  grip_width?: string;
+  support_style?: string;
+  set_metric_mode?: string;
   estimated_minutes_per_set?: number;
   notes?: string | null;
   tissues?: {
@@ -909,33 +965,38 @@ export const getWorkoutSession = (id: number) =>
   request<WkSession>(`/workout-sessions/${id}`);
 
 // Individual workout set CRUD
-export const updateWorkoutSet = (setId: number, data: {
+export interface WkSetTissueFeedbackInput {
+  tracked_tissue_id: number;
+  pain_0_10: number;
+  symptom_note?: string | null;
+}
+
+export interface WorkoutSetUpdateInput {
   performed_side?: 'left' | 'right' | 'center' | 'bilateral' | null;
   reps?: number | null;
   weight?: number | null;
   duration_secs?: number | null;
   distance_steps?: number | null;
+  started_at?: string | null;
+  completed_at?: string | null;
   rpe?: number | null;
   rep_completion?: string | null;
   notes?: string | null;
-}) =>
+  tissue_feedback?: WkSetTissueFeedbackInput[];
+}
+
+export interface WorkoutSetCreateInput extends WorkoutSetUpdateInput {
+  exercise_id: number;
+  set_order?: number;
+}
+
+export const updateWorkoutSet = (setId: number, data: WorkoutSetUpdateInput) =>
   request<WkSetDetail>(`/workout-sets/${setId}`, {
     method: 'PATCH',
     body: JSON.stringify(data),
   });
 
-export const addWorkoutSet = (sessionId: number, data: {
-  exercise_id: number;
-  set_order?: number;
-  performed_side?: 'left' | 'right' | 'center' | 'bilateral' | null;
-  reps?: number | null;
-  weight?: number | null;
-  duration_secs?: number | null;
-  distance_steps?: number | null;
-  rpe?: number | null;
-  rep_completion?: string | null;
-  notes?: string | null;
-}) =>
+export const addWorkoutSet = (sessionId: number, data: WorkoutSetCreateInput) =>
   request<WkSetDetail>(`/workout-sessions/${sessionId}/sets`, {
     method: 'POST',
     body: JSON.stringify(data),
@@ -954,6 +1015,8 @@ export const updateProgramDayExercise = (pdeId: number, data: {
   target_rep_max?: number | null;
   target_weight?: number | null;
   rep_scheme?: string | null;
+  performed_side?: 'left' | 'right' | 'center' | 'bilateral' | null;
+  side_explanation?: string | null;
   sort_order?: number;
 }) =>
   request<SavedPlanExercise>(`/program-day-exercises/${pdeId}`, {
@@ -1196,7 +1259,24 @@ export interface SavedPlanExercise {
   target_weight: number | null;
   performed_side?: 'left' | 'right' | 'center' | 'bilateral' | null;
   side_explanation?: string | null;
-  completed_sets: { id: number; set_order: number; performed_side?: 'left' | 'right' | 'center' | 'bilateral' | null; reps: number | null; weight: number | null; rpe: number | null; rep_completion: string | null; notes: string | null }[];
+  selection_note?: string | null;
+  blocked_variant?: string | null;
+  protected_tissues?: string[];
+  completed_sets: {
+    id: number;
+    set_order: number;
+    performed_side?: 'left' | 'right' | 'center' | 'bilateral' | null;
+    reps: number | null;
+    weight: number | null;
+    duration_secs: number | null;
+    distance_steps: number | null;
+    started_at: string | null;
+    completed_at: string | null;
+    rpe: number | null;
+    rep_completion: string | null;
+    notes: string | null;
+    tissue_feedback: WkSetTissueFeedback[];
+  }[];
   sets_done: number;
   done: boolean;
 }

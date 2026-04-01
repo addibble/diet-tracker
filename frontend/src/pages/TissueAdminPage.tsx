@@ -87,6 +87,52 @@ const ROLE_FILTER_OPTIONS: { value: ExerciseRoleFilter; label: string }[] = [
   { value: 'stabilizer', label: 'Stabilizer' },
 ]
 
+const LATERALITY_OPTIONS = [
+  { value: 'bilateral', label: 'Bilateral' },
+  { value: 'unilateral', label: 'Unilateral' },
+  { value: 'either', label: 'Either side' },
+] as const
+
+const LOAD_INPUT_MODE_OPTIONS = [
+  { value: 'external_weight', label: 'External weight' },
+  { value: 'bodyweight', label: 'Bodyweight' },
+  { value: 'mixed', label: 'Mixed (bodyweight + external)' },
+  { value: 'assisted_bodyweight', label: 'Assisted bodyweight' },
+  { value: 'carry', label: 'Carry load' },
+] as const
+
+const SET_METRIC_MODE_OPTIONS = [
+  { value: 'reps', label: 'Reps' },
+  { value: 'duration', label: 'Duration' },
+  { value: 'distance', label: 'Distance' },
+  { value: 'hybrid', label: 'Hybrid' },
+] as const
+
+const GRIP_STYLE_OPTIONS = [
+  { value: 'none', label: 'None' },
+  { value: 'neutral', label: 'Neutral' },
+  { value: 'pronated', label: 'Pronated' },
+  { value: 'supinated', label: 'Supinated' },
+  { value: 'mixed', label: 'Mixed' },
+] as const
+
+const GRIP_WIDTH_OPTIONS = [
+  { value: 'none', label: 'None' },
+  { value: 'narrow', label: 'Narrow' },
+  { value: 'shoulder_width', label: 'Shoulder width' },
+  { value: 'wide', label: 'Wide' },
+  { value: 'variable', label: 'Variable' },
+] as const
+
+const SUPPORT_STYLE_OPTIONS = [
+  { value: 'none', label: 'None' },
+  { value: 'unsupported', label: 'Unsupported' },
+  { value: 'chest_supported', label: 'Chest supported' },
+  { value: 'bench_supported', label: 'Bench supported' },
+  { value: 'cable_stabilized', label: 'Cable stabilized' },
+  { value: 'machine', label: 'Machine' },
+] as const
+
 function formatLastWorked(isoDate: string | null, hoursSince: number | null): string {
   if (!isoDate || hoursSince == null) return 'never'
   if (hoursSince < 1) return '<1h ago'
@@ -107,6 +153,40 @@ function parseNullableNumber(value: string): number | null {
   if (!value.trim()) return null
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
+}
+
+function titleCase(value: string | null | undefined): string {
+  if (!value) return '—'
+  return value
+    .replaceAll('_', ' ')
+    .replace(/\b\w/g, (match) => match.toUpperCase())
+}
+
+function weightFieldLabel(exercise: WkExercise): string {
+  if (exercise.load_input_mode === 'assisted_bodyweight') return 'Assist'
+  if (exercise.load_input_mode === 'mixed') return 'External load'
+  if (exercise.external_load_multiplier > 1 && exercise.laterality === 'bilateral') {
+    return 'Weight / side'
+  }
+  return 'Weight'
+}
+
+function loadPreviewLines(exercise: WkExercise): string[] {
+  const preview = exercise.load_preview
+  const lines: string[] = []
+  const sampleInput =
+    preview.sample_input_weight != null ? `${preview.sample_input_weight} lb entered` : 'No entered load'
+  const bodyweightLine =
+    preview.bodyweight_component > 0
+      ? `${preview.sample_bodyweight} lb bodyweight sample -> ${preview.bodyweight_component.toFixed(1)} lb effective bodyweight`
+      : `${preview.sample_bodyweight} lb bodyweight sample`
+  lines.push(sampleInput)
+  lines.push(bodyweightLine)
+  lines.push(`Effective load: ${preview.effective_weight.toFixed(1)} lb`)
+  if (preview.external_load_multiplier !== 1) {
+    lines.push(`External multiplier: x${preview.external_load_multiplier.toFixed(2)}`)
+  }
+  return lines
 }
 
 function collectTissueConditionFilters(
@@ -267,6 +347,217 @@ function LoadingEditor({
         X
       </button>
     </span>
+  )
+}
+
+function ExerciseMetadataEditor({
+  exercise,
+  onSave,
+}: {
+  exercise: WkExercise
+  onSave: () => void
+}) {
+  const [laterality, setLaterality] = useState(exercise.laterality)
+  const [loadInputMode, setLoadInputMode] = useState(exercise.load_input_mode)
+  const [bodyweightFraction, setBodyweightFraction] = useState(String(exercise.bodyweight_fraction))
+  const [externalLoadMultiplier, setExternalLoadMultiplier] = useState(
+    String(exercise.external_load_multiplier),
+  )
+  const [setMetricMode, setSetMetricMode] = useState(exercise.set_metric_mode)
+  const [estimatedMinutesPerSet, setEstimatedMinutesPerSet] = useState(
+    String(exercise.estimated_minutes_per_set),
+  )
+  const [variantGroup, setVariantGroup] = useState(exercise.variant_group ?? '')
+  const [gripStyle, setGripStyle] = useState(exercise.grip_style)
+  const [gripWidth, setGripWidth] = useState(exercise.grip_width)
+  const [supportStyle, setSupportStyle] = useState(exercise.support_style)
+  const [notes, setNotes] = useState(exercise.notes ?? '')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    setLaterality(exercise.laterality)
+    setLoadInputMode(exercise.load_input_mode)
+    setBodyweightFraction(String(exercise.bodyweight_fraction))
+    setExternalLoadMultiplier(String(exercise.external_load_multiplier))
+    setSetMetricMode(exercise.set_metric_mode)
+    setEstimatedMinutesPerSet(String(exercise.estimated_minutes_per_set))
+    setVariantGroup(exercise.variant_group ?? '')
+    setGripStyle(exercise.grip_style)
+    setGripWidth(exercise.grip_width)
+    setSupportStyle(exercise.support_style)
+    setNotes(exercise.notes ?? '')
+  }, [exercise])
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      await updateExercise(exercise.id, {
+        laterality,
+        load_input_mode: loadInputMode,
+        bodyweight_fraction: Number(bodyweightFraction) || 0,
+        external_load_multiplier: Number(externalLoadMultiplier) || 1,
+        set_metric_mode: setMetricMode,
+        estimated_minutes_per_set: Number(estimatedMinutesPerSet) || 0,
+        variant_group: variantGroup.trim() || null,
+        grip_style: gripStyle,
+        grip_width: gripWidth,
+        support_style: supportStyle,
+        notes: notes.trim() || null,
+      })
+      await onSave()
+    } catch (error) {
+      console.error('Failed to save exercise metadata', error)
+      alert(error instanceof Error ? error.message : 'Failed to save exercise metadata')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <details className="mt-3 rounded-lg border border-gray-200 bg-gray-50/70 p-3">
+      <summary className="cursor-pointer text-[11px] font-medium text-gray-700">
+        Edit exercise metadata
+      </summary>
+      <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        <label className="grid gap-1">
+          <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Laterality</span>
+          <select
+            value={laterality}
+            onChange={(e) => setLaterality(e.target.value as WkExercise['laterality'])}
+            className="rounded border border-gray-300 px-2 py-1 text-xs"
+          >
+            {LATERALITY_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="grid gap-1">
+          <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Load mode</span>
+          <select
+            value={loadInputMode}
+            onChange={(e) => setLoadInputMode(e.target.value)}
+            className="rounded border border-gray-300 px-2 py-1 text-xs"
+          >
+            {LOAD_INPUT_MODE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="grid gap-1">
+          <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Set metric</span>
+          <select
+            value={setMetricMode}
+            onChange={(e) => setSetMetricMode(e.target.value)}
+            className="rounded border border-gray-300 px-2 py-1 text-xs"
+          >
+            {SET_METRIC_MODE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="grid gap-1">
+          <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Bodyweight fraction</span>
+          <input
+            type="number"
+            min={0}
+            step={0.05}
+            value={bodyweightFraction}
+            onChange={(e) => setBodyweightFraction(e.target.value)}
+            className="rounded border border-gray-300 px-2 py-1 text-xs"
+          />
+        </label>
+        <label className="grid gap-1">
+          <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">External multiplier</span>
+          <input
+            type="number"
+            min={0}
+            step={0.05}
+            value={externalLoadMultiplier}
+            onChange={(e) => setExternalLoadMultiplier(e.target.value)}
+            className="rounded border border-gray-300 px-2 py-1 text-xs"
+          />
+        </label>
+        <label className="grid gap-1">
+          <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Minutes / set</span>
+          <input
+            type="number"
+            min={0}
+            step={0.25}
+            value={estimatedMinutesPerSet}
+            onChange={(e) => setEstimatedMinutesPerSet(e.target.value)}
+            className="rounded border border-gray-300 px-2 py-1 text-xs"
+          />
+        </label>
+        <label className="grid gap-1">
+          <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Variant group</span>
+          <input
+            type="text"
+            value={variantGroup}
+            onChange={(e) => setVariantGroup(e.target.value)}
+            placeholder="e.g. pull_up_vertical"
+            className="rounded border border-gray-300 px-2 py-1 text-xs"
+          />
+        </label>
+        <label className="grid gap-1">
+          <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Grip style</span>
+          <select
+            value={gripStyle}
+            onChange={(e) => setGripStyle(e.target.value)}
+            className="rounded border border-gray-300 px-2 py-1 text-xs"
+          >
+            {GRIP_STYLE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="grid gap-1">
+          <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Grip width</span>
+          <select
+            value={gripWidth}
+            onChange={(e) => setGripWidth(e.target.value)}
+            className="rounded border border-gray-300 px-2 py-1 text-xs"
+          >
+            {GRIP_WIDTH_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="grid gap-1">
+          <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Support style</span>
+          <select
+            value={supportStyle}
+            onChange={(e) => setSupportStyle(e.target.value)}
+            className="rounded border border-gray-300 px-2 py-1 text-xs"
+          >
+            {SUPPORT_STYLE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <label className="mt-3 grid gap-1">
+        <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Notes</span>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          rows={2}
+          className="rounded border border-gray-300 px-2 py-1 text-xs"
+        />
+      </label>
+      <div className="mt-3 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={save}
+          disabled={saving}
+          className="rounded bg-blue-600 px-3 py-1 text-[11px] font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+        >
+          {saving ? 'Saving...' : 'Save metadata'}
+        </button>
+        <span className="text-[10px] text-gray-500">
+          <code>{weightFieldLabel(exercise)}</code> stays the user-entered field; volume uses the effective load preview below.
+        </span>
+      </div>
+    </details>
   )
 }
 
@@ -909,8 +1200,20 @@ function TrackedTissueCard({
 
 // ── Exercise View ──
 
-function ExerciseView({ exercises, onSave }: { exercises: WkExercise[]; onSave: () => void }) {
+function ExerciseView({
+  exercises,
+  tissues,
+  onSave,
+}: {
+  exercises: WkExercise[]
+  tissues: WkTissue[]
+  onSave: () => void
+}) {
   const [search, setSearch] = useState('')
+  const tissueNameById = useMemo(
+    () => new Map(tissues.map((tissue) => [tissue.id, tissue.display_name])),
+    [tissues],
+  )
 
   const filtered = useMemo(() => {
     if (!search) return exercises
@@ -934,14 +1237,77 @@ function ExerciseView({ exercises, onSave }: { exercises: WkExercise[]; onSave: 
         )}
         {filtered.map((ex) => (
           <div key={ex.id} className="px-4 py-2.5 hover:bg-gray-50/80 transition-colors">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="text-sm font-medium text-gray-800">{ex.name}</span>
               {ex.equipment && (
                 <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-px rounded">
                   {ex.equipment}
                 </span>
               )}
+              <span className="text-[10px] rounded bg-blue-50 px-1.5 py-px text-blue-700">
+                {titleCase(ex.load_input_mode)}
+              </span>
+              <span className="text-[10px] rounded bg-purple-50 px-1.5 py-px text-purple-700">
+                {titleCase(ex.set_metric_mode)}
+              </span>
+              <span className="text-[10px] rounded bg-gray-100 px-1.5 py-px text-gray-600">
+                {titleCase(ex.laterality)}
+              </span>
+              {ex.variant_group && (
+                <span className="text-[10px] rounded bg-emerald-50 px-1.5 py-px text-emerald-700">
+                  {ex.variant_group}
+                </span>
+              )}
             </div>
+
+            <div className="mt-2 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-lg border border-gray-200 bg-white p-2 text-[11px] text-gray-600">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">
+                  Load semantics
+                </div>
+                <div className="mt-1 space-y-0.5">
+                  <p>{weightFieldLabel(ex)}</p>
+                  <p>Bodyweight fraction: {ex.bodyweight_fraction.toFixed(2)}</p>
+                  <p>External multiplier: x{ex.external_load_multiplier.toFixed(2)}</p>
+                </div>
+              </div>
+              <div className="rounded-lg border border-gray-200 bg-white p-2 text-[11px] text-gray-600">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">
+                  Variant metadata
+                </div>
+                <div className="mt-1 space-y-0.5">
+                  <p>Grip: {titleCase(ex.grip_style)}</p>
+                  <p>Width: {titleCase(ex.grip_width)}</p>
+                  <p>Support: {titleCase(ex.support_style)}</p>
+                </div>
+              </div>
+              <div className="rounded-lg border border-gray-200 bg-white p-2 text-[11px] text-gray-600 md:col-span-2">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">
+                  Load preview
+                </div>
+                <div className="mt-1 space-y-0.5">
+                  {loadPreviewLines(ex).map((line) => (
+                    <p key={line}>{line}</p>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {ex.mapping_warnings.length > 0 && (
+              <div className="mt-2 space-y-1">
+                {ex.mapping_warnings.map((warning, index) => (
+                  <div
+                    key={`${warning.code}-${warning.source_tissue_id}-${warning.target_tissue_id}-${index}`}
+                    className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800"
+                  >
+                    <p className="font-medium">{warning.message}</p>
+                    <p className="mt-0.5 text-[10px] text-amber-700">
+                      Suggested companion tissue: {tissueNameById.get(warning.target_tissue_id) ?? `#${warning.target_tissue_id}`}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {ex.tissues.length > 0 ? (
               <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
@@ -972,6 +1338,8 @@ function ExerciseView({ exercises, onSave }: { exercises: WkExercise[]; onSave: 
             ) : (
               <p className="text-[11px] text-gray-400 mt-0.5 italic">No tissue mappings</p>
             )}
+
+            <ExerciseMetadataEditor exercise={ex} onSave={onSave} />
           </div>
         ))}
       </div>
@@ -1099,7 +1467,7 @@ export default function TissueAdminPage() {
       )}
 
       {view === 'exercises' && (
-        <ExerciseView exercises={exercises} onSave={load} />
+        <ExerciseView exercises={exercises} tissues={tissues} onSave={load} />
       )}
     </div>
   )

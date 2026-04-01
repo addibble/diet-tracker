@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import json
+from datetime import UTC, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -7,8 +10,15 @@ from sqlmodel import Session, func, select
 
 from app.auth import get_current_user
 from app.database import get_session
-from app.models import Exercise, ProgramDayExercise, WorkoutSession, WorkoutSet
-from app.tracked_tissues import default_performed_side
+from app.models import (
+    Exercise,
+    ProgramDayExercise,
+    TrackedTissue,
+    WorkoutSession,
+    WorkoutSet,
+    WorkoutSetTissueFeedback,
+)
+from app.tracked_tissues import default_performed_side, get_active_rehab_plans_by_tracked_tissue
 
 router = APIRouter(tags=["workout-sets"])
 
@@ -24,9 +34,12 @@ class SetUpdate(BaseModel):
     weight: float | None = None
     duration_secs: int | None = None
     distance_steps: int | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
     rpe: float | None = None
     rep_completion: str | None = None
     notes: str | None = None
+    tissue_feedback: list[SetTissueFeedbackInput] | None = None
 
 
 class SetCreate(BaseModel):
@@ -37,9 +50,18 @@ class SetCreate(BaseModel):
     weight: float | None = None
     duration_secs: int | None = None
     distance_steps: int | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
     rpe: float | None = None
     rep_completion: str | None = None
     notes: str | None = None
+    tissue_feedback: list[SetTissueFeedbackInput] | None = None
+
+
+class SetTissueFeedbackInput(BaseModel):
+    tracked_tissue_id: int
+    pain_0_10: int = 0
+    symptom_note: str | None = None
 
 
 class ProgramDayExerciseUpdate(BaseModel):
@@ -60,6 +82,14 @@ class ProgramDayExerciseUpdate(BaseModel):
 
 def _set_response(s: WorkoutSet, session: Session) -> dict:
     exercise = session.get(Exercise, s.exercise_id)
+    feedback_rows = session.exec(
+        select(WorkoutSetTissueFeedback).where(WorkoutSetTissueFeedback.workout_set_id == s.id)
+    ).all()
+    tracked_rows = {
+        row.id: row
+        for row in session.exec(select(TrackedTissue)).all()
+    }
+    active_rehab_plans = get_active_rehab_plans_by_tracked_tissue(session)
     return {
         "id": s.id,
         "session_id": s.session_id,
@@ -71,10 +101,74 @@ def _set_response(s: WorkoutSet, session: Session) -> dict:
         "weight": s.weight,
         "duration_secs": s.duration_secs,
         "distance_steps": s.distance_steps,
+        "started_at": s.started_at,
+        "completed_at": s.completed_at,
         "rpe": s.rpe,
         "rep_completion": s.rep_completion,
         "notes": s.notes,
+        "tissue_feedback": [
+            {
+                "id": row.id,
+                "tracked_tissue_id": row.tracked_tissue_id,
+                "tracked_tissue_display_name": tracked_rows.get(row.tracked_tissue_id).display_name
+                if tracked_rows.get(row.tracked_tissue_id)
+                else "unknown",
+                "pain_0_10": row.pain_0_10,
+                "symptom_note": row.symptom_note,
+                "recorded_at": row.recorded_at,
+                "above_threshold": (
+                    active_rehab_plans.get(row.tracked_tissue_id) is not None
+                    and row.pain_0_10 > active_rehab_plans[row.tracked_tissue_id].pain_monitoring_threshold
+                ),
+            }
+            for row in feedback_rows
+        ],
     }
+
+
+def _normalize_session_set_order(session: Session, session_id: int) -> None:
+    rows = session.exec(
+        select(WorkoutSet)
+        .where(WorkoutSet.session_id == session_id)
+        .order_by(
+            WorkoutSet.completed_at.is_(None),
+            WorkoutSet.completed_at,
+            WorkoutSet.started_at,
+            WorkoutSet.set_order,
+            WorkoutSet.id,
+        )
+    ).all()
+    changed = False
+    for index, row in enumerate(rows, start=1):
+        if row.set_order != index:
+            row.set_order = index
+            session.add(row)
+            changed = True
+    if changed:
+        session.flush()
+
+
+def _replace_tissue_feedback(
+    *,
+    session: Session,
+    workout_set_id: int,
+    entries: list[SetTissueFeedbackInput],
+) -> None:
+    existing = session.exec(
+        select(WorkoutSetTissueFeedback).where(WorkoutSetTissueFeedback.workout_set_id == workout_set_id)
+    ).all()
+    for row in existing:
+        session.delete(row)
+    session.flush()
+    for entry in entries:
+        session.add(
+            WorkoutSetTissueFeedback(
+                workout_set_id=workout_set_id,
+                tracked_tissue_id=entry.tracked_tissue_id,
+                pain_0_10=entry.pain_0_10,
+                symptom_note=entry.symptom_note,
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -94,15 +188,26 @@ def update_set(
         raise HTTPException(status_code=404, detail="Set not found")
     exercise = session.get(Exercise, ws.exercise_id)
     updates = data.model_dump(exclude_unset=True)
+    tissue_feedback = updates.pop("tissue_feedback", None)
     if "performed_side" in updates and exercise:
         updates["performed_side"] = default_performed_side(
             exercise_name=exercise.name,
             exercise_laterality=exercise.laterality,
             provided_side=updates["performed_side"],
         )
+    if "completed_at" not in updates and any(
+        updates.get(key) is not None
+        for key in ("reps", "weight", "duration_secs", "distance_steps", "rpe", "rep_completion")
+    ):
+        updates["completed_at"] = datetime.now(UTC)
+    if "started_at" not in updates and "completed_at" in updates and updates["completed_at"] is not None:
+        updates["started_at"] = ws.started_at or updates["completed_at"]
     for key, value in updates.items():
         setattr(ws, key, value)
     session.add(ws)
+    if tissue_feedback is not None:
+        _replace_tissue_feedback(session=session, workout_set_id=ws.id, entries=tissue_feedback)
+    _normalize_session_set_order(session, ws.session_id)
     session.commit()
     session.refresh(ws)
     return _set_response(ws, session)
@@ -147,11 +252,17 @@ def add_set(
         weight=data.weight,
         duration_secs=data.duration_secs,
         distance_steps=data.distance_steps,
+        started_at=data.started_at,
+        completed_at=data.completed_at,
         rpe=data.rpe,
         rep_completion=data.rep_completion,
         notes=data.notes,
     )
     session.add(new_set)
+    session.flush()
+    if data.tissue_feedback:
+        _replace_tissue_feedback(session=session, workout_set_id=new_set.id, entries=data.tissue_feedback)
+    _normalize_session_set_order(session, session_id)
     session.commit()
     session.refresh(new_set)
     return _set_response(new_set, session)

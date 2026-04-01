@@ -7,8 +7,14 @@ from sqlmodel import Session, col, select
 
 from app.auth import get_current_user
 from app.database import get_session
-from app.models import Exercise, WorkoutSession, WorkoutSet
-from app.tracked_tissues import default_performed_side
+from app.models import (
+    Exercise,
+    TrackedTissue,
+    WorkoutSession,
+    WorkoutSet,
+    WorkoutSetTissueFeedback,
+)
+from app.tracked_tissues import default_performed_side, get_active_rehab_plans_by_tracked_tissue
 
 router = APIRouter(prefix="/api/workout-sessions", tags=["workout-sessions"])
 
@@ -21,6 +27,8 @@ class SetInput(BaseModel):
     weight: float | None = None
     duration_secs: int | None = None
     distance_steps: int | None = None
+    started_at: datetime.datetime | None = None
+    completed_at: datetime.datetime | None = None
     rpe: float | None = None
     rep_completion: str | None = None
     notes: str | None = None
@@ -47,6 +55,15 @@ def _build_session_response(ws: WorkoutSession, session: Session) -> dict:
         .where(WorkoutSet.session_id == ws.id)
         .order_by(WorkoutSet.set_order)
     ).all()
+    feedback_rows = session.exec(select(WorkoutSetTissueFeedback)).all()
+    feedback_by_set: dict[int, list[WorkoutSetTissueFeedback]] = {}
+    for row in feedback_rows:
+        feedback_by_set.setdefault(row.workout_set_id, []).append(row)
+    tracked_rows = {
+        row.id: row
+        for row in session.exec(select(TrackedTissue)).all()
+    }
+    active_rehab_plans = get_active_rehab_plans_by_tracked_tissue(session)
     set_details = []
     for s in sets:
         exercise = session.get(Exercise, s.exercise_id)
@@ -60,9 +77,28 @@ def _build_session_response(ws: WorkoutSession, session: Session) -> dict:
             "weight": s.weight,
             "duration_secs": s.duration_secs,
             "distance_steps": s.distance_steps,
+            "started_at": s.started_at,
+            "completed_at": s.completed_at,
             "rpe": s.rpe,
             "rep_completion": s.rep_completion,
             "notes": s.notes,
+            "tissue_feedback": [
+                {
+                    "id": row.id,
+                    "tracked_tissue_id": row.tracked_tissue_id,
+                    "tracked_tissue_display_name": tracked_rows.get(row.tracked_tissue_id).display_name
+                    if tracked_rows.get(row.tracked_tissue_id)
+                    else "unknown",
+                    "pain_0_10": row.pain_0_10,
+                    "symptom_note": row.symptom_note,
+                    "recorded_at": row.recorded_at,
+                    "above_threshold": (
+                        active_rehab_plans.get(row.tracked_tissue_id) is not None
+                        and row.pain_0_10 > active_rehab_plans[row.tracked_tissue_id].pain_monitoring_threshold
+                    ),
+                }
+                for row in feedback_by_set.get(s.id or 0, [])
+            ],
         })
     return {
         "id": ws.id,
@@ -135,6 +171,8 @@ def create_session(
             weight=s.weight,
             duration_secs=s.duration_secs,
             distance_steps=s.distance_steps,
+            started_at=s.started_at,
+            completed_at=s.completed_at,
             rpe=s.rpe,
             rep_completion=s.rep_completion,
             notes=s.notes,
@@ -181,6 +219,8 @@ def update_session(
                 weight=s.weight,
                 duration_secs=s.duration_secs,
                 distance_steps=s.distance_steps,
+                started_at=s.started_at,
+                completed_at=s.completed_at,
                 rpe=s.rpe,
                 rep_completion=s.rep_completion,
                 notes=s.notes,
