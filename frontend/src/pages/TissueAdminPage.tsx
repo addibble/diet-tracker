@@ -58,6 +58,29 @@ const CONDITION_OPTIONS = [
   { value: 'rehabbing', label: 'Rehabbing' },
 ] as const
 
+type TissueTypeFilter = keyof typeof TYPE_BADGE
+type ConditionFilter = keyof typeof CONDITION_COLORS
+type ExerciseRoleFilter = keyof typeof ROLE_COLORS
+
+const TISSUE_FILTER_OPTIONS: { value: TissueTypeFilter; label: string }[] = [
+  { value: 'muscle', label: 'Muscle' },
+  { value: 'tendon', label: 'Tendon' },
+  { value: 'joint', label: 'Joint' },
+]
+
+const CONDITION_FILTER_OPTIONS: { value: ConditionFilter; label: string }[] = [
+  { value: 'healthy', label: 'Healthy' },
+  { value: 'tender', label: 'Tender' },
+  { value: 'injured', label: 'Injured' },
+  { value: 'rehabbing', label: 'Rehabbing' },
+]
+
+const ROLE_FILTER_OPTIONS: { value: ExerciseRoleFilter; label: string }[] = [
+  { value: 'primary', label: 'Primary' },
+  { value: 'secondary', label: 'Secondary' },
+  { value: 'stabilizer', label: 'Stabilizer' },
+]
+
 function formatLastWorked(isoDate: string | null, hoursSince: number | null): string {
   if (!isoDate || hoursSince == null) return 'never'
   if (hoursSince < 1) return '<1h ago'
@@ -78,6 +101,59 @@ function parseNullableNumber(value: string): number | null {
   if (!value.trim()) return null
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
+}
+
+function collectTissueConditionFilters(
+  tissueId: number,
+  readinessMap: Map<number, WkTissueReadiness>,
+  trackedReadinessByTissue: Map<number, TrackedTissueReadiness[]>,
+): Set<ConditionFilter> {
+  const filters = new Set<ConditionFilter>()
+  const tissueCondition = readinessMap.get(tissueId)?.condition?.status
+
+  if (tissueCondition && tissueCondition in CONDITION_COLORS) {
+    filters.add(tissueCondition as ConditionFilter)
+  }
+
+  for (const tracked of trackedReadinessByTissue.get(tissueId) ?? []) {
+    const trackedCondition = tracked.condition?.status
+    if (trackedCondition && trackedCondition in CONDITION_COLORS) {
+      filters.add(trackedCondition as ConditionFilter)
+    }
+  }
+
+  if (filters.size === 0) {
+    filters.add('healthy')
+  }
+
+  return filters
+}
+
+function FilterButton({
+  label,
+  toneClassName,
+  selected,
+  onClick,
+}: {
+  label: string
+  toneClassName: string
+  selected: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={selected}
+      onClick={onClick}
+      className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+        selected
+          ? `${toneClassName} border-transparent shadow-sm`
+          : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50 hover:text-gray-700'
+      }`}
+    >
+      {label}
+    </button>
+  )
 }
 
 // ── Components ──
@@ -206,14 +282,57 @@ function TissueView({
   onSave: () => void
 }) {
   const [search, setSearch] = useState('')
+  const [selectedTypes, setSelectedTypes] = useState<TissueTypeFilter[]>([])
+  const [selectedConditions, setSelectedConditions] = useState<ConditionFilter[]>([])
+  const [selectedRoles, setSelectedRoles] = useState<ExerciseRoleFilter[]>([])
+
+  const toggleTypeFilter = (value: TissueTypeFilter) => {
+    setSelectedTypes((current) =>
+      current.includes(value) ? current.filter((item) => item !== value) : [...current, value],
+    )
+  }
+
+  const toggleConditionFilter = (value: ConditionFilter) => {
+    setSelectedConditions((current) =>
+      current.includes(value) ? current.filter((item) => item !== value) : [...current, value],
+    )
+  }
+
+  const toggleRoleFilter = (value: ExerciseRoleFilter) => {
+    setSelectedRoles((current) =>
+      current.includes(value) ? current.filter((item) => item !== value) : [...current, value],
+    )
+  }
+
+  const hasTagFilters =
+    selectedTypes.length > 0 || selectedConditions.length > 0 || selectedRoles.length > 0
 
   const filtered = useMemo(() => {
-    if (!search) return tissues
-    const q = search.toLowerCase()
-    return tissues.filter(
-      (t) => t.name.toLowerCase().includes(q) || t.display_name.toLowerCase().includes(q),
-    )
-  }, [tissues, search])
+    const q = search.trim().toLowerCase()
+
+    return tissues.filter((t) => {
+      if (q && !t.name.toLowerCase().includes(q) && !t.display_name.toLowerCase().includes(q)) {
+        return false
+      }
+
+      if (selectedTypes.length > 0 && !selectedTypes.includes(t.type as TissueTypeFilter)) {
+        return false
+      }
+
+      if (selectedConditions.length > 0) {
+        const conditionFilters = collectTissueConditionFilters(
+          t.id,
+          readinessMap,
+          trackedReadinessByTissue,
+        )
+        if (!selectedConditions.some((filter) => conditionFilters.has(filter))) {
+          return false
+        }
+      }
+
+      return true
+    })
+  }, [tissues, search, selectedTypes, selectedConditions, readinessMap, trackedReadinessByTissue])
 
   return (
     <div>
@@ -225,103 +344,165 @@ function TissueView({
           onChange={(e) => setSearch(e.target.value)}
           className="flex-1 max-w-sm border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
         />
+        {hasTagFilters && (
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedTypes([])
+              setSelectedConditions([])
+              setSelectedRoles([])
+            }}
+            className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+          >
+            Clear filters
+          </button>
+        )}
       </div>
 
-      {/* Legend */}
-      <div className="flex flex-wrap gap-3 mb-3 text-[10px]">
-        {Object.entries(TYPE_BADGE).map(([type, cls]) => (
-          <span key={type} className={`px-1.5 py-px rounded font-medium ${cls}`}>{type}</span>
-        ))}
-        <span className="text-gray-400 ml-2">|</span>
-        {Object.entries(CONDITION_COLORS).map(([status, cls]) => (
-          <span key={status} className={`px-1.5 py-px rounded font-medium ${cls}`}>{status}</span>
-        ))}
-        <span className="text-gray-400 ml-2">|</span>
-        {Object.entries(ROLE_COLORS).map(([role, cls]) => (
-          <span key={role} className={`px-1.5 py-px rounded font-medium ${cls}`}>{role}</span>
-        ))}
+      <div className="mb-3 space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">
+            Tissue type
+          </span>
+          {TISSUE_FILTER_OPTIONS.map((option) => (
+            <FilterButton
+              key={option.value}
+              label={option.label}
+              toneClassName={TYPE_BADGE[option.value]}
+              selected={selectedTypes.includes(option.value)}
+              onClick={() => toggleTypeFilter(option.value)}
+            />
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">
+            Condition
+          </span>
+          {CONDITION_FILTER_OPTIONS.map((option) => (
+            <FilterButton
+              key={option.value}
+              label={option.label}
+              toneClassName={CONDITION_COLORS[option.value]}
+              selected={selectedConditions.includes(option.value)}
+              onClick={() => toggleConditionFilter(option.value)}
+            />
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">
+            Exercise role
+          </span>
+          {ROLE_FILTER_OPTIONS.map((option) => (
+            <FilterButton
+              key={option.value}
+              label={option.label}
+              toneClassName={ROLE_COLORS[option.value]}
+              selected={selectedRoles.includes(option.value)}
+              onClick={() => toggleRoleFilter(option.value)}
+            />
+          ))}
+        </div>
+        <p className="text-[10px] text-gray-400">
+          Role filters only change the exercise mappings shown inside each tissue row.
+        </p>
       </div>
 
       <div className="bg-white border border-gray-200 rounded-xl overflow-hidden divide-y divide-gray-100">
         {filtered.length === 0 && (
-          <p className="text-sm text-gray-500 p-4">No tissues found.</p>
+          <p className="text-sm text-gray-500 p-4">No tissues match the current filters.</p>
         )}
-        {filtered.map((t) => (
-          <div key={t.id} className="px-4 py-2 hover:bg-gray-50/80 transition-colors">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-sm font-medium text-gray-800">{t.display_name}</span>
-              <span className="text-[10px] font-mono text-gray-400">{t.name}</span>
-              <span className={`text-[10px] px-1.5 py-px rounded font-medium ${TYPE_BADGE[t.type] ?? 'bg-gray-100 text-gray-600'}`}>
-                {t.type}
-              </span>
-              {(() => {
-                const r = readinessMap.get(t.id)
-                const cond = r?.condition
-                return cond ? (
-                  <span className={`text-[10px] px-1.5 py-px rounded font-medium ${CONDITION_COLORS[cond.status] ?? 'bg-gray-100 text-gray-600'}`}>
-                    {cond.status}{cond.severity > 0 ? ` (${cond.severity})` : ''}
-                  </span>
-                ) : null
-              })()}
-              {(() => {
-                const r = readinessMap.get(t.id)
-                return (
-                  <span className="text-[10px] text-gray-400" title={r?.last_trained ?? 'never'}>
-                    ⏱ {formatLastWorked(r?.last_trained ?? null, r?.hours_since ?? null)}
-                  </span>
-                )
-              })()}
-              <span className="text-[10px] text-gray-400">{t.recovery_hours}h</span>
-              {t.model_config && (
-                <span className="text-[10px] text-gray-400">
-                  cap {t.model_config.capacity_prior.toFixed(1)} · rec {t.model_config.recovery_tau_days.toFixed(1)}d
+        {filtered.map((t) => {
+          const readiness = readinessMap.get(t.id)
+          const condition = readiness?.condition
+          const tissueConditionFilters = collectTissueConditionFilters(
+            t.id,
+            readinessMap,
+            trackedReadinessByTissue,
+          )
+          const showHealthyConditionTag =
+            !condition && tissueConditionFilters.size === 1 && tissueConditionFilters.has('healthy')
+          const visibleExercises =
+            selectedRoles.length === 0
+              ? t.exercises
+              : t.exercises.filter((ex) => selectedRoles.includes(ex.role as ExerciseRoleFilter))
+
+          return (
+            <div key={t.id} className="px-4 py-2 hover:bg-gray-50/80 transition-colors">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm font-medium text-gray-800">{t.display_name}</span>
+                <span className="text-[10px] font-mono text-gray-400">{t.name}</span>
+                <span className={`text-[10px] px-1.5 py-px rounded font-medium ${TYPE_BADGE[t.type] ?? 'bg-gray-100 text-gray-600'}`}>
+                  {t.type}
                 </span>
-              )}
+                {condition ? (
+                  <span className={`text-[10px] px-1.5 py-px rounded font-medium ${CONDITION_COLORS[condition.status] ?? 'bg-gray-100 text-gray-600'}`}>
+                    {condition.status}
+                    {condition.severity > 0 ? ` (${condition.severity})` : ''}
+                  </span>
+                ) : showHealthyConditionTag ? (
+                  <span className={`text-[10px] px-1.5 py-px rounded font-medium ${CONDITION_COLORS.healthy}`}>
+                    healthy
+                  </span>
+                ) : null}
+                <span className="text-[10px] text-gray-400" title={readiness?.last_trained ?? 'never'}>
+                  ⏱ {formatLastWorked(readiness?.last_trained ?? null, readiness?.hours_since ?? null)}
+                </span>
+                <span className="text-[10px] text-gray-400">{t.recovery_hours}h</span>
+                {t.model_config && (
+                  <span className="text-[10px] text-gray-400">
+                    cap {t.model_config.capacity_prior.toFixed(1)} · rec {t.model_config.recovery_tau_days.toFixed(1)}d
+                  </span>
+                )}
+              </div>
+
+              {visibleExercises.length > 0 ? (
+                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                  {visibleExercises.map((ex) => {
+                    const fullExercise = exercises.find((e) => e.id === ex.exercise_id)
+                    return (
+                      <span key={ex.exercise_id} className="inline-flex items-center gap-1 text-[11px]">
+                        <span className="text-gray-600">{ex.exercise_name}</span>
+                        <span className={`px-1 py-px rounded text-[9px] font-medium ${ROLE_COLORS[ex.role] ?? ROLE_COLORS.stabilizer}`}>
+                          {ex.role}
+                        </span>
+                        {fullExercise && (
+                          <LoadingEditor
+                            value={ex.loading_factor}
+                            role={ex.role}
+                            exerciseId={ex.exercise_id}
+                            tissueId={t.id}
+                            exercise={fullExercise}
+                            onSave={onSave}
+                          />
+                        )}
+                        <span className="text-[10px] font-mono text-gray-400">
+                          r{ex.routing_factor.toFixed(2)}
+                        </span>
+                      </span>
+                    )
+                  })}
+                </div>
+              ) : t.exercises.length > 0 && selectedRoles.length > 0 ? (
+                <p className="mt-1 text-[11px] italic text-gray-400">
+                  No exercise mappings match the selected role filters.
+                </p>
+              ) : null}
+
+              {trackedReadinessByTissue.get(t.id)?.length ? (
+                <div className="mt-2 grid gap-2">
+                  {trackedReadinessByTissue.get(t.id)!.map((tracked) => (
+                    <TrackedTissueCard
+                      key={tracked.tracked_tissue.id}
+                      tracked={tracked}
+                      rehabProtocols={rehabProtocols}
+                      onSave={onSave}
+                    />
+                  ))}
+                </div>
+              ) : null}
             </div>
-
-            {t.exercises.length > 0 && (
-              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
-                {t.exercises.map((ex) => {
-                  const fullExercise = exercises.find((e) => e.id === ex.exercise_id)
-                  return (
-                    <span key={ex.exercise_id} className="inline-flex items-center gap-1 text-[11px]">
-                      <span className="text-gray-600">{ex.exercise_name}</span>
-                      <span className={`px-1 py-px rounded text-[9px] font-medium ${ROLE_COLORS[ex.role] ?? ROLE_COLORS.stabilizer}`}>
-                        {ex.role}
-                      </span>
-                      {fullExercise && (
-                        <LoadingEditor
-                          value={ex.loading_factor}
-                          role={ex.role}
-                          exerciseId={ex.exercise_id}
-                          tissueId={t.id}
-                          exercise={fullExercise}
-                          onSave={onSave}
-                        />
-                      )}
-                      <span className="text-[10px] font-mono text-gray-400">
-                        r{ex.routing_factor.toFixed(2)}
-                      </span>
-                    </span>
-                  )
-                })}
-              </div>
-            )}
-
-            {trackedReadinessByTissue.get(t.id)?.length ? (
-              <div className="mt-2 grid gap-2">
-                {trackedReadinessByTissue.get(t.id)!.map((tracked) => (
-                  <TrackedTissueCard
-                    key={tracked.tracked_tissue.id}
-                    tracked={tracked}
-                    rehabProtocols={rehabProtocols}
-                    onSave={onSave}
-                  />
-                ))}
-              </div>
-            ) : null}
-          </div>
-        ))}
+          )
+        })}
       </div>
     </div>
   )
