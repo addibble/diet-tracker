@@ -568,6 +568,68 @@ export interface WkTissueCondition {
   recovery_hours_override: number | null;
 }
 
+export interface TrackedTissueCondition {
+  id: number;
+  status: 'healthy' | 'tender' | 'injured' | 'rehabbing';
+  severity: number;
+  max_loading_factor: number | null;
+  recovery_hours_override: number | null;
+  rehab_protocol: string | null;
+  notes: string | null;
+  updated_at: string;
+}
+
+export interface RehabProtocolStage {
+  id: string;
+  label: string;
+  focus: string;
+}
+
+export interface RehabProtocol {
+  id: string;
+  title: string;
+  category: string;
+  summary: string;
+  default_pain_monitoring_threshold: number;
+  default_max_next_day_flare: number;
+  stages: RehabProtocolStage[];
+}
+
+export interface RehabPlanSummary {
+  id: number;
+  protocol_id: string;
+  protocol_title: string;
+  stage_id: string;
+  stage_label: string;
+  status: 'active' | 'paused' | 'completed';
+  pain_monitoring_threshold: number;
+  max_next_day_flare: number;
+  sessions_per_week_target: number | null;
+  max_weekly_set_progression: number | null;
+  max_load_progression_pct: number | null;
+  notes: string | null;
+  started_at?: string;
+  updated_at?: string;
+  tracked_tissue_id?: number;
+  tracked_tissue_display_name?: string | null;
+  tissue_id?: number | null;
+  tissue_name?: string | null;
+}
+
+export interface RehabCheckInSummary {
+  id: number;
+  rehab_plan_id: number | null;
+  pain_0_10: number;
+  stiffness_0_10: number;
+  weakness_0_10: number;
+  neural_symptoms_0_10: number;
+  during_load_pain_0_10: number;
+  next_day_flare: number;
+  confidence_0_10: number;
+  notes: string | null;
+  recorded_at: string;
+}
+
 export interface WkTissueReadiness {
   tissue: WkTissue;
   condition: WkTissueCondition | null;
@@ -600,45 +662,9 @@ export interface TrackedTissueReadiness {
     tracking_mode: 'paired' | 'center';
     active: boolean;
   };
-  condition: {
-    id: number;
-    status: string;
-    severity: number;
-    max_loading_factor: number | null;
-    recovery_hours_override: number | null;
-    rehab_protocol: string | null;
-    notes: string | null;
-    updated_at: string;
-  } | null;
-  active_rehab_plan: {
-    id: number;
-    protocol_id: string;
-    protocol_title: string;
-    stage_id: string;
-    stage_label: string;
-    status: string;
-    pain_monitoring_threshold: number;
-    max_next_day_flare: number;
-    sessions_per_week_target: number | null;
-    max_weekly_set_progression: number | null;
-    max_load_progression_pct: number | null;
-    notes: string | null;
-    started_at: string;
-    updated_at: string;
-  } | null;
-  latest_rehab_check_in: {
-    id: number;
-    rehab_plan_id: number | null;
-    pain_0_10: number;
-    stiffness_0_10: number;
-    weakness_0_10: number;
-    neural_symptoms_0_10: number;
-    during_load_pain_0_10: number;
-    next_day_flare: number;
-    confidence_0_10: number;
-    notes: string | null;
-    recorded_at: string;
-  } | null;
+  condition: TrackedTissueCondition | null;
+  active_rehab_plan: RehabPlanSummary | null;
+  latest_rehab_check_in: RehabCheckInSummary | null;
   last_trained: string | null;
   hours_since: number | null;
   effective_recovery_hours: number;
@@ -946,6 +972,64 @@ export const getExerciseHistory = (id: number, limit?: number) =>
 
 export const getTissues = () =>
   request<WkTissue[]>('/tissues');
+
+export const getRehabProtocols = () =>
+  request<RehabProtocol[]>('/tissues/rehab-protocols');
+
+export const createTissueCondition = (data: {
+  tissue_id?: number | null;
+  tracked_tissue_id?: number | null;
+  status: 'healthy' | 'tender' | 'injured' | 'rehabbing';
+  severity?: number;
+  max_loading_factor?: number | null;
+  recovery_hours_override?: number | null;
+  rehab_protocol?: string | null;
+  notes?: string | null;
+}) =>
+  request<TrackedTissueCondition & {
+    tissue_id: number;
+    tracked_tissue_id: number | null;
+    tracked_tissue_display_name: string | null;
+  }>('/tissues/conditions', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+
+export const createRehabPlan = (data: {
+  tracked_tissue_id: number;
+  protocol_id: string;
+  stage_id: string;
+  status?: 'active' | 'paused' | 'completed';
+  pain_monitoring_threshold?: number | null;
+  max_next_day_flare?: number | null;
+  sessions_per_week_target?: number | null;
+  max_weekly_set_progression?: number | null;
+  max_load_progression_pct?: number | null;
+  notes?: string | null;
+}) =>
+  request<RehabPlanSummary>('/tissues/rehab-plans', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+
+export const updateRehabPlan = (
+  rehabPlanId: number,
+  data: {
+    protocol_id?: string;
+    stage_id?: string;
+    status?: 'active' | 'paused' | 'completed';
+    pain_monitoring_threshold?: number | null;
+    max_next_day_flare?: number | null;
+    sessions_per_week_target?: number | null;
+    max_weekly_set_progression?: number | null;
+    max_load_progression_pct?: number | null;
+    notes?: string | null;
+  },
+) =>
+  request<RehabPlanSummary>(`/tissues/rehab-plans/${rehabPlanId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
 
 export const getTrainingModelSummary = (asOf?: string, includeExercises = false) => {
   const query = new URLSearchParams();

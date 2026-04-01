@@ -1,10 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  createRehabPlan,
+  createTissueCondition,
   getTissues,
   getExercises,
+  getRehabProtocols,
   getTissueReadiness,
   getTrackedTissueReadiness,
+  updateRehabPlan,
   updateExercise,
+  type RehabProtocol,
   type TrackedTissueReadiness,
   type WkTissue,
   type WkExercise,
@@ -46,6 +51,13 @@ const CONDITION_COLORS: Record<string, string> = {
   rehabbing: 'bg-purple-100 text-purple-700',
 }
 
+const CONDITION_OPTIONS = [
+  { value: 'healthy', label: 'Healthy' },
+  { value: 'tender', label: 'Tender' },
+  { value: 'injured', label: 'Injured' },
+  { value: 'rehabbing', label: 'Rehabbing' },
+] as const
+
 function formatLastWorked(isoDate: string | null, hoursSince: number | null): string {
   if (!isoDate || hoursSince == null) return 'never'
   if (hoursSince < 1) return '<1h ago'
@@ -60,6 +72,12 @@ function formatSide(side: string) {
   if (side === 'right') return 'R'
   if (side === 'center') return 'C'
   return side
+}
+
+function parseNullableNumber(value: string): number | null {
+  if (!value.trim()) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 // ── Components ──
@@ -177,12 +195,14 @@ function TissueView({
   exercises,
   readinessMap,
   trackedReadinessByTissue,
+  rehabProtocols,
   onSave,
 }: {
   tissues: TissueWithExercises[]
   exercises: WkExercise[]
   readinessMap: Map<number, WkTissueReadiness>
   trackedReadinessByTissue: Map<number, TrackedTissueReadiness[]>
+  rehabProtocols: RehabProtocol[]
   onSave: () => void
 }) {
   const [search, setSearch] = useState('')
@@ -289,37 +309,422 @@ function TissueView({
             )}
 
             {trackedReadinessByTissue.get(t.id)?.length ? (
-              <div className="mt-2 flex flex-wrap gap-1.5">
+              <div className="mt-2 grid gap-2">
                 {trackedReadinessByTissue.get(t.id)!.map((tracked) => (
-                  <span
+                  <TrackedTissueCard
                     key={tracked.tracked_tissue.id}
-                    className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] border ${
-                      tracked.protected
-                        ? 'bg-purple-50 border-purple-200 text-purple-700'
-                        : tracked.ready
-                          ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
-                          : 'bg-gray-50 border-gray-200 text-gray-600'
-                    }`}
-                    title={tracked.last_trained ?? 'never'}
-                  >
-                    <span className="font-semibold">{formatSide(tracked.tracked_tissue.side)}</span>
-                    <span>{tracked.tracked_tissue.display_name}</span>
-                    {tracked.active_rehab_plan && (
-                      <span className="font-medium">
-                        {tracked.active_rehab_plan.stage_label}
-                      </span>
-                    )}
-                    <span>vol {tracked.volume_7d}</span>
-                    {tracked.cross_education_7d > 0 && (
-                      <span>ce {tracked.cross_education_7d}</span>
-                    )}
-                  </span>
+                    tracked={tracked}
+                    rehabProtocols={rehabProtocols}
+                    onSave={onSave}
+                  />
                 ))}
               </div>
             ) : null}
           </div>
         ))}
       </div>
+    </div>
+  )
+}
+
+function TrackedTissueCard({
+  tracked,
+  rehabProtocols,
+  onSave,
+}: {
+  tracked: TrackedTissueReadiness
+  rehabProtocols: RehabProtocol[]
+  onSave: () => void
+}) {
+  const [showConditionEditor, setShowConditionEditor] = useState(false)
+  const [showPlanEditor, setShowPlanEditor] = useState(false)
+  const [savingCondition, setSavingCondition] = useState(false)
+  const [savingPlan, setSavingPlan] = useState(false)
+
+  const [conditionStatus, setConditionStatus] = useState<
+    'healthy' | 'tender' | 'injured' | 'rehabbing'
+  >(tracked.condition?.status ?? 'healthy')
+  const [conditionSeverity, setConditionSeverity] = useState(String(tracked.condition?.severity ?? 0))
+  const [conditionMaxLoading, setConditionMaxLoading] = useState(
+    tracked.condition?.max_loading_factor?.toString() ?? '',
+  )
+  const [conditionProtocolId, setConditionProtocolId] = useState(
+    tracked.condition?.rehab_protocol ?? tracked.active_rehab_plan?.protocol_id ?? '',
+  )
+  const [conditionNotes, setConditionNotes] = useState(tracked.condition?.notes ?? '')
+
+  const defaultPlanProtocolId =
+    tracked.active_rehab_plan?.protocol_id
+    ?? tracked.condition?.rehab_protocol
+    ?? rehabProtocols[0]?.id
+    ?? ''
+  const [planProtocolId, setPlanProtocolId] = useState(defaultPlanProtocolId)
+  const selectedProtocol =
+    rehabProtocols.find((protocol) => protocol.id === planProtocolId) ?? rehabProtocols[0] ?? null
+  const [stageId, setStageId] = useState(
+    tracked.active_rehab_plan?.stage_id
+      ?? selectedProtocol?.stages[0]?.id
+      ?? '',
+  )
+  const [planStatus, setPlanStatus] = useState<'active' | 'paused' | 'completed'>(
+    tracked.active_rehab_plan?.status ?? 'active',
+  )
+  const [painThreshold, setPainThreshold] = useState(
+    String(
+      tracked.active_rehab_plan?.pain_monitoring_threshold
+      ?? selectedProtocol?.default_pain_monitoring_threshold
+      ?? 3,
+    ),
+  )
+  const [nextDayFlare, setNextDayFlare] = useState(
+    String(
+      tracked.active_rehab_plan?.max_next_day_flare
+      ?? selectedProtocol?.default_max_next_day_flare
+      ?? 2,
+    ),
+  )
+  const [planNotes, setPlanNotes] = useState(tracked.active_rehab_plan?.notes ?? '')
+
+  const chipClasses = tracked.protected
+    ? 'bg-purple-50 border-purple-200 text-purple-700'
+    : tracked.ready
+      ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+      : 'bg-gray-50 border-gray-200 text-gray-600'
+
+  useEffect(() => {
+    setConditionStatus(tracked.condition?.status ?? 'healthy')
+    setConditionSeverity(String(tracked.condition?.severity ?? 0))
+    setConditionMaxLoading(tracked.condition?.max_loading_factor?.toString() ?? '')
+    setConditionProtocolId(
+      tracked.condition?.rehab_protocol ?? tracked.active_rehab_plan?.protocol_id ?? '',
+    )
+    setConditionNotes(tracked.condition?.notes ?? '')
+
+    const nextPlanProtocolId =
+      tracked.active_rehab_plan?.protocol_id
+      ?? tracked.condition?.rehab_protocol
+      ?? rehabProtocols[0]?.id
+      ?? ''
+    const nextSelectedProtocol =
+      rehabProtocols.find((protocol) => protocol.id === nextPlanProtocolId) ?? rehabProtocols[0] ?? null
+
+    setPlanProtocolId(nextPlanProtocolId)
+    setStageId(tracked.active_rehab_plan?.stage_id ?? nextSelectedProtocol?.stages[0]?.id ?? '')
+    setPlanStatus(tracked.active_rehab_plan?.status ?? 'active')
+    setPainThreshold(
+      String(
+        tracked.active_rehab_plan?.pain_monitoring_threshold
+        ?? nextSelectedProtocol?.default_pain_monitoring_threshold
+        ?? 3,
+      ),
+    )
+    setNextDayFlare(
+      String(
+        tracked.active_rehab_plan?.max_next_day_flare
+        ?? nextSelectedProtocol?.default_max_next_day_flare
+        ?? 2,
+      ),
+    )
+    setPlanNotes(tracked.active_rehab_plan?.notes ?? '')
+  }, [tracked, rehabProtocols])
+
+  const handlePlanProtocolChange = (nextProtocolId: string) => {
+    setPlanProtocolId(nextProtocolId)
+    const protocol = rehabProtocols.find((item) => item.id === nextProtocolId)
+    if (protocol) {
+      setStageId(protocol.stages[0]?.id ?? '')
+      setPainThreshold(String(protocol.default_pain_monitoring_threshold))
+      setNextDayFlare(String(protocol.default_max_next_day_flare))
+    }
+  }
+
+  const saveCondition = async () => {
+    setSavingCondition(true)
+    try {
+      await createTissueCondition({
+        tracked_tissue_id: tracked.tracked_tissue.id,
+        status: conditionStatus,
+        severity: Number(conditionSeverity) || 0,
+        max_loading_factor: parseNullableNumber(conditionMaxLoading),
+        rehab_protocol: conditionProtocolId || null,
+        notes: conditionNotes.trim() || null,
+      })
+      setShowConditionEditor(false)
+      await onSave()
+    } catch (error) {
+      console.error('Failed to save tissue condition', error)
+      alert(error instanceof Error ? error.message : 'Failed to save tissue condition')
+    } finally {
+      setSavingCondition(false)
+    }
+  }
+
+  const savePlan = async () => {
+    if (!planProtocolId || !stageId) {
+      alert('Select a rehab protocol and stage first.')
+      return
+    }
+    setSavingPlan(true)
+    try {
+      const payload = {
+        tracked_tissue_id: tracked.tracked_tissue.id,
+        protocol_id: planProtocolId,
+        stage_id: stageId,
+        status: planStatus,
+        pain_monitoring_threshold: Number(painThreshold) || 0,
+        max_next_day_flare: Number(nextDayFlare) || 0,
+        notes: planNotes.trim() || null,
+      }
+      if (tracked.active_rehab_plan) {
+        await updateRehabPlan(tracked.active_rehab_plan.id, {
+          protocol_id: payload.protocol_id,
+          stage_id: payload.stage_id,
+          status: payload.status,
+          pain_monitoring_threshold: payload.pain_monitoring_threshold,
+          max_next_day_flare: payload.max_next_day_flare,
+          notes: payload.notes,
+        })
+      } else {
+        await createRehabPlan(payload)
+      }
+      setShowPlanEditor(false)
+      await onSave()
+    } catch (error) {
+      console.error('Failed to save rehab plan', error)
+      alert(error instanceof Error ? error.message : 'Failed to save rehab plan')
+    } finally {
+      setSavingPlan(false)
+    }
+  }
+
+  return (
+    <div className={`rounded-xl border px-3 py-2 text-[11px] ${chipClasses}`} title={tracked.last_trained ?? 'never'}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-semibold">{formatSide(tracked.tracked_tissue.side)}</span>
+            <span className="font-semibold">{tracked.tracked_tissue.display_name}</span>
+            {tracked.condition && (
+              <span className={`rounded px-1.5 py-px font-medium ${CONDITION_COLORS[tracked.condition.status] ?? 'bg-gray-100 text-gray-600'}`}>
+                {tracked.condition.status}
+                {tracked.condition.severity > 0 ? ` (${tracked.condition.severity})` : ''}
+              </span>
+            )}
+            {tracked.active_rehab_plan && (
+              <span className="rounded bg-white/70 px-1.5 py-px font-medium text-purple-700">
+                {tracked.active_rehab_plan.protocol_title} · {tracked.active_rehab_plan.stage_label}
+              </span>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2 text-[10px] opacity-80">
+            <span>vol {tracked.volume_7d}</span>
+            {tracked.cross_education_7d > 0 && <span>ce {tracked.cross_education_7d}</span>}
+            <span>{tracked.ready ? 'ready' : 'monitor'}</span>
+            {tracked.latest_rehab_check_in && (
+              <span>
+                last check-in pain {tracked.latest_rehab_check_in.pain_0_10}/10
+              </span>
+            )}
+          </div>
+          {tracked.condition?.notes && (
+            <p className="text-[10px] text-gray-600">{tracked.condition.notes}</p>
+          )}
+        </div>
+        <div className="flex shrink-0 gap-1">
+          <button
+            type="button"
+            onClick={() => setShowConditionEditor((value) => !value)}
+            className="rounded border border-gray-300 bg-white px-2 py-1 text-[10px] text-gray-700 hover:bg-gray-50"
+          >
+            {tracked.condition ? 'Edit condition' : 'Add condition'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowPlanEditor((value) => !value)}
+            className="rounded border border-gray-300 bg-white px-2 py-1 text-[10px] text-gray-700 hover:bg-gray-50"
+          >
+            {tracked.active_rehab_plan ? 'Edit rehab plan' : 'Add rehab plan'}
+          </button>
+        </div>
+      </div>
+
+      {showConditionEditor && (
+        <div className="mt-3 grid gap-2 rounded-lg border border-gray-200 bg-white p-3 text-gray-700">
+          <div className="grid gap-2 md:grid-cols-4">
+            <label className="grid gap-1">
+              <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Status</span>
+              <select
+                value={conditionStatus}
+                onChange={(e) => setConditionStatus(e.target.value as 'healthy' | 'tender' | 'injured' | 'rehabbing')}
+                className="rounded border border-gray-300 px-2 py-1 text-xs"
+              >
+                {CONDITION_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="grid gap-1">
+              <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Severity</span>
+              <input
+                type="number"
+                min={0}
+                max={3}
+                value={conditionSeverity}
+                onChange={(e) => setConditionSeverity(e.target.value)}
+                className="rounded border border-gray-300 px-2 py-1 text-xs"
+              />
+            </label>
+            <label className="grid gap-1">
+              <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Max loading</span>
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step={0.05}
+                value={conditionMaxLoading}
+                onChange={(e) => setConditionMaxLoading(e.target.value)}
+                placeholder="optional"
+                className="rounded border border-gray-300 px-2 py-1 text-xs"
+              />
+            </label>
+            <label className="grid gap-1">
+              <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Protocol tag</span>
+              <select
+                value={conditionProtocolId}
+                onChange={(e) => setConditionProtocolId(e.target.value)}
+                className="rounded border border-gray-300 px-2 py-1 text-xs"
+              >
+                <option value="">None</option>
+                {rehabProtocols.map((protocol) => (
+                  <option key={protocol.id} value={protocol.id}>{protocol.title}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <label className="grid gap-1">
+            <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Notes</span>
+            <textarea
+              value={conditionNotes}
+              onChange={(e) => setConditionNotes(e.target.value)}
+              rows={2}
+              className="rounded border border-gray-300 px-2 py-1 text-xs"
+            />
+          </label>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={saveCondition}
+              disabled={savingCondition}
+              className="rounded bg-blue-600 px-3 py-1 text-[11px] font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {savingCondition ? 'Saving...' : 'Save condition'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowConditionEditor(false)}
+              className="rounded border border-gray-300 px-3 py-1 text-[11px] text-gray-600 hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showPlanEditor && (
+        <div className="mt-3 grid gap-2 rounded-lg border border-gray-200 bg-white p-3 text-gray-700">
+          <div className="grid gap-2 md:grid-cols-4">
+            <label className="grid gap-1 md:col-span-2">
+              <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Protocol</span>
+              <select
+                value={planProtocolId}
+                onChange={(e) => handlePlanProtocolChange(e.target.value)}
+                className="rounded border border-gray-300 px-2 py-1 text-xs"
+              >
+                {rehabProtocols.map((protocol) => (
+                  <option key={protocol.id} value={protocol.id}>{protocol.title}</option>
+                ))}
+              </select>
+            </label>
+            <label className="grid gap-1">
+              <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Stage</span>
+              <select
+                value={stageId}
+                onChange={(e) => setStageId(e.target.value)}
+                className="rounded border border-gray-300 px-2 py-1 text-xs"
+              >
+                {(selectedProtocol?.stages ?? []).map((stage) => (
+                  <option key={stage.id} value={stage.id}>{stage.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="grid gap-1">
+              <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Status</span>
+              <select
+                value={planStatus}
+                onChange={(e) => setPlanStatus(e.target.value as 'active' | 'paused' | 'completed')}
+                className="rounded border border-gray-300 px-2 py-1 text-xs"
+              >
+                <option value="active">Active</option>
+                <option value="paused">Paused</option>
+                <option value="completed">Completed</option>
+              </select>
+            </label>
+          </div>
+          {selectedProtocol && (
+            <p className="text-[10px] text-gray-500">{selectedProtocol.summary}</p>
+          )}
+          <div className="grid gap-2 md:grid-cols-2">
+            <label className="grid gap-1">
+              <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Pain threshold</span>
+              <input
+                type="number"
+                min={0}
+                max={10}
+                value={painThreshold}
+                onChange={(e) => setPainThreshold(e.target.value)}
+                className="rounded border border-gray-300 px-2 py-1 text-xs"
+              />
+            </label>
+            <label className="grid gap-1">
+              <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Next-day flare max</span>
+              <input
+                type="number"
+                min={0}
+                max={10}
+                value={nextDayFlare}
+                onChange={(e) => setNextDayFlare(e.target.value)}
+                className="rounded border border-gray-300 px-2 py-1 text-xs"
+              />
+            </label>
+          </div>
+          <label className="grid gap-1">
+            <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Notes</span>
+            <textarea
+              value={planNotes}
+              onChange={(e) => setPlanNotes(e.target.value)}
+              rows={2}
+              className="rounded border border-gray-300 px-2 py-1 text-xs"
+            />
+          </label>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={savePlan}
+              disabled={savingPlan}
+              className="rounded bg-purple-600 px-3 py-1 text-[11px] font-medium text-white hover:bg-purple-700 disabled:opacity-50"
+            >
+              {savingPlan ? 'Saving...' : tracked.active_rehab_plan ? 'Update rehab plan' : 'Create rehab plan'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowPlanEditor(false)}
+              className="rounded border border-gray-300 px-3 py-1 text-[11px] text-gray-600 hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -403,21 +808,24 @@ export default function TissueAdminPage() {
   const [exercises, setExercises] = useState<WkExercise[]>([])
   const [readiness, setReadiness] = useState<WkTissueReadiness[]>([])
   const [trackedReadiness, setTrackedReadiness] = useState<TrackedTissueReadiness[]>([])
+  const [rehabProtocols, setRehabProtocols] = useState<RehabProtocol[]>([])
   const [view, setView] = useState<View>('tissues')
   const [loading, setLoading] = useState(true)
 
   const load = async () => {
     try {
-      const [t, e, r, tr] = await Promise.all([
+      const [t, e, r, tr, protocols] = await Promise.all([
         getTissues(),
         getExercises(),
         getTissueReadiness(),
         getTrackedTissueReadiness(),
+        getRehabProtocols(),
       ])
       setTissues(t)
       setExercises(e)
       setReadiness(r)
       setTrackedReadiness(tr)
+      setRehabProtocols(protocols)
     } catch (err) {
       console.error('Failed to load data', err)
     } finally {
@@ -475,7 +883,12 @@ export default function TissueAdminPage() {
     <div className="space-y-4 pb-8 overflow-y-auto h-full">
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <h1 className="text-lg font-semibold text-gray-800">Tissue & Exercise Admin</h1>
+        <div>
+          <h1 className="text-lg font-semibold text-gray-800">Tissue & Exercise Admin</h1>
+          <p className="text-sm text-gray-500">
+            Use the <span className="font-medium text-gray-700">Tissues</span> view below to manage per-side conditions and rehab plans.
+          </p>
+        </div>
         <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-0.5">
           <button
             onClick={() => setView('tissues')}
@@ -502,6 +915,7 @@ export default function TissueAdminPage() {
           exercises={exercises}
           readinessMap={readinessMap}
           trackedReadinessByTissue={trackedReadinessByTissue}
+          rehabProtocols={rehabProtocols}
           onSave={load}
         />
       )}
