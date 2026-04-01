@@ -86,6 +86,7 @@ _LATE_REHAB_STAGES = {
     "return-to-grip-load",
     "strength-rebuild",
 }
+_CROSS_EDUCATION_ALLOWED_STAGES = _EARLY_REHAB_STAGES | _MID_REHAB_STAGES | {"high-intent-support"}
 
 
 # ── Main entry point ─────────────────────────────────────────────────
@@ -1392,8 +1393,12 @@ def _rehab_candidate_metrics(
             "direct": 0.0,
             "cross": 0.0,
             "blocked": False,
-            "target_side": None,
-            "stage": None,
+            "direct_target_side": None,
+            "direct_stage": None,
+            "direct_target_load": 0.0,
+            "cross_target_side": None,
+            "cross_stage": None,
+            "cross_target_load": 0.0,
             "matched": False,
         }
         for tissue_map in exercise_summary.get("tissues", []):
@@ -1419,12 +1424,14 @@ def _rehab_candidate_metrics(
                 metrics["matched"] = True
                 metrics["direct"] = float(metrics["direct"]) + direct
                 metrics["cross"] = float(metrics["cross"]) + cross
-                if direct >= cross:
-                    metrics["target_side"] = rehab_side
-                    metrics["stage"] = rehab_stage
-                elif metrics["target_side"] is None:
-                    metrics["target_side"] = rehab_side
-                    metrics["stage"] = rehab_stage
+                if direct > float(metrics["direct_target_load"]):
+                    metrics["direct_target_side"] = rehab_side
+                    metrics["direct_stage"] = rehab_stage
+                    metrics["direct_target_load"] = direct
+                if cross > float(metrics["cross_target_load"]):
+                    metrics["cross_target_side"] = rehab_side
+                    metrics["cross_stage"] = rehab_stage
+                    metrics["cross_target_load"] = cross
                 if (
                     rehab_stage in _EARLY_REHAB_STAGES
                     and direct >= _TRACKED_DIRECT_PROTECTION_THRESHOLD
@@ -1458,23 +1465,31 @@ def _choose_rehab_preferred_side(
             "direct_rehab",
         )
 
-    cross_candidates = [
-        (side, metrics)
-        for side, metrics in relevant_candidates.items()
-        if float(metrics["cross"]) >= _TRACKED_CROSS_SUPPORT_THRESHOLD
-    ]
-    if cross_candidates:
-        chosen_side, metrics = max(
-            cross_candidates,
-            key=lambda item: float(item[1]["cross"]) - float(item[1]["direct"]),
-        )
-        protected_side = str(metrics["target_side"] or "affected")
-        return (
-            chosen_side,
-            f"uses {chosen_side}-side work for {protected_side}-side cross-education",
-            metrics["stage"],
-            "cross_education",
-        )
+    explicit_cross_support = any(
+        target["stage"] == "high-intent-support" for target in rehab_targets
+    )
+    if explicit_cross_support:
+        cross_candidates = [
+            (side, metrics)
+            for side, metrics in relevant_candidates.items()
+            if (
+                float(metrics["cross"]) >= _TRACKED_CROSS_SUPPORT_THRESHOLD
+                and metrics["cross_target_side"] is not None
+                and metrics["cross_target_side"] != side
+            )
+        ]
+        if cross_candidates:
+            chosen_side, metrics = max(
+                cross_candidates,
+                key=lambda item: float(item[1]["cross"]) - float(item[1]["direct"]),
+            )
+            protected_side = str(metrics["cross_target_side"] or "affected")
+            return (
+                chosen_side,
+                f"uses {chosen_side}-side work for {protected_side}-side cross-education",
+                metrics["cross_stage"],
+                "cross_education",
+            )
 
     direct_candidates = [
         (side, metrics)
@@ -1486,19 +1501,43 @@ def _choose_rehab_preferred_side(
             direct_candidates,
             key=lambda item: float(item[1]["direct"]),
         )
-        protected_side = str(metrics["target_side"] or chosen_side)
+        protected_side = str(metrics["direct_target_side"] or chosen_side)
         explanation = (
             f"exercise name indicates the {chosen_side} side"
             if explicit_side == chosen_side
             else f"targets the protected {protected_side} side directly"
         )
-        return chosen_side, explanation, metrics["stage"], "direct_rehab"
+        return chosen_side, explanation, metrics["direct_stage"], "direct_rehab"
+
+    cross_candidates = [
+        (side, metrics)
+        for side, metrics in relevant_candidates.items()
+        if (
+            float(metrics["cross"]) >= _TRACKED_CROSS_SUPPORT_THRESHOLD
+            and metrics["cross_target_side"] is not None
+            and metrics["cross_target_side"] != side
+            and metrics["cross_stage"] in _CROSS_EDUCATION_ALLOWED_STAGES
+        )
+    ]
+    if cross_candidates:
+        chosen_side, metrics = max(
+            cross_candidates,
+            key=lambda item: float(item[1]["cross"]) - float(item[1]["direct"]),
+        )
+        protected_side = str(metrics["cross_target_side"] or "affected")
+        return (
+            chosen_side,
+            f"uses {chosen_side}-side work for {protected_side}-side cross-education",
+            metrics["cross_stage"],
+            "cross_education",
+        )
 
     if explicit_side in relevant_candidates:
         return (
             explicit_side,
             f"exercise name indicates the {explicit_side} side",
-            relevant_candidates[explicit_side]["stage"],
+            relevant_candidates[explicit_side]["direct_stage"]
+            or relevant_candidates[explicit_side]["cross_stage"],
             None,
         )
     return None, None, None, None
