@@ -1,5 +1,11 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import ScrollablePage from '../components/ScrollablePage'
+import SymptomSeverityRow from '../components/SymptomSeverityRow'
+import {
+  symptomDbToSeverity,
+  symptomSeverityToDb,
+  type SymptomSeverityLevel,
+} from '../components/symptomSeverity'
 import WorkoutSetEditor from '../components/WorkoutSetEditor'
 import {
   getTrainingModelSummary,
@@ -75,20 +81,6 @@ function CardSkeleton({ lines = 3 }: { lines?: number }) {
 
 // ── Recovery Check-in Card ──
 
-// Map 0-3 UI scale to 0-10 DB scale
-const SEVERITY_MAP = [0, 4, 7, 10] as const
-const SEVERITY_LABELS = ['None', 'Some', 'Substantial', 'Severe'] as const
-const SEVERITY_COLORS = [
-  'bg-emerald-100 text-emerald-700 border-emerald-300',
-  'bg-yellow-100 text-yellow-700 border-yellow-300',
-  'bg-amber-100 text-amber-700 border-amber-300',
-  'bg-red-100 text-red-700 border-red-300',
-] as const
-
-// Reverse-map 0-10 DB value back to 0-3 UI scale
-const dbToSeverity = (v: number): number =>
-  v >= 9 ? 3 : v >= 6 ? 2 : v >= 3 ? 1 : 0
-
 function CheckInCard({
   regions,
   existingCheckIns,
@@ -99,9 +91,9 @@ function CheckInCard({
   onSubmit: () => void
 }) {
   const [selected, setSelected] = useState<string | null>(null)
-  const [soreness, setSoreness] = useState(0)  // 0-3
-  const [pain, setPain] = useState(0)           // 0-3
-  const [stiffness, setStiffness] = useState(0) // 0-3
+  const [soreness, setSoreness] = useState<SymptomSeverityLevel>(0)
+  const [pain, setPain] = useState<SymptomSeverityLevel>(0)
+  const [stiffness, setStiffness] = useState<SymptomSeverityLevel>(0)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState<Set<string>>(new Set())
 
@@ -116,9 +108,9 @@ function CheckInCard({
     setSelected(region)
     if (region && checkInByRegion[region]) {
       const ci = checkInByRegion[region]
-      setSoreness(dbToSeverity(ci.soreness_0_10))
-      setPain(dbToSeverity(ci.pain_0_10))
-      setStiffness(dbToSeverity(ci.stiffness_0_10))
+      setSoreness(symptomDbToSeverity(ci.soreness_0_10))
+      setPain(symptomDbToSeverity(ci.pain_0_10))
+      setStiffness(symptomDbToSeverity(ci.stiffness_0_10))
     } else {
       setSoreness(0)
       setPain(0)
@@ -140,9 +132,9 @@ function CheckInCard({
       await createRecoveryCheckIn({
         date: today(),
         region: selected,
-        soreness_0_10: SEVERITY_MAP[soreness],
-        pain_0_10: SEVERITY_MAP[pain],
-        stiffness_0_10: SEVERITY_MAP[stiffness],
+        soreness_0_10: symptomSeverityToDb(soreness),
+        pain_0_10: symptomSeverityToDb(pain),
+        stiffness_0_10: symptomSeverityToDb(stiffness),
         readiness_0_10: readiness,
       })
       setSaved(prev => new Set([...prev, selected]))
@@ -155,29 +147,6 @@ function CheckInCard({
       setSaving(false)
     }
   }
-
-  const SeverityRow = ({ label, value, onChange }: {
-    label: string; value: number; onChange: (v: number) => void;
-  }) => (
-    <div className="space-y-1.5">
-      <span className="text-xs font-medium text-gray-600">{label}</span>
-      <div className="grid grid-cols-4 gap-1.5">
-        {SEVERITY_LABELS.map((lbl, i) => (
-          <button
-            key={i}
-            onClick={() => onChange(i)}
-            className={`py-1.5 text-xs font-medium rounded-lg border transition-all ${
-              value === i
-                ? SEVERITY_COLORS[i]
-                : 'bg-white border-gray-200 text-gray-400 hover:border-gray-300'
-            }`}
-          >
-            {lbl}
-          </button>
-        ))}
-      </div>
-    </div>
-  )
 
   return (
     <div className="bg-white border border-gray-200 rounded-2xl p-5">
@@ -213,9 +182,9 @@ function CheckInCard({
               'bg-red-100 text-red-700'
             }`}>Readiness: {readiness}/10</span>
           </div>
-          <SeverityRow label="Soreness" value={soreness} onChange={setSoreness} />
-          <SeverityRow label="Pain" value={pain} onChange={setPain} />
-          <SeverityRow label="Stiffness" value={stiffness} onChange={setStiffness} />
+          <SymptomSeverityRow label="Soreness" value={soreness} onChange={setSoreness} showDescription={false} />
+          <SymptomSeverityRow label="Pain" value={pain} onChange={setPain} showDescription={false} />
+          <SymptomSeverityRow label="Stiffness" value={stiffness} onChange={setStiffness} showDescription={false} />
           <button
             onClick={submit}
             disabled={saving}

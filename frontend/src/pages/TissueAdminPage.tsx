@@ -1,4 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
+import SymptomSeverityRow from '../components/SymptomSeverityRow'
+import {
+  symptomDbToSeverity,
+  symptomSeverityToDb,
+  type SymptomSeverityLevel,
+} from '../components/symptomSeverity'
 import {
   createRehabPlan,
   createTissueCondition,
@@ -550,15 +556,15 @@ function TrackedTissueCard({
   const [planStatus, setPlanStatus] = useState<'active' | 'paused' | 'completed'>(
     tracked.active_rehab_plan?.status ?? 'active',
   )
-  const [painThreshold, setPainThreshold] = useState(
-    String(
+  const [painThreshold, setPainThreshold] = useState<SymptomSeverityLevel>(
+    symptomDbToSeverity(
       tracked.active_rehab_plan?.pain_monitoring_threshold
       ?? selectedProtocol?.default_pain_monitoring_threshold
       ?? 3,
     ),
   )
-  const [nextDayFlare, setNextDayFlare] = useState(
-    String(
+  const [nextDayFlare, setNextDayFlare] = useState<SymptomSeverityLevel>(
+    symptomDbToSeverity(
       tracked.active_rehab_plan?.max_next_day_flare
       ?? selectedProtocol?.default_max_next_day_flare
       ?? 2,
@@ -593,14 +599,14 @@ function TrackedTissueCard({
     setStageId(tracked.active_rehab_plan?.stage_id ?? nextSelectedProtocol?.stages[0]?.id ?? '')
     setPlanStatus(tracked.active_rehab_plan?.status ?? 'active')
     setPainThreshold(
-      String(
+      symptomDbToSeverity(
         tracked.active_rehab_plan?.pain_monitoring_threshold
         ?? nextSelectedProtocol?.default_pain_monitoring_threshold
         ?? 3,
       ),
     )
     setNextDayFlare(
-      String(
+      symptomDbToSeverity(
         tracked.active_rehab_plan?.max_next_day_flare
         ?? nextSelectedProtocol?.default_max_next_day_flare
         ?? 2,
@@ -614,8 +620,8 @@ function TrackedTissueCard({
     const protocol = rehabProtocols.find((item) => item.id === nextProtocolId)
     if (protocol) {
       setStageId(protocol.stages[0]?.id ?? '')
-      setPainThreshold(String(protocol.default_pain_monitoring_threshold))
-      setNextDayFlare(String(protocol.default_max_next_day_flare))
+      setPainThreshold(symptomDbToSeverity(protocol.default_pain_monitoring_threshold))
+      setNextDayFlare(symptomDbToSeverity(protocol.default_max_next_day_flare))
     }
   }
 
@@ -652,8 +658,8 @@ function TrackedTissueCard({
         protocol_id: planProtocolId,
         stage_id: stageId,
         status: planStatus,
-        pain_monitoring_threshold: Number(painThreshold) || 0,
-        max_next_day_flare: Number(nextDayFlare) || 0,
+        pain_monitoring_threshold: symptomSeverityToDb(painThreshold),
+        max_next_day_flare: symptomSeverityToDb(nextDayFlare),
         notes: planNotes.trim() || null,
       }
       if (tracked.active_rehab_plan) {
@@ -854,30 +860,21 @@ function TrackedTissueCard({
           {selectedProtocol && (
             <p className="text-[10px] text-gray-500">{selectedProtocol.summary}</p>
           )}
-          <div className="grid gap-2 md:grid-cols-2">
-            <label className="grid gap-1">
-              <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Pain threshold</span>
-              <input
-                type="number"
-                min={0}
-                max={10}
-                value={painThreshold}
-                onChange={(e) => setPainThreshold(e.target.value)}
-                className="rounded border border-gray-300 px-2 py-1 text-xs"
-              />
-            </label>
-            <label className="grid gap-1">
-              <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Next-day flare max</span>
-              <input
-                type="number"
-                min={0}
-                max={10}
-                value={nextDayFlare}
-                onChange={(e) => setNextDayFlare(e.target.value)}
-                className="rounded border border-gray-300 px-2 py-1 text-xs"
-              />
-            </label>
+          <div className="grid gap-3 md:grid-cols-2">
+            <SymptomSeverityRow
+              label="During-load pain ceiling"
+              value={painThreshold}
+              onChange={setPainThreshold}
+            />
+            <SymptomSeverityRow
+              label="Next-day flare ceiling"
+              value={nextDayFlare}
+              onChange={setNextDayFlare}
+            />
           </div>
+          <p className="text-[10px] text-gray-500">
+            These use the same clinical severity categories as the recovery check-in.
+          </p>
           <label className="grid gap-1">
             <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Notes</span>
             <textarea
