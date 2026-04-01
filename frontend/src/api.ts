@@ -497,6 +497,15 @@ export interface WkExerciseMappingWarning {
   message: string;
   source_tissue_id: number;
   target_tissue_id: number;
+  suggested_mapping?: {
+    role: string;
+    loading_factor: number;
+    routing_factor: number;
+    fatigue_factor: number;
+    joint_strain_factor: number;
+    tendon_strain_factor: number;
+    laterality_mode: 'bilateral_equal' | 'selected_side_only' | 'selected_side_primary' | 'contralateral_carryover';
+  } | null;
 }
 
 export interface WkExercise {
@@ -952,6 +961,19 @@ export const updateExercise = (id: number, data: {
   }[];
 }) =>
   request<WkExercise>(`/exercises/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+
+export const applyExerciseMappingWarning = (
+  id: number,
+  data: {
+    code: string;
+    source_tissue_id: number;
+    target_tissue_id: number;
+  },
+) =>
+  request<WkExercise>(`/exercises/${id}/mapping-warnings/apply`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
 
 export const getWorkoutSessions = (startDate?: string, endDate?: string, limit?: number) => {
   const params: string[] = [];

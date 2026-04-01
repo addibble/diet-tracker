@@ -68,6 +68,12 @@ class ExerciseUpdate(BaseModel):
     tissues: list[TissueMappingInput] | None = None
 
 
+class ApplyMappingWarningInput(BaseModel):
+    code: str
+    source_tissue_id: int
+    target_tissue_id: int
+
+
 def _build_exercise_response(exercise: Exercise, session: Session) -> dict:
     mappings = get_current_exercise_tissues(session, exercise.id)  # type: ignore[arg-type]
     tissues_by_id = {
@@ -173,6 +179,7 @@ def _mapping_warnings_for_exercise(
                 "message": f"{exercise.name} is unilateral but {tissue.display_name} still uses bilateral_equal laterality.",
                 "source_tissue_id": tissue.id,
                 "target_tissue_id": tissue.id,
+                "suggested_mapping": None,
             })
         if mapping.loading_factor < 0.3 and mapping.routing_factor < 0.3:
             continue
@@ -194,6 +201,11 @@ def _mapping_warnings_for_exercise(
                 ),
                 "source_tissue_id": tissue.id,
                 "target_tissue_id": target.id,
+                "suggested_mapping": _suggested_mapping_from_source(
+                    exercise=exercise,
+                    source_mapping=mapping,
+                    target_tissue=target,
+                ),
             })
 
     if exercise.variant_group and exercises_by_variant:
@@ -236,10 +248,58 @@ def _mapping_warnings_for_exercise(
                 ),
                 "source_tissue_id": target_tissue_id,
                 "target_tissue_id": target_tissue_id,
+                "suggested_mapping": None,
             })
             break
 
     return warnings
+
+
+def _mapping_factor_defaults_for_tissue(
+    *,
+    loading_factor: float,
+    role: str,
+    tissue_type: str | None,
+) -> dict[str, float]:
+    base = loading_factor or 1.0
+    role_scale = {"primary": 1.0, "secondary": 0.65, "stabilizer": 0.35}.get(role, 0.5)
+    routing = max(0.05, round(base * role_scale, 4))
+    return {
+        "routing_factor": routing,
+        "fatigue_factor": max(0.05, round(routing * 0.9, 4)),
+        "joint_strain_factor": (
+            max(0.05, round(routing * 1.25, 4)) if tissue_type == "joint" else routing
+        ),
+        "tendon_strain_factor": (
+            max(0.05, round(routing * 1.15, 4)) if tissue_type == "tendon" else routing
+        ),
+    }
+
+
+def _suggested_mapping_from_source(
+    *,
+    exercise: Exercise,
+    source_mapping: ExerciseTissue,
+    target_tissue: Tissue,
+) -> dict:
+    defaults = _mapping_factor_defaults_for_tissue(
+        loading_factor=source_mapping.loading_factor,
+        role=source_mapping.role,
+        tissue_type=target_tissue.type,
+    )
+    return {
+        "role": source_mapping.role,
+        "loading_factor": source_mapping.loading_factor,
+        "routing_factor": defaults["routing_factor"],
+        "fatigue_factor": defaults["fatigue_factor"],
+        "joint_strain_factor": defaults["joint_strain_factor"],
+        "tendon_strain_factor": defaults["tendon_strain_factor"],
+        "laterality_mode": default_mapping_laterality_mode(
+            exercise_laterality=exercise.laterality,
+            tissue_type=target_tissue.type,
+            role=source_mapping.role,
+        ),
+    }
 
 
 @router.get("")
@@ -265,6 +325,76 @@ def get_exercise(
     exercise = session.get(Exercise, exercise_id)
     if not exercise:
         raise HTTPException(status_code=404, detail="Exercise not found")
+    return _build_exercise_response(exercise, session)
+
+
+@router.post("/{exercise_id}/mapping-warnings/apply")
+def apply_mapping_warning(
+    exercise_id: int,
+    data: ApplyMappingWarningInput,
+    session: Session = Depends(get_session),
+    _user: str = Depends(get_current_user),
+):
+    exercise = session.get(Exercise, exercise_id)
+    if not exercise:
+        raise HTTPException(status_code=404, detail="Exercise not found")
+    if data.code != "missing-related-tissue":
+        raise HTTPException(status_code=400, detail="Only missing-related-tissue warnings are actionable")
+
+    mappings = get_current_exercise_tissues(session, exercise.id)  # type: ignore[arg-type]
+    if any(mapping.tissue_id == data.target_tissue_id for mapping in mappings):
+        return _build_exercise_response(exercise, session)
+
+    source_mapping = next(
+        (mapping for mapping in mappings if mapping.tissue_id == data.source_tissue_id),
+        None,
+    )
+    if source_mapping is None:
+        raise HTTPException(status_code=400, detail="Source mapping not found")
+
+    tissues_by_id = {tissue.id: tissue for tissue in session.exec(select(Tissue)).all()}
+    target_tissue = tissues_by_id.get(data.target_tissue_id)
+    if target_tissue is None:
+        raise HTTPException(status_code=400, detail="Target tissue not found")
+
+    warnings = _mapping_warnings_for_exercise(
+        exercise=exercise,
+        mappings=mappings,
+        tissues_by_id=tissues_by_id,
+        session=session,
+    )
+    matching_warning = next(
+        (
+            warning
+            for warning in warnings
+            if warning["code"] == data.code
+            and warning["source_tissue_id"] == data.source_tissue_id
+            and warning["target_tissue_id"] == data.target_tissue_id
+        ),
+        None,
+    )
+    if matching_warning is None:
+        raise HTTPException(status_code=400, detail="Warning is no longer actionable")
+
+    suggested_mapping = matching_warning.get("suggested_mapping") or _suggested_mapping_from_source(
+        exercise=exercise,
+        source_mapping=source_mapping,
+        target_tissue=target_tissue,
+    )
+    session.add(
+        ExerciseTissue(
+            exercise_id=exercise.id,
+            tissue_id=target_tissue.id,
+            role=suggested_mapping["role"],
+            loading_factor=suggested_mapping["loading_factor"],
+            routing_factor=suggested_mapping["routing_factor"],
+            fatigue_factor=suggested_mapping["fatigue_factor"],
+            joint_strain_factor=suggested_mapping["joint_strain_factor"],
+            tendon_strain_factor=suggested_mapping["tendon_strain_factor"],
+            laterality_mode=suggested_mapping["laterality_mode"],
+        )
+    )
+    session.commit()
     return _build_exercise_response(exercise, session)
 
 

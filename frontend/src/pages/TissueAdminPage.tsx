@@ -6,6 +6,7 @@ import {
   type SymptomSeverityLevel,
 } from '../components/symptomSeverity'
 import {
+  applyExerciseMappingWarning,
   createRehabPlan,
   createTissueCondition,
   getTissues,
@@ -1210,6 +1211,7 @@ function ExerciseView({
   onSave: () => void
 }) {
   const [search, setSearch] = useState('')
+  const [applyingWarningKey, setApplyingWarningKey] = useState<string | null>(null)
   const tissueNameById = useMemo(
     () => new Map(tissues.map((tissue) => [tissue.id, tissue.display_name])),
     [tissues],
@@ -1220,6 +1222,27 @@ function ExerciseView({
     const q = search.toLowerCase()
     return exercises.filter((e) => e.name.toLowerCase().includes(q))
   }, [exercises, search])
+
+  const handleApplyWarning = async (
+    exerciseId: number,
+    warning: WkExercise['mapping_warnings'][number],
+  ) => {
+    const warningKey = `${exerciseId}-${warning.code}-${warning.source_tissue_id}-${warning.target_tissue_id}`
+    setApplyingWarningKey(warningKey)
+    try {
+      await applyExerciseMappingWarning(exerciseId, {
+        code: warning.code,
+        source_tissue_id: warning.source_tissue_id,
+        target_tissue_id: warning.target_tissue_id,
+      })
+      await onSave()
+    } catch (error) {
+      console.error('Failed to apply mapping warning', error)
+      alert(error instanceof Error ? error.message : 'Failed to add suggested mapping')
+    } finally {
+      setApplyingWarningKey(null)
+    }
+  }
 
   return (
     <div>
@@ -1304,6 +1327,23 @@ function ExerciseView({
                     <p className="mt-0.5 text-[10px] text-amber-700">
                       Suggested companion tissue: {tissueNameById.get(warning.target_tissue_id) ?? `#${warning.target_tissue_id}`}
                     </p>
+                    {warning.suggested_mapping && (
+                      <p className="mt-0.5 text-[10px] text-amber-700">
+                        Quick-add defaults: {warning.suggested_mapping.role}, load {warning.suggested_mapping.loading_factor.toFixed(2)}, laterality {titleCase(warning.suggested_mapping.laterality_mode)}
+                      </p>
+                    )}
+                    {warning.code === 'missing-related-tissue' && warning.suggested_mapping && (
+                      <button
+                        type="button"
+                        onClick={() => handleApplyWarning(ex.id, warning)}
+                        disabled={applyingWarningKey === `${ex.id}-${warning.code}-${warning.source_tissue_id}-${warning.target_tissue_id}`}
+                        className="mt-2 rounded border border-amber-300 bg-white px-2 py-1 text-[10px] font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                      >
+                        {applyingWarningKey === `${ex.id}-${warning.code}-${warning.source_tissue_id}-${warning.target_tissue_id}`
+                          ? 'Adding...'
+                          : 'Add suggested mapping'}
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
