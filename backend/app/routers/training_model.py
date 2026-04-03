@@ -15,6 +15,7 @@ from app.models import (
     RehabPlan,
     Tissue,
     TissueCondition,
+    TissueRelationship,
     TrackedTissue,
     TrainingExclusionWindow,
     WeightLog,
@@ -25,6 +26,7 @@ from app.recovery_check_ins import (
     recovery_checkin_has_symptoms,
     recovery_checkin_target_key,
 )
+from app.rehab_protocols import get_rehab_protocol
 from app.tracked_tissues import (
     get_active_rehab_plans_by_tracked_tissue,
     get_all_current_tracked_conditions,
@@ -346,6 +348,41 @@ def _target_reason(code: str) -> dict[str, str]:
     return {"code": code, "label": _CHECK_IN_REASON_LABELS[code]}
 
 
+def _condition_requires_recovery_checkin(condition: TissueCondition) -> bool:
+    return condition.status in {"tender", "injured"}
+
+
+def _rehab_plan_requires_recovery_checkin(plan: RehabPlan) -> bool:
+    try:
+        protocol = get_rehab_protocol(plan.protocol_id)
+    except KeyError:
+        return True
+    return protocol.get("category") == "tendon"
+
+
+def _companion_tracked_tissue_ids(
+    *,
+    session: Session,
+    tracked_payloads: dict[int, dict],
+) -> dict[int, set[int]]:
+    relationships = session.exec(
+        select(TissueRelationship).where(TissueRelationship.required_for_mapping_warning.is_(True))
+    ).all()
+    tracked_by_tissue_side: dict[tuple[int, str], int] = {}
+    for tracked_id, payload in tracked_payloads.items():
+        tracked_by_tissue_side[(payload["tissue_id"], payload["side"])] = tracked_id
+
+    result: dict[int, set[int]] = defaultdict(set)
+    for tracked_id, payload in tracked_payloads.items():
+        for row in relationships:
+            if row.source_tissue_id != payload["tissue_id"]:
+                continue
+            companion_id = tracked_by_tissue_side.get((row.target_tissue_id, payload["side"]))
+            if companion_id is not None:
+                result[tracked_id].add(companion_id)
+    return result
+
+
 def _build_check_in_targets(
     *,
     session: Session,
@@ -353,6 +390,10 @@ def _build_check_in_targets(
 ) -> dict:
     tracked_payloads = _tracked_tissue_payload_map(session, include_inactive=True)
     active_tracked_payloads = _tracked_tissue_payload_map(session, include_inactive=False)
+    companion_ids = _companion_tracked_tissue_ids(
+        session=session,
+        tracked_payloads=tracked_payloads,
+    )
     today_rows = session.exec(
         select(RecoveryCheckIn)
         .where(RecoveryCheckIn.date == target_date)
@@ -408,7 +449,7 @@ def _build_check_in_targets(
 
     tracked_conditions: dict[int, TissueCondition] = get_all_current_tracked_conditions(session)
     for tracked_id, condition in tracked_conditions.items():
-        if condition.status == "healthy":
+        if not _condition_requires_recovery_checkin(condition):
             continue
         tracked = tracked_payloads.get(tracked_id)
         if tracked is None:
@@ -418,9 +459,20 @@ def _build_check_in_targets(
             tracked_tissue_id=tracked_id,
             reason_code="active_condition",
         )
+        for companion_id in companion_ids.get(tracked_id, set()):
+            companion = tracked_payloads.get(companion_id)
+            if companion is None:
+                continue
+            add_target(
+                region=companion["region"],
+                tracked_tissue_id=companion_id,
+                reason_code="active_condition",
+            )
 
     active_plans: dict[int, RehabPlan] = get_active_rehab_plans_by_tracked_tissue(session)
-    for tracked_id, _plan in active_plans.items():
+    for tracked_id, plan in active_plans.items():
+        if not _rehab_plan_requires_recovery_checkin(plan):
+            continue
         tracked = tracked_payloads.get(tracked_id)
         if tracked is None:
             continue
@@ -429,6 +481,15 @@ def _build_check_in_targets(
             tracked_tissue_id=tracked_id,
             reason_code="active_rehab",
         )
+        for companion_id in companion_ids.get(tracked_id, set()):
+            companion = tracked_payloads.get(companion_id)
+            if companion is None:
+                continue
+            add_target(
+                region=companion["region"],
+                tracked_tissue_id=companion_id,
+                reason_code="active_rehab",
+            )
 
     for region in _last_workout_major_regions(session):
         add_target(

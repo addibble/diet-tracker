@@ -125,7 +125,7 @@ def test_recovery_checkin_targets_include_rehab_last_workout_and_yesterday_sympt
 
     tracked_target = targets[f"tracked_tissue:{tracked.id}"]
     tracked_reasons = [reason["code"] for reason in tracked_target["reasons"]]
-    assert tracked_reasons == ["active_rehab", "active_condition", "symptomatic_yesterday"]
+    assert tracked_reasons == ["active_rehab", "symptomatic_yesterday"]
     assert tracked_target["target_label"] == "Right Common Extensor Tendon"
 
     chest_target = targets["region:chest"]
@@ -210,3 +210,119 @@ def test_create_recovery_checkin_upserts_by_target_and_keeps_region_entry(client
     assert len(rows) == 2
     target_kinds = {row["target_kind"] for row in rows}
     assert target_kinds == {"region", "tracked_tissue"}
+
+
+def test_recovery_checkin_targets_skip_neural_sarcopenia_style_rehab_plans(client, session: Session):
+    tissue = Tissue(
+        name="anterior_deltoid",
+        display_name="Anterior Deltoid",
+        type="muscle",
+        region="shoulders",
+        tracking_mode="paired",
+    )
+    session.add(tissue)
+    session.commit()
+    session.refresh(tissue)
+
+    tracked = TrackedTissue(
+        tissue_id=tissue.id,
+        side="right",
+        display_name="Right Anterior Deltoid",
+    )
+    session.add(tracked)
+    session.commit()
+    session.refresh(tracked)
+
+    session.add(
+        TissueCondition(
+            tissue_id=tissue.id,
+            tracked_tissue_id=tracked.id,
+            status="healthy",
+            severity=3,
+            notes="Sarcopenia / weakness",
+        )
+    )
+    session.add(
+        RehabPlan(
+            tracked_tissue_id=tracked.id,
+            protocol_id="cervical-radiculopathy-deltoid",
+            stage_id="activation-and-control",
+            status="active",
+        )
+    )
+    session.commit()
+
+    response = client.get("/api/training-model/check-in-targets?date=2026-04-03")
+
+    assert response.status_code == 200
+    target_keys = {item["target_key"] for item in response.json()["targets"]}
+    assert f"tracked_tissue:{tracked.id}" not in target_keys
+
+
+def test_recovery_checkin_targets_include_required_tendon_companion_for_symptomatic_chain(client, session: Session):
+    muscle = Tissue(
+        name="brachioradialis",
+        display_name="Brachioradialis",
+        type="muscle",
+        region="forearms",
+        tracking_mode="paired",
+    )
+    tendon = Tissue(
+        name="common_extensor_tendon",
+        display_name="Common Extensor Tendon",
+        type="tendon",
+        region="forearms",
+        tracking_mode="paired",
+    )
+    session.add(muscle)
+    session.add(tendon)
+    session.commit()
+    session.refresh(muscle)
+    session.refresh(tendon)
+
+    muscle_tracked = TrackedTissue(
+        tissue_id=muscle.id,
+        side="right",
+        display_name="Right Brachioradialis",
+    )
+    tendon_tracked = TrackedTissue(
+        tissue_id=tendon.id,
+        side="right",
+        display_name="Right Common Extensor Tendon",
+    )
+    session.add(muscle_tracked)
+    session.add(tendon_tracked)
+    session.commit()
+    session.refresh(muscle_tracked)
+    session.refresh(tendon_tracked)
+
+    from app.models import TissueRelationship
+
+    session.add(
+        TissueRelationship(
+            source_tissue_id=muscle.id,
+            target_tissue_id=tendon.id,
+            relationship_type="muscle_to_tendon",
+            required_for_mapping_warning=True,
+        )
+    )
+    session.add(
+        TissueCondition(
+            tissue_id=muscle.id,
+            tracked_tissue_id=muscle_tracked.id,
+            status="tender",
+            severity=2,
+        )
+    )
+    session.commit()
+
+    response = client.get("/api/training-model/check-in-targets?date=2026-04-03")
+
+    assert response.status_code == 200
+    targets = {item["target_key"]: item for item in response.json()["targets"]}
+    assert f"tracked_tissue:{muscle_tracked.id}" in targets
+    assert f"tracked_tissue:{tendon_tracked.id}" in targets
+    assert any(
+        reason["code"] == "active_condition"
+        for reason in targets[f"tracked_tissue:{tendon_tracked.id}"]["reasons"]
+    )

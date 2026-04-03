@@ -164,6 +164,61 @@ function CheckInCard({
     }
   }
 
+  const renderCheckInEditor = (target: RecoveryCheckInTarget, currentCheckIn: typeof selectedCheckIn) => (
+    <div className="mt-3 rounded-xl border border-gray-200 bg-white/80 p-4 space-y-3 shadow-sm">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-xs font-medium text-gray-700">{target.target_label}</p>
+          <p className="text-[11px] text-gray-500 mt-0.5">
+            {target.target_kind === 'tracked_tissue'
+              ? `${regionLabel(target.region)} · specific tissue`
+              : `${regionLabel(target.region)} · region`}
+          </p>
+        </div>
+        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+          readiness >= 8 ? 'bg-emerald-100 text-emerald-700' :
+          readiness >= 5 ? 'bg-yellow-100 text-yellow-700' :
+          'bg-red-100 text-red-700'
+        }`}>Readiness: {readiness}/10</span>
+      </div>
+      {target.reasons && target.reasons.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {target.reasons.map(reason => (
+            <span key={reason.code} className="text-[10px] px-1.5 py-0.5 rounded-full border border-gray-200 bg-gray-50 text-gray-600">
+              {reason.label}
+            </span>
+          ))}
+        </div>
+      )}
+      {currentCheckIn && (
+        <p className="text-[11px] text-gray-500">
+          Already checked in today. Update it if anything changed.
+        </p>
+      )}
+      <SymptomSeverityRow label="Soreness" value={soreness} onChange={setSoreness} showDescription={false} />
+      <SymptomSeverityRow label="Pain" value={pain} onChange={setPain} showDescription={false} />
+      <SymptomSeverityRow label="Stiffness" value={stiffness} onChange={setStiffness} showDescription={false} />
+      <div className="flex gap-2">
+        <button
+          onClick={() => {
+            setSelectedKey(null)
+            setOtherKey('')
+          }}
+          className="flex-1 py-2 bg-white border border-gray-200 text-gray-700 text-sm font-medium rounded-lg hover:border-gray-300 transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={submit}
+          disabled={saving}
+          className="flex-1 py-2 bg-gray-900 text-white text-sm font-medium rounded-lg hover:bg-gray-800 disabled:opacity-50 transition-colors"
+        >
+          {saving ? 'Saving...' : currentCheckIn ? 'Update' : 'Save'}
+        </button>
+      </div>
+    </div>
+  )
+
   return (
     <div className="bg-white border border-gray-200 rounded-2xl p-5">
       <div className="flex items-center justify-between gap-3 mb-3">
@@ -183,59 +238,65 @@ function CheckInCard({
             const active = selectedTarget?.target_key === target.target_key
             const currentCheckIn = checkInByTarget[target.target_key] ?? target.existing_check_in ?? null
             return (
-              <button
+              <div
                 key={target.target_key}
-                onClick={() => {
-                  setOtherKey('')
-                  setSelectedKey(active ? null : target.target_key)
-                }}
-                className={`w-full text-left rounded-xl border p-3 transition-all ${
+                className={`rounded-xl border p-3 transition-all ${
                   active
-                    ? 'bg-gray-900 border-gray-900 text-white'
+                    ? 'bg-gray-900 border-gray-900 text-white shadow-sm'
                     : done
                       ? 'bg-emerald-50 border-emerald-200 text-gray-900'
-                      : 'bg-white border-gray-200 text-gray-900 hover:border-gray-300'
+                      : 'bg-white border-gray-200 text-gray-900'
                 }`}
               >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium truncate">{target.target_label}</p>
-                    <p className={`text-[11px] mt-0.5 ${active ? 'text-gray-300' : 'text-gray-500'}`}>
-                      {target.target_kind === 'tracked_tissue'
-                        ? `${regionLabel(target.region)} · specific tissue`
-                        : `${regionLabel(target.region)} · region`}
-                    </p>
-                  </div>
-                  {done && (
-                    <span className={`shrink-0 text-[10px] px-2 py-0.5 rounded-full font-medium ${
-                      active ? 'bg-white/15 text-white' : 'bg-emerald-100 text-emerald-700'
-                    }`}>
-                      Checked in
-                    </span>
-                  )}
-                </div>
-                {target.reasons && target.reasons.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-2">
-                    {target.reasons.map(reason => (
-                      <span
-                        key={reason.code}
-                        className={`text-[10px] px-1.5 py-0.5 rounded-full border ${
-                          active
-                            ? 'border-white/20 bg-white/10 text-white'
-                            : 'border-gray-200 bg-gray-50 text-gray-600'
-                        }`}
-                      >
-                        {reason.label}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOtherKey('')
+                    setSelectedKey(active ? null : target.target_key)
+                  }}
+                  className="w-full text-left"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">{target.target_label}</p>
+                      <p className={`text-[11px] mt-0.5 ${active ? 'text-gray-300' : 'text-gray-500'}`}>
+                        {target.target_kind === 'tracked_tissue'
+                          ? `${regionLabel(target.region)} · specific tissue`
+                          : `${regionLabel(target.region)} · region`}
+                      </p>
+                    </div>
+                    {done && (
+                      <span className={`shrink-0 text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                        active ? 'bg-white/15 text-white' : 'bg-emerald-100 text-emerald-700'
+                      }`}>
+                        Checked in
                       </span>
-                    ))}
+                    )}
                   </div>
-                )}
-                {currentCheckIn && (
-                  <p className={`text-[11px] mt-2 ${active ? 'text-gray-200' : 'text-gray-500'}`}>
-                    Sore {currentCheckIn.soreness_0_10}/10 · Pain {currentCheckIn.pain_0_10}/10 · Stiff {currentCheckIn.stiffness_0_10}/10 · Readiness {currentCheckIn.readiness_0_10}/10
-                  </p>
-                )}
-              </button>
+                  {target.reasons && target.reasons.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {target.reasons.map(reason => (
+                        <span
+                          key={reason.code}
+                          className={`text-[10px] px-1.5 py-0.5 rounded-full border ${
+                            active
+                              ? 'border-white/20 bg-white/10 text-white'
+                              : 'border-gray-200 bg-gray-50 text-gray-600'
+                          }`}
+                        >
+                          {reason.label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {currentCheckIn && (
+                    <p className={`text-[11px] mt-2 ${active ? 'text-gray-200' : 'text-gray-500'}`}>
+                      Sore {currentCheckIn.soreness_0_10}/10 · Pain {currentCheckIn.pain_0_10}/10 · Stiff {currentCheckIn.stiffness_0_10}/10 · Readiness {currentCheckIn.readiness_0_10}/10
+                    </p>
+                  )}
+                </button>
+                {active && renderCheckInEditor(target, currentCheckIn)}
+              </div>
             )
           })}
         </div>
@@ -301,60 +362,6 @@ function CheckInCard({
         )}
       </div>
 
-      {selectedTarget && (
-        <div className="rounded-xl border border-gray-100 bg-gray-50/70 p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs font-medium text-gray-700">{selectedTarget.target_label}</p>
-              <p className="text-[11px] text-gray-500 mt-0.5">
-                {selectedTarget.target_kind === 'tracked_tissue'
-                  ? `${regionLabel(selectedTarget.region)} · specific tissue`
-                  : `${regionLabel(selectedTarget.region)} · region`}
-              </p>
-            </div>
-            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-              readiness >= 8 ? 'bg-emerald-100 text-emerald-700' :
-              readiness >= 5 ? 'bg-yellow-100 text-yellow-700' :
-              'bg-red-100 text-red-700'
-            }`}>Readiness: {readiness}/10</span>
-          </div>
-          {selectedTarget.reasons && selectedTarget.reasons.length > 0 && (
-            <div className="flex flex-wrap gap-1">
-              {selectedTarget.reasons.map(reason => (
-                <span key={reason.code} className="text-[10px] px-1.5 py-0.5 rounded-full border border-gray-200 bg-white text-gray-600">
-                  {reason.label}
-                </span>
-              ))}
-            </div>
-          )}
-          {selectedCheckIn && (
-            <p className="text-[11px] text-gray-500">
-              Already checked in today. Update it if anything changed.
-            </p>
-          )}
-          <SymptomSeverityRow label="Soreness" value={soreness} onChange={setSoreness} showDescription={false} />
-          <SymptomSeverityRow label="Pain" value={pain} onChange={setPain} showDescription={false} />
-          <SymptomSeverityRow label="Stiffness" value={stiffness} onChange={setStiffness} showDescription={false} />
-          <div className="flex gap-2">
-            <button
-              onClick={() => {
-                setSelectedKey(null)
-                setOtherKey('')
-              }}
-              className="flex-1 py-2 bg-white border border-gray-200 text-gray-700 text-sm font-medium rounded-lg hover:border-gray-300 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={submit}
-              disabled={saving}
-              className="flex-1 py-2 bg-gray-900 text-white text-sm font-medium rounded-lg hover:bg-gray-800 disabled:opacity-50 transition-colors"
-            >
-              {saving ? 'Saving...' : selectedCheckIn ? 'Update' : 'Save'}
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
