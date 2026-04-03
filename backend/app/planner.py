@@ -42,6 +42,7 @@ from app.models import (
     WorkoutSet,
     WorkoutSetTissueFeedback,
 )
+from app.recovery_check_ins import aggregate_recovery_checkins_for_day
 from app.tracked_tissues import (
     default_performed_side,
     get_active_rehab_plans_by_tracked_tissue,
@@ -110,6 +111,7 @@ def suggest_today(session: Session, *, as_of: date | None = None) -> dict:
 
     # Find blocked regions (injured or substantial pain/soreness)
     blocked_regions = _blocked_regions(region_state, todays_checkins)
+    soft_blocked_regions = _soft_blocked_regions(todays_checkins)
 
     # Build exercise → region mapping from DB (not from model summary)
     exercise_region_map = _build_exercise_region_map(session)
@@ -164,6 +166,7 @@ def suggest_today(session: Session, *, as_of: date | None = None) -> dict:
         exercise_region_map,
         rehab_priorities=rehab_priorities,
         protection_profiles=protection_profiles,
+        soft_blocked_regions=soft_blocked_regions,
     )
 
     # Prescribe rep schemes
@@ -625,15 +628,7 @@ def _load_todays_checkins(session: Session, today: date) -> dict[str, dict]:
     rows = session.exec(
         select(RecoveryCheckIn).where(RecoveryCheckIn.date == today)
     ).all()
-    result: dict[str, dict] = {}
-    for row in sorted(rows, key=lambda r: r.id or 0):
-        result[row.region] = {
-            "pain_0_10": row.pain_0_10,
-            "soreness_0_10": row.soreness_0_10,
-            "stiffness_0_10": row.stiffness_0_10,
-            "readiness_0_10": row.readiness_0_10,
-        }
-    return result
+    return aggregate_recovery_checkins_for_day(rows, today)
 
 
 def _build_region_state(
@@ -679,8 +674,10 @@ def _build_region_state(
             region_risk[region] = [max(v, 60) for v in region_risk[region]]
         if sore >= 7:
             region_recovery[region] = [min(v, 0.35) for v in region_recovery[region]]
+            region_risk[region] = [max(v, 65) for v in region_risk[region]]
         elif sore >= 4:
-            region_recovery[region] = [v * 0.7 for v in region_recovery[region]]
+            region_recovery[region] = [min(v * 0.55, 0.45) for v in region_recovery[region]]
+            region_risk[region] = [max(v, 55) for v in region_risk[region]]
         if stiffness >= 7:
             region_recovery[region] = [min(v, 0.45) for v in region_recovery[region]]
             region_risk[region] = [max(v, 70) for v in region_risk[region]]
@@ -722,6 +719,14 @@ def _blocked_regions(
             or ci["soreness_0_10"] >= 7
             or ci.get("readiness_0_10", 5) <= 2
         ):
+            blocked.add(region)
+    return blocked
+
+
+def _soft_blocked_regions(checkins: dict[str, dict]) -> set[str]:
+    blocked = set()
+    for region, ci in checkins.items():
+        if ci["pain_0_10"] >= 4 or ci["soreness_0_10"] >= 4 or ci["stiffness_0_10"] >= 7:
             blocked.add(region)
     return blocked
 
@@ -837,6 +842,7 @@ def _select_exercises(
     exercise_region_map: dict[int, list[dict]],
     rehab_priorities: dict[int, dict] | None = None,
     protection_profiles: dict[int, list[object]] | None = None,
+    soft_blocked_regions: set[str] | None = None,
 ) -> list[dict]:
     """Select up to MAX_CANDIDATES exercises, prioritizing target regions.
 
@@ -849,6 +855,7 @@ def _select_exercises(
     rehab_candidates: list[dict] = []
     rehab_priorities = rehab_priorities or {}
     protection_profiles = protection_profiles or {}
+    soft_blocked_regions = soft_blocked_regions or set()
     best_blocked_by_variant_group: dict[str, dict] = {}
 
     for ex in exercises_data:
@@ -885,6 +892,12 @@ def _select_exercises(
             for m in region_mappings
         )
         if has_blocked_primary:
+            continue
+        has_soft_blocked_primary = any(
+            m["region"] in soft_blocked_regions and m["role"] == "primary"
+            for m in region_mappings
+        )
+        if has_soft_blocked_primary and not rehab_priority:
             continue
 
         # Per-tissue fatigue gate: look at recovery_state for every tissue

@@ -863,11 +863,50 @@ export interface RecoveryCheckIn {
   id: number;
   date: string;
   region: string;
+  tracked_tissue_id: number | null;
+  target_kind: 'tracked_tissue' | 'region';
+  target_key: string;
+  target_label: string;
+  tracked_tissue: RecoveryCheckInTrackedTissue | null;
   soreness_0_10: number;
   pain_0_10: number;
   stiffness_0_10: number;
   readiness_0_10: number;
   notes: string | null;
+}
+
+export interface RecoveryCheckInTrackedTissue {
+  id: number;
+  tissue_id: number;
+  tissue_name: string;
+  tissue_display_name: string;
+  tissue_type: string;
+  region: string;
+  side: 'left' | 'right' | 'center';
+  display_name: string;
+  tracking_mode: 'paired' | 'center';
+  active: boolean;
+}
+
+export interface RecoveryCheckInTarget {
+  target_key: string;
+  target_kind: 'tracked_tissue' | 'region';
+  region: string;
+  tracked_tissue_id: number | null;
+  target_label: string;
+  tracked_tissue: RecoveryCheckInTrackedTissue | null;
+  reasons?: { code: string; label: string }[];
+  existing_check_in?: RecoveryCheckIn | null;
+}
+
+export interface RecoveryCheckInTargetsResponse {
+  date: string;
+  targets: RecoveryCheckInTarget[];
+  today_check_ins: RecoveryCheckIn[];
+  other_options: {
+    regions: RecoveryCheckInTarget[];
+    tracked_tissues: RecoveryCheckInTarget[];
+  };
 }
 
 export interface RegionInfo {
@@ -1165,7 +1204,8 @@ export const getExerciseStrength = (exerciseId: number, days = 90, asOf?: string
 
 export const createRecoveryCheckIn = (data: {
   date: string;
-  region: string;
+  region?: string;
+  tracked_tissue_id?: number;
   soreness_0_10?: number;
   pain_0_10?: number;
   stiffness_0_10?: number;
@@ -1186,6 +1226,11 @@ export const getRecoveryCheckIns = (date?: string, startDate?: string, endDate?:
     `/training-model/check-ins${params.length ? `?${params.join('&')}` : ''}`,
   );
 };
+
+export const getRecoveryCheckInTargets = (date?: string) =>
+  request<RecoveryCheckInTargetsResponse>(
+    `/training-model/check-in-targets${date ? `?date=${date}` : ''}`,
+  );
 
 export const getRegions = () =>
   request<RegionInfo[]>('/training-model/regions');

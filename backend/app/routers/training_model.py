@@ -12,11 +12,23 @@ from app.models import (
     Exercise,
     ExerciseTissue,
     RecoveryCheckIn,
+    RehabPlan,
     Tissue,
+    TissueCondition,
+    TrackedTissue,
     TrainingExclusionWindow,
     WeightLog,
     WorkoutSession,
     WorkoutSet,
+)
+from app.recovery_check_ins import (
+    recovery_checkin_has_symptoms,
+    recovery_checkin_target_key,
+)
+from app.tracked_tissues import (
+    get_active_rehab_plans_by_tracked_tissue,
+    get_all_current_tracked_conditions,
+    list_tracked_tissues,
 )
 from app.training_model import (
     build_exercise_risk_ranking,
@@ -27,6 +39,22 @@ from app.training_model import (
 )
 
 router = APIRouter(prefix="/api/training-model", tags=["training-model"])
+
+_CHECK_IN_REASON_LABELS = {
+    "active_rehab": "Active rehab",
+    "active_condition": "Active condition",
+    "symptomatic_yesterday": "Symptomatic yesterday",
+    "worked_last_workout": "Worked last workout",
+    "checked_in_today": "Added today",
+}
+
+_CHECK_IN_REASON_PRIORITY = {
+    "active_rehab": 0,
+    "active_condition": 1,
+    "symptomatic_yesterday": 2,
+    "worked_last_workout": 3,
+    "checked_in_today": 4,
+}
 
 
 class ExclusionWindowCreate(BaseModel):
@@ -160,12 +188,343 @@ def delete_exclusion_window(
 
 class RecoveryCheckInCreate(BaseModel):
     date: datetime.date
-    region: str
+    region: str | None = None
+    tracked_tissue_id: int | None = None
     soreness_0_10: int = 0
     pain_0_10: int = 0
     stiffness_0_10: int = 0
     readiness_0_10: int = 5
     notes: str | None = None
+
+
+def _region_label(region: str) -> str:
+    return region.replace("_", " ").title()
+
+
+def _tracked_tissue_payload_map(
+    session: Session,
+    *,
+    include_inactive: bool,
+) -> dict[int, dict]:
+    tissues = {
+        tissue.id: tissue
+        for tissue in session.exec(select(Tissue)).all()
+    }
+    result: dict[int, dict] = {}
+    for tracked in list_tracked_tissues(session, include_inactive=include_inactive):
+        tissue = tissues.get(tracked.tissue_id)
+        if tissue is None:
+            continue
+        result[tracked.id] = {
+            "id": tracked.id,
+            "tissue_id": tracked.tissue_id,
+            "tissue_name": tissue.name,
+            "tissue_display_name": tissue.display_name,
+            "tissue_type": tissue.type,
+            "region": tissue.region,
+            "side": tracked.side,
+            "display_name": tracked.display_name,
+            "tracking_mode": tissue.tracking_mode,
+            "active": tracked.active,
+        }
+    return result
+
+
+def _serialize_check_in(
+    row: RecoveryCheckIn,
+    tracked_payloads: dict[int, dict],
+) -> dict:
+    tracked = (
+        tracked_payloads.get(row.tracked_tissue_id)
+        if row.tracked_tissue_id is not None
+        else None
+    )
+    return {
+        "id": row.id,
+        "date": row.date.isoformat(),
+        "region": row.region,
+        "tracked_tissue_id": row.tracked_tissue_id,
+        "target_kind": "tracked_tissue" if row.tracked_tissue_id is not None else "region",
+        "target_key": recovery_checkin_target_key(
+            region=row.region,
+            tracked_tissue_id=row.tracked_tissue_id,
+        ),
+        "target_label": tracked["display_name"] if tracked else _region_label(row.region),
+        "tracked_tissue": tracked,
+        "soreness_0_10": row.soreness_0_10,
+        "pain_0_10": row.pain_0_10,
+        "stiffness_0_10": row.stiffness_0_10,
+        "readiness_0_10": row.readiness_0_10,
+        "notes": row.notes,
+    }
+
+
+def _resolve_check_in_target(
+    *,
+    session: Session,
+    region: str | None,
+    tracked_tissue_id: int | None,
+) -> tuple[str, int | None]:
+    cleaned_region = region.strip() if region else None
+    if tracked_tissue_id is None:
+        if not cleaned_region:
+            raise HTTPException(status_code=400, detail="Region or tracked tissue is required")
+        return cleaned_region, None
+
+    tracked = session.get(TrackedTissue, tracked_tissue_id)
+    if tracked is None:
+        raise HTTPException(status_code=404, detail="Tracked tissue not found")
+    tissue = session.get(Tissue, tracked.tissue_id)
+    if tissue is None:
+        raise HTTPException(status_code=404, detail="Tracked tissue tissue not found")
+    if cleaned_region and cleaned_region != tissue.region:
+        raise HTTPException(status_code=400, detail="Tracked tissue region does not match request region")
+    return tissue.region, tracked.id
+
+
+def _last_workout_major_regions(session: Session) -> list[str]:
+    sessions = session.exec(
+        select(WorkoutSession).order_by(
+            col(WorkoutSession.date).desc(),
+            col(WorkoutSession.finished_at).desc(),
+            col(WorkoutSession.started_at).desc(),
+            col(WorkoutSession.created_at).desc(),
+        )
+    ).all()
+    for workout_session in sessions:
+        workout_sets = session.exec(
+            select(WorkoutSet).where(WorkoutSet.session_id == workout_session.id)
+        ).all()
+        if not workout_sets:
+            continue
+        exercise_ids = sorted({row.exercise_id for row in workout_sets})
+        if not exercise_ids:
+            continue
+        region_scores: dict[str, float] = defaultdict(float)
+        mappings = session.exec(
+            select(
+                ExerciseTissue.exercise_id,
+                Tissue.region,
+                ExerciseTissue.role,
+                ExerciseTissue.routing_factor,
+                ExerciseTissue.loading_factor,
+            )
+            .join(Tissue, Tissue.id == ExerciseTissue.tissue_id)
+            .where(col(ExerciseTissue.exercise_id).in_(exercise_ids))
+        ).all()
+        mappings_by_exercise: dict[int, list[tuple[str, str, float]]] = defaultdict(list)
+        for exercise_id, region, role, routing, loading in mappings:
+            mappings_by_exercise[exercise_id].append(
+                (
+                    region,
+                    role,
+                    routing or loading or 1.0,
+                )
+            )
+        for workout_set in workout_sets:
+            for region, role, routing in mappings_by_exercise.get(workout_set.exercise_id, []):
+                if role == "primary":
+                    region_scores[region] += routing
+                elif role == "secondary" and routing >= 0.5:
+                    region_scores[region] += routing
+        if not region_scores:
+            continue
+        peak = max(region_scores.values())
+        threshold = max(0.75, peak * 0.35)
+        return [
+            region
+            for region, score in sorted(
+                region_scores.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+            if score >= threshold
+        ]
+    return []
+
+
+def _target_reason(code: str) -> dict[str, str]:
+    return {"code": code, "label": _CHECK_IN_REASON_LABELS[code]}
+
+
+def _build_check_in_targets(
+    *,
+    session: Session,
+    target_date: datetime.date,
+) -> dict:
+    tracked_payloads = _tracked_tissue_payload_map(session, include_inactive=True)
+    active_tracked_payloads = _tracked_tissue_payload_map(session, include_inactive=False)
+    today_rows = session.exec(
+        select(RecoveryCheckIn)
+        .where(RecoveryCheckIn.date == target_date)
+        .order_by(col(RecoveryCheckIn.created_at).desc())
+    ).all()
+    yesterday_rows = session.exec(
+        select(RecoveryCheckIn)
+        .where(RecoveryCheckIn.date == (target_date - datetime.timedelta(days=1)))
+        .order_by(col(RecoveryCheckIn.created_at).desc())
+    ).all()
+    today_by_key: dict[str, dict] = {}
+    for row in today_rows:
+        serialized = _serialize_check_in(row, tracked_payloads)
+        today_by_key.setdefault(serialized["target_key"], serialized)
+
+    targets: dict[str, dict] = {}
+
+    def add_target(
+        *,
+        region: str,
+        tracked_tissue_id: int | None,
+        reason_code: str,
+    ) -> None:
+        target_key = recovery_checkin_target_key(
+            region=region,
+            tracked_tissue_id=tracked_tissue_id,
+        )
+        tracked = (
+            tracked_payloads.get(tracked_tissue_id)
+            if tracked_tissue_id is not None
+            else None
+        )
+        target = targets.get(target_key)
+        if target is None:
+            target = {
+                "target_key": target_key,
+                "target_kind": "tracked_tissue" if tracked_tissue_id is not None else "region",
+                "region": region,
+                "tracked_tissue_id": tracked_tissue_id,
+                "target_label": tracked["display_name"] if tracked else _region_label(region),
+                "tracked_tissue": tracked,
+                "reasons": [],
+                "existing_check_in": today_by_key.get(target_key),
+            }
+            targets[target_key] = target
+        if all(reason["code"] != reason_code for reason in target["reasons"]):
+            target["reasons"].append(_target_reason(reason_code))
+            target["reasons"].sort(
+                key=lambda reason: _CHECK_IN_REASON_PRIORITY.get(reason["code"], 99)
+            )
+        if target["existing_check_in"] is None:
+            target["existing_check_in"] = today_by_key.get(target_key)
+
+    tracked_conditions: dict[int, TissueCondition] = get_all_current_tracked_conditions(session)
+    for tracked_id, condition in tracked_conditions.items():
+        if condition.status == "healthy":
+            continue
+        tracked = tracked_payloads.get(tracked_id)
+        if tracked is None:
+            continue
+        add_target(
+            region=tracked["region"],
+            tracked_tissue_id=tracked_id,
+            reason_code="active_condition",
+        )
+
+    active_plans: dict[int, RehabPlan] = get_active_rehab_plans_by_tracked_tissue(session)
+    for tracked_id, _plan in active_plans.items():
+        tracked = tracked_payloads.get(tracked_id)
+        if tracked is None:
+            continue
+        add_target(
+            region=tracked["region"],
+            tracked_tissue_id=tracked_id,
+            reason_code="active_rehab",
+        )
+
+    for region in _last_workout_major_regions(session):
+        add_target(
+            region=region,
+            tracked_tissue_id=None,
+            reason_code="worked_last_workout",
+        )
+
+    for row in yesterday_rows:
+        if not recovery_checkin_has_symptoms(row):
+            continue
+        add_target(
+            region=row.region,
+            tracked_tissue_id=row.tracked_tissue_id,
+            reason_code="symptomatic_yesterday",
+        )
+
+    for row in today_rows:
+        target_key = recovery_checkin_target_key(
+            region=row.region,
+            tracked_tissue_id=row.tracked_tissue_id,
+        )
+        if target_key in targets:
+            continue
+        add_target(
+            region=row.region,
+            tracked_tissue_id=row.tracked_tissue_id,
+            reason_code="checked_in_today",
+        )
+
+    target_keys = set(targets.keys())
+    region_options = [
+        {
+            "target_key": recovery_checkin_target_key(region=region, tracked_tissue_id=None),
+            "target_kind": "region",
+            "region": region,
+            "tracked_tissue_id": None,
+            "target_label": _region_label(region),
+            "tracked_tissue": None,
+        }
+        for region in sorted({tissue.region for tissue in session.exec(select(Tissue)).all()})
+        if recovery_checkin_target_key(region=region, tracked_tissue_id=None) not in target_keys
+    ]
+    tracked_options = [
+        {
+            "target_key": recovery_checkin_target_key(
+                region=tracked["region"],
+                tracked_tissue_id=tracked["id"],
+            ),
+            "target_kind": "tracked_tissue",
+            "region": tracked["region"],
+            "tracked_tissue_id": tracked["id"],
+            "target_label": tracked["display_name"],
+            "tracked_tissue": tracked,
+        }
+        for tracked in sorted(
+            active_tracked_payloads.values(),
+            key=lambda item: item["display_name"],
+        )
+        if recovery_checkin_target_key(
+            region=tracked["region"],
+            tracked_tissue_id=tracked["id"],
+        ) not in target_keys
+    ]
+
+    sorted_targets = sorted(
+        targets.values(),
+        key=lambda target: (
+            min(
+                _CHECK_IN_REASON_PRIORITY.get(reason["code"], 99)
+                for reason in target["reasons"]
+            ),
+            0 if target["existing_check_in"] is None else 1,
+            0 if target["target_kind"] == "tracked_tissue" else 1,
+            target["target_label"].lower(),
+        ),
+    )
+    return {
+        "date": target_date.isoformat(),
+        "targets": sorted_targets,
+        "today_check_ins": list(today_by_key.values()),
+        "other_options": {
+            "regions": region_options,
+            "tracked_tissues": tracked_options,
+        },
+    }
+
+
+@router.get("/check-in-targets")
+def get_check_in_targets(
+    date: datetime.date | None = Query(default=None),
+    session: Session = Depends(get_session),
+    _user: str = Depends(get_current_user),
+):
+    target_date = date or datetime.date.today()
+    return _build_check_in_targets(session=session, target_date=target_date)
 
 
 @router.post("/check-in", status_code=201)
@@ -174,15 +533,27 @@ def create_check_in(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    # Upsert: update existing check-in for same date+region if one exists
+    region, tracked_tissue_id = _resolve_check_in_target(
+        session=session,
+        region=data.region,
+        tracked_tissue_id=data.tracked_tissue_id,
+    )
+    stmt = select(RecoveryCheckIn).where(
+        RecoveryCheckIn.date == data.date,
+        RecoveryCheckIn.region == region,
+    )
+    if tracked_tissue_id is None:
+        stmt = stmt.where(RecoveryCheckIn.tracked_tissue_id.is_(None))
+    else:
+        stmt = stmt.where(RecoveryCheckIn.tracked_tissue_id == tracked_tissue_id)
     existing = session.exec(
-        select(RecoveryCheckIn)
-        .where(RecoveryCheckIn.date == data.date, RecoveryCheckIn.region == data.region)
-        .order_by(RecoveryCheckIn.id.desc())  # type: ignore[union-attr]
+        stmt.order_by(RecoveryCheckIn.id.desc())  # type: ignore[union-attr]
         .limit(1)
     ).first()
 
     if existing:
+        existing.region = region
+        existing.tracked_tissue_id = tracked_tissue_id
         existing.soreness_0_10 = data.soreness_0_10
         existing.pain_0_10 = data.pain_0_10
         existing.stiffness_0_10 = data.stiffness_0_10
@@ -192,7 +563,8 @@ def create_check_in(
     else:
         row = RecoveryCheckIn(
             date=data.date,
-            region=data.region,
+            region=region,
+            tracked_tissue_id=tracked_tissue_id,
             soreness_0_10=data.soreness_0_10,
             pain_0_10=data.pain_0_10,
             stiffness_0_10=data.stiffness_0_10,
@@ -202,16 +574,8 @@ def create_check_in(
     session.add(row)
     session.commit()
     session.refresh(row)
-    return {
-        "id": row.id,
-        "date": row.date.isoformat(),
-        "region": row.region,
-        "soreness_0_10": row.soreness_0_10,
-        "pain_0_10": row.pain_0_10,
-        "stiffness_0_10": row.stiffness_0_10,
-        "readiness_0_10": row.readiness_0_10,
-        "notes": row.notes,
-    }
+    tracked_payloads = _tracked_tissue_payload_map(session, include_inactive=True)
+    return _serialize_check_in(row, tracked_payloads)
 
 
 @router.get("/check-ins")
@@ -237,19 +601,8 @@ def get_check_ins(
             stmt = stmt.where(RecoveryCheckIn.date == today)
     stmt = stmt.order_by(col(RecoveryCheckIn.date).desc(), col(RecoveryCheckIn.created_at).desc())
     rows = session.exec(stmt).all()
-    return [
-        {
-            "id": row.id,
-            "date": row.date.isoformat(),
-            "region": row.region,
-            "soreness_0_10": row.soreness_0_10,
-            "pain_0_10": row.pain_0_10,
-            "stiffness_0_10": row.stiffness_0_10,
-            "readiness_0_10": row.readiness_0_10,
-            "notes": row.notes,
-        }
-        for row in rows
-    ]
+    tracked_payloads = _tracked_tissue_payload_map(session, include_inactive=True)
+    return [_serialize_check_in(row, tracked_payloads) for row in rows]
 
 
 @router.get("/regions")

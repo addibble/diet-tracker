@@ -4,6 +4,7 @@ from sqlmodel import select
 
 from app.models import (
     Exercise,
+    RecoveryCheckIn,
     RehabCheckIn,
     RehabPlan,
     Tissue,
@@ -13,7 +14,15 @@ from app.models import (
     WorkoutSession,
     WorkoutSet,
 )
-from app.planner import _build_rehab_priority_map, _planner_preferred_side, _prescribe_all, _select_exercises
+from app.planner import (
+    _build_region_state,
+    _build_rehab_priority_map,
+    _load_todays_checkins,
+    _planner_preferred_side,
+    _prescribe_all,
+    _select_exercises,
+    _soft_blocked_regions,
+)
 
 
 def test_prescribe_all_normalizes_suitability_score(session):
@@ -212,6 +221,131 @@ def test_select_exercises_does_not_penalise_distant_stabilisers():
     assert len(result) == 1, (
         "Exercise should not be excluded when only a distant stabilizer (routing < threshold) is fatigued"
     )
+
+
+def test_soft_blocked_regions_include_moderate_soreness():
+    blocked = _soft_blocked_regions({
+        "chest": {"pain_0_10": 0, "soreness_0_10": 5, "stiffness_0_10": 0, "readiness_0_10": 4},
+        "shoulders": {"pain_0_10": 0, "soreness_0_10": 2, "stiffness_0_10": 0, "readiness_0_10": 7},
+    })
+    assert "chest" in blocked
+    assert "shoulders" not in blocked
+
+
+def test_select_exercises_skips_direct_primary_region_when_same_day_soreness_is_moderate(session):
+    session.add(
+        RecoveryCheckIn(
+            date=date(2026, 4, 2),
+            region="chest",
+            soreness_0_10=5,
+            pain_0_10=0,
+            stiffness_0_10=0,
+            readiness_0_10=4,
+        )
+    )
+    session.commit()
+
+    checkins = _load_todays_checkins(session, date(2026, 4, 2))
+    soft_blocked = _soft_blocked_regions(checkins)
+
+    cable_fly = {
+        "id": 40,
+        "name": "Low-High Cable Fly",
+        "recommendation": "good",
+        "suitability_score": 88,
+        "weighted_risk_7d": 8.0,
+        "tissues": [
+            {"tissue_id": 1, "tissue_display_name": "Pec", "routing_factor": 1.0, "recovery_state": 0.9},
+        ],
+    }
+    landmine_press = {
+        "id": 41,
+        "name": "Landmine Press",
+        "recommendation": "good",
+        "suitability_score": 84,
+        "weighted_risk_7d": 10.0,
+        "tissues": [
+            {"tissue_id": 2, "tissue_display_name": "Anterior Deltoid", "routing_factor": 0.6, "recovery_state": 0.9},
+            {"tissue_id": 1, "tissue_display_name": "Pec", "routing_factor": 0.55, "recovery_state": 0.9},
+        ],
+    }
+    row = {
+        "tissue": {"id": 1, "region": "chest"},
+        "recovery_estimate": 0.92,
+        "risk_7d": 10,
+        "current_condition": None,
+    }
+    region_state = _build_region_state([row], checkins)
+    assert region_state["chest"]["readiness"] <= 0.45
+
+    exercise_region_map = {
+        40: [{"region": "chest", "role": "primary", "routing": 1.0}],
+        41: [{"region": "chest", "role": "primary", "routing": 0.55}, {"region": "shoulders", "role": "primary", "routing": 0.6}],
+    }
+    result = _select_exercises(
+        [cable_fly, landmine_press],
+        target_regions={"chest", "shoulders"},
+        adjacent_regions=set(),
+        blocked_regions=set(),
+        soft_blocked_regions=soft_blocked,
+        exercise_region_map=exercise_region_map,
+    )
+    names = [row["name"] for row in result]
+    assert "Low-High Cable Fly" not in names
+    assert "Landmine Press" not in names
+
+
+def test_load_todays_checkins_aggregates_region_and_tracked_rows_by_region(session):
+    tissue = Tissue(
+        name="pectoralis_major",
+        display_name="Pectoralis Major",
+        region="chest",
+        tracking_mode="paired",
+    )
+    session.add(tissue)
+    session.commit()
+    session.refresh(tissue)
+
+    tracked = TrackedTissue(
+        tissue_id=tissue.id,
+        side="left",
+        display_name="Left Pectoralis Major",
+    )
+    session.add(tracked)
+    session.commit()
+    session.refresh(tracked)
+
+    session.add(
+        RecoveryCheckIn(
+            date=date(2026, 4, 2),
+            region="chest",
+            soreness_0_10=2,
+            pain_0_10=0,
+            stiffness_0_10=1,
+            readiness_0_10=7,
+        )
+    )
+    session.add(
+        RecoveryCheckIn(
+            date=date(2026, 4, 2),
+            region="chest",
+            tracked_tissue_id=tracked.id,
+            soreness_0_10=5,
+            pain_0_10=3,
+            stiffness_0_10=0,
+            readiness_0_10=4,
+        )
+    )
+    session.commit()
+
+    checkins = _load_todays_checkins(session, date(2026, 4, 2))
+
+    assert checkins["chest"] == {
+        "soreness_0_10": 5,
+        "pain_0_10": 3,
+        "stiffness_0_10": 1,
+        "readiness_0_10": 4,
+    }
 
 
 def test_select_exercises_inserts_direct_rehab_unilateral_candidate_first(session):

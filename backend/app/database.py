@@ -53,6 +53,9 @@ RUNTIME_REQUIRED_COLUMNS = {
     "tissue_conditions": {
         "tracked_tissue_id",
     },
+    "recovery_check_ins": {
+        "tracked_tissue_id",
+    },
 }
 
 
@@ -218,6 +221,15 @@ def _migrate_add_columns():
             "tissue_conditions",
             {
                 "tracked_tissue_id": "ALTER TABLE tissue_conditions ADD COLUMN tracked_tissue_id INTEGER",
+            },
+            insp,
+        )
+
+    if "recovery_check_ins" in table_names:
+        _ensure_columns(
+            "recovery_check_ins",
+            {
+                "tracked_tissue_id": "ALTER TABLE recovery_check_ins ADD COLUMN tracked_tissue_id INTEGER",
             },
             insp,
         )

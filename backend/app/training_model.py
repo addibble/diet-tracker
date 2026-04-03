@@ -32,6 +32,7 @@ from app.models import (
     WorkoutSession,
     WorkoutSet,
 )
+from app.recovery_check_ins import aggregate_recovery_checkins
 
 _DEFAULT_WINDOW_DAYS = 90
 
@@ -555,18 +556,10 @@ def _load_recovery_checkins(
 
     result: dict[int, dict[date, dict]] = defaultdict(dict)
 
-    for checkin in rows:
-        region = checkin.region
+    for (checkin_date, region), checkin_data in aggregate_recovery_checkins(rows).items():
         target_tissues = region_tissues.get(region, [])
         if not target_tissues:
             continue
-
-        checkin_data = {
-            "soreness": checkin.soreness_0_10,
-            "pain": checkin.pain_0_10,
-            "stiffness": checkin.stiffness_0_10,
-            "readiness": checkin.readiness_0_10,
-        }
 
         # Weight by recent exercise exposure (last 7 days)
         tissue_weights: dict[int, float] = {}
@@ -574,7 +567,7 @@ def _load_recovery_checkins(
             exposure_map = exposures_by_tissue.get(tissue.id, {})
             recent_load = 0.0
             for day_offset in range(7):
-                check_date = checkin.date - timedelta(days=day_offset)
+                check_date = checkin_date - timedelta(days=day_offset)
                 rec = exposure_map.get(check_date)
                 if rec:
                     recent_load += max(rec.raw_load, rec.strain_load)
@@ -584,24 +577,29 @@ def _load_recovery_checkins(
         if total_weight <= 0:
             # Equal distribution when no recent exposure
             for tissue in target_tissues:
-                result[tissue.id][checkin.date] = checkin_data
+                result[tissue.id][checkin_date] = {
+                    "soreness": checkin_data["soreness_0_10"],
+                    "pain": checkin_data["pain_0_10"],
+                    "stiffness": checkin_data["stiffness_0_10"],
+                    "readiness": checkin_data["readiness_0_10"],
+                }
         else:
             # Weighted distribution: tissues with more recent load get more signal
             for tissue in target_tissues:
                 weight_fraction = tissue_weights[tissue.id] / total_weight
                 if weight_fraction > 0:
-                    result[tissue.id][checkin.date] = {
-                        "soreness": round(checkin_data["soreness"] * weight_fraction * len(target_tissues)),
-                        "pain": round(checkin_data["pain"] * weight_fraction * len(target_tissues)),
-                        "stiffness": round(checkin_data["stiffness"] * weight_fraction * len(target_tissues)),
-                        "readiness": checkin_data["readiness"],
+                    result[tissue.id][checkin_date] = {
+                        "soreness": round(checkin_data["soreness_0_10"] * weight_fraction * len(target_tissues)),
+                        "pain": round(checkin_data["pain_0_10"] * weight_fraction * len(target_tissues)),
+                        "stiffness": round(checkin_data["stiffness_0_10"] * weight_fraction * len(target_tissues)),
+                        "readiness": checkin_data["readiness_0_10"],
                     }
                 else:
-                    result[tissue.id][checkin.date] = {
+                    result[tissue.id][checkin_date] = {
                         "soreness": 0,
                         "pain": 0,
                         "stiffness": 0,
-                        "readiness": checkin_data["readiness"],
+                        "readiness": checkin_data["readiness_0_10"],
                     }
 
     return dict(result)

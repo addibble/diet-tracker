@@ -9,9 +9,8 @@ import {
 import WorkoutSetEditor from '../components/WorkoutSetEditor'
 import {
   getTrainingModelSummary,
-  getRecoveryCheckIns,
   createRecoveryCheckIn,
-  getRegions,
+  getRecoveryCheckInTargets,
   getExercises,
   getExerciseHistory,
   getPlannerToday,
@@ -23,8 +22,8 @@ import {
   type TrainingModelSummary,
   type TrainingModelTissueSummary,
   type TrainingModelExerciseInsight,
-  type RecoveryCheckIn,
-  type RegionInfo,
+  type RecoveryCheckInTarget,
+  type RecoveryCheckInTargetsResponse,
   type WkExercise,
   type WkExerciseHistory,
   type PlannerTodayResponse,
@@ -82,41 +81,54 @@ function CardSkeleton({ lines = 3 }: { lines?: number }) {
 // ── Recovery Check-in Card ──
 
 function CheckInCard({
-  regions,
-  existingCheckIns,
+  checkInData,
   onSubmit,
 }: {
-  regions: RegionInfo[]
-  existingCheckIns: RecoveryCheckIn[]
+  checkInData: RecoveryCheckInTargetsResponse
   onSubmit: () => void
 }) {
-  const [selected, setSelected] = useState<string | null>(null)
+  const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  const [otherKey, setOtherKey] = useState('')
+  const [showOther, setShowOther] = useState(false)
   const [soreness, setSoreness] = useState<SymptomSeverityLevel>(0)
   const [pain, setPain] = useState<SymptomSeverityLevel>(0)
   const [stiffness, setStiffness] = useState<SymptomSeverityLevel>(0)
   const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState<Set<string>>(new Set())
+  const allTargets = useMemo(() => {
+    const byKey = new Map<string, RecoveryCheckInTarget>()
+    for (const target of checkInData.targets) byKey.set(target.target_key, target)
+    for (const target of checkInData.other_options.tracked_tissues) byKey.set(target.target_key, target)
+    for (const target of checkInData.other_options.regions) byKey.set(target.target_key, target)
+    return byKey
+  }, [checkInData])
 
-  // Build lookup map from region → check-in for pre-population
-  const checkInByRegion = Object.fromEntries(existingCheckIns.map(c => [c.region, c]))
+  const checkInByTarget = useMemo(
+    () => Object.fromEntries(checkInData.today_check_ins.map(checkIn => [checkIn.target_key, checkIn])),
+    [checkInData.today_check_ins],
+  )
+
+  const selectedTarget = selectedKey ? allTargets.get(selectedKey) ?? null : null
+  const selectedCheckIn = selectedTarget ? (checkInByTarget[selectedTarget.target_key] ?? selectedTarget.existing_check_in ?? null) : null
+  const savedKeys = useMemo(() => new Set(checkInData.today_check_ins.map(checkIn => checkIn.target_key)), [checkInData.today_check_ins])
 
   useEffect(() => {
-    setSaved(new Set(existingCheckIns.map(c => c.region)))
-  }, [existingCheckIns])
-
-  const selectRegion = (region: string | null) => {
-    setSelected(region)
-    if (region && checkInByRegion[region]) {
-      const ci = checkInByRegion[region]
-      setSoreness(symptomDbToSeverity(ci.soreness_0_10))
-      setPain(symptomDbToSeverity(ci.pain_0_10))
-      setStiffness(symptomDbToSeverity(ci.stiffness_0_10))
-    } else {
+    if (!selectedTarget) {
       setSoreness(0)
       setPain(0)
       setStiffness(0)
+      return
     }
-  }
+    const ci = checkInByTarget[selectedTarget.target_key] ?? selectedTarget.existing_check_in ?? null
+    if (ci) {
+      setSoreness(symptomDbToSeverity(ci.soreness_0_10))
+      setPain(symptomDbToSeverity(ci.pain_0_10))
+      setStiffness(symptomDbToSeverity(ci.stiffness_0_10))
+      return
+    }
+    setSoreness(0)
+    setPain(0)
+    setStiffness(0)
+  }, [checkInByTarget, selectedTarget])
 
   // Auto-calculate readiness: start at 10, subtract for each nonzero category
   const readiness = Math.max(0, 10
@@ -126,19 +138,23 @@ function CheckInCard({
   )
 
   const submit = async () => {
-    if (!selected) return
+    if (!selectedTarget) return
     setSaving(true)
     try {
       await createRecoveryCheckIn({
         date: today(),
-        region: selected,
+        region: selectedTarget.target_kind === 'region' ? selectedTarget.region : undefined,
+        tracked_tissue_id: selectedTarget.target_kind === 'tracked_tissue'
+          ? selectedTarget.tracked_tissue_id ?? undefined
+          : undefined,
         soreness_0_10: symptomSeverityToDb(soreness),
         pain_0_10: symptomSeverityToDb(pain),
         stiffness_0_10: symptomSeverityToDb(stiffness),
         readiness_0_10: readiness,
       })
-      setSaved(prev => new Set([...prev, selected]))
-      setSelected(null)
+      setSelectedKey(null)
+      setOtherKey('')
+      setShowOther(false)
       setSoreness(0)
       setPain(0)
       setStiffness(0)
@@ -150,48 +166,193 @@ function CheckInCard({
 
   return (
     <div className="bg-white border border-gray-200 rounded-2xl p-5">
-      <h3 className="text-sm font-semibold text-gray-900 mb-3">Recovery Check-in</h3>
-      <div className="flex flex-wrap gap-1.5 mb-4">
-        {regions.map(r => {
-          const done = saved.has(r.region)
-          const active = selected === r.region
-          return (
-            <button
-              key={r.region}
-              onClick={() => selectRegion(active ? null : r.region)}
-              className={`px-2.5 py-1 text-xs rounded-lg border transition-all ${
-                done
-                  ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
-                  : active
-                    ? 'bg-gray-900 border-gray-900 text-white'
-                    : 'bg-white border-gray-200 text-gray-600 hover:border-gray-400'
-              }`}
-            >
-              {done ? '\u2713 ' : ''}{regionLabel(r.region)}
-            </button>
-          )
-        })}
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-900">Recovery Check-in</h3>
+          <p className="text-xs text-gray-500 mt-0.5">Check in on today&apos;s relevant areas only.</p>
+        </div>
+        <span className="text-xs font-medium text-gray-500">
+          {checkInData.today_check_ins.length}/{checkInData.targets.length} done
+        </span>
       </div>
-      {selected && (
+
+      {checkInData.targets.length > 0 ? (
+        <div className="space-y-2 mb-4">
+          {checkInData.targets.map(target => {
+            const done = savedKeys.has(target.target_key)
+            const active = selectedTarget?.target_key === target.target_key
+            const currentCheckIn = checkInByTarget[target.target_key] ?? target.existing_check_in ?? null
+            return (
+              <button
+                key={target.target_key}
+                onClick={() => {
+                  setOtherKey('')
+                  setSelectedKey(active ? null : target.target_key)
+                }}
+                className={`w-full text-left rounded-xl border p-3 transition-all ${
+                  active
+                    ? 'bg-gray-900 border-gray-900 text-white'
+                    : done
+                      ? 'bg-emerald-50 border-emerald-200 text-gray-900'
+                      : 'bg-white border-gray-200 text-gray-900 hover:border-gray-300'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{target.target_label}</p>
+                    <p className={`text-[11px] mt-0.5 ${active ? 'text-gray-300' : 'text-gray-500'}`}>
+                      {target.target_kind === 'tracked_tissue'
+                        ? `${regionLabel(target.region)} · specific tissue`
+                        : `${regionLabel(target.region)} · region`}
+                    </p>
+                  </div>
+                  {done && (
+                    <span className={`shrink-0 text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                      active ? 'bg-white/15 text-white' : 'bg-emerald-100 text-emerald-700'
+                    }`}>
+                      Checked in
+                    </span>
+                  )}
+                </div>
+                {target.reasons && target.reasons.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    {target.reasons.map(reason => (
+                      <span
+                        key={reason.code}
+                        className={`text-[10px] px-1.5 py-0.5 rounded-full border ${
+                          active
+                            ? 'border-white/20 bg-white/10 text-white'
+                            : 'border-gray-200 bg-gray-50 text-gray-600'
+                        }`}
+                      >
+                        {reason.label}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {currentCheckIn && (
+                  <p className={`text-[11px] mt-2 ${active ? 'text-gray-200' : 'text-gray-500'}`}>
+                    Sore {currentCheckIn.soreness_0_10}/10 · Pain {currentCheckIn.pain_0_10}/10 · Stiff {currentCheckIn.stiffness_0_10}/10 · Readiness {currentCheckIn.readiness_0_10}/10
+                  </p>
+                )}
+              </button>
+            )
+          })}
+        </div>
+      ) : (
+        <div className="rounded-xl border border-gray-100 bg-gray-50/70 px-3 py-2 mb-4 text-xs text-gray-500">
+          Nothing specific is queued today. Use <span className="font-medium text-gray-700">Other</span> if something feels sore, stiff, or painful.
+        </div>
+      )}
+
+      <div className="rounded-xl border border-gray-100 bg-gray-50/70 p-3 mb-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-medium text-gray-700">Something else bothering you?</p>
+            <p className="text-[11px] text-gray-500 mt-0.5">Add another tracked tissue or muscle group without checking in on everything.</p>
+          </div>
+          <button
+            onClick={() => setShowOther(prev => !prev)}
+            className={`px-2.5 py-1 text-xs rounded-lg border transition-all ${
+              showOther
+                ? 'bg-gray-900 text-white border-gray-900'
+                : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
+            }`}
+          >
+            Other
+          </button>
+        </div>
+        {showOther && (
+          <div className="mt-3">
+            {checkInData.other_options.tracked_tissues.length > 0 || checkInData.other_options.regions.length > 0 ? (
+              <select
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 bg-white"
+                value={otherKey}
+                onChange={event => {
+                  const nextKey = event.target.value
+                  setOtherKey(nextKey)
+                  setSelectedKey(nextKey || null)
+                }}
+              >
+                <option value="">Select another area...</option>
+                {checkInData.other_options.tracked_tissues.length > 0 && (
+                  <optgroup label="Tracked tissues">
+                    {checkInData.other_options.tracked_tissues.map(target => (
+                      <option key={target.target_key} value={target.target_key}>
+                        {target.target_label}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {checkInData.other_options.regions.length > 0 && (
+                  <optgroup label="Regions">
+                    {checkInData.other_options.regions.map(target => (
+                      <option key={target.target_key} value={target.target_key}>
+                        {target.target_label}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+            ) : (
+              <p className="text-[11px] text-gray-500">All available tracked tissues and regions are already on today&apos;s list.</p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {selectedTarget && (
         <div className="rounded-xl border border-gray-100 bg-gray-50/70 p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <p className="text-xs font-medium text-gray-700">{regionLabel(selected)}</p>
+            <div>
+              <p className="text-xs font-medium text-gray-700">{selectedTarget.target_label}</p>
+              <p className="text-[11px] text-gray-500 mt-0.5">
+                {selectedTarget.target_kind === 'tracked_tissue'
+                  ? `${regionLabel(selectedTarget.region)} · specific tissue`
+                  : `${regionLabel(selectedTarget.region)} · region`}
+              </p>
+            </div>
             <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
               readiness >= 8 ? 'bg-emerald-100 text-emerald-700' :
               readiness >= 5 ? 'bg-yellow-100 text-yellow-700' :
               'bg-red-100 text-red-700'
             }`}>Readiness: {readiness}/10</span>
           </div>
+          {selectedTarget.reasons && selectedTarget.reasons.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {selectedTarget.reasons.map(reason => (
+                <span key={reason.code} className="text-[10px] px-1.5 py-0.5 rounded-full border border-gray-200 bg-white text-gray-600">
+                  {reason.label}
+                </span>
+              ))}
+            </div>
+          )}
+          {selectedCheckIn && (
+            <p className="text-[11px] text-gray-500">
+              Already checked in today. Update it if anything changed.
+            </p>
+          )}
           <SymptomSeverityRow label="Soreness" value={soreness} onChange={setSoreness} showDescription={false} />
           <SymptomSeverityRow label="Pain" value={pain} onChange={setPain} showDescription={false} />
           <SymptomSeverityRow label="Stiffness" value={stiffness} onChange={setStiffness} showDescription={false} />
-          <button
-            onClick={submit}
-            disabled={saving}
-            className="w-full py-2 bg-gray-900 text-white text-sm font-medium rounded-lg hover:bg-gray-800 disabled:opacity-50 transition-colors"
-          >
-            {saving ? 'Saving...' : 'Save'}
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => {
+                setSelectedKey(null)
+                setOtherKey('')
+              }}
+              className="flex-1 py-2 bg-white border border-gray-200 text-gray-700 text-sm font-medium rounded-lg hover:border-gray-300 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={submit}
+              disabled={saving}
+              className="flex-1 py-2 bg-gray-900 text-white text-sm font-medium rounded-lg hover:bg-gray-800 disabled:opacity-50 transition-colors"
+            >
+              {saving ? 'Saving...' : selectedCheckIn ? 'Update' : 'Save'}
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -865,8 +1026,7 @@ function CapacityCard({ tissues }: { tissues: TrainingModelTissueSummary[] }) {
 
 export default function TrainingPage() {
   // Quick-loading state (no model computation needed)
-  const [regions, setRegions] = useState<RegionInfo[] | null>(null)
-  const [checkIns, setCheckIns] = useState<RecoveryCheckIn[]>([])
+  const [checkInData, setCheckInData] = useState<RecoveryCheckInTargetsResponse | null>(null)
   const [quickLoaded, setQuickLoaded] = useState(false)
 
   // Model-dependent state (slower to load)
@@ -883,16 +1043,16 @@ export default function TrainingPage() {
   // Exercise progress
   const [allExercises, setAllExercises] = useState<WkExercise[]>([])
 
-  // Quick data load (regions, routine, check-ins)
+  // Quick data load (targeted check-ins)
   useEffect(() => {
     let cancelled = false
-    Promise.all([
-      getRegions().catch(() => []),
-      getRecoveryCheckIns(today()).catch(() => []),
-    ]).then(([regionsData, checkInData]) => {
+    getRecoveryCheckInTargets(today()).then(data => {
       if (cancelled) return
-      setRegions(regionsData as RegionInfo[])
-      setCheckIns(checkInData as RecoveryCheckIn[])
+      setCheckInData(data)
+      setQuickLoaded(true)
+    }).catch(() => {
+      if (cancelled) return
+      setCheckInData(null)
       setQuickLoaded(true)
     })
     return () => { cancelled = true }
@@ -943,7 +1103,7 @@ export default function TrainingPage() {
   }, [refreshActivePlan])
 
   const refreshCheckIns = useCallback(() => {
-    getRecoveryCheckIns(today()).then(setCheckIns).catch(() => {})
+    getRecoveryCheckInTargets(today()).then(setCheckInData).catch(() => {})
     // Re-plan after check-in since readiness may have changed
     refreshPlanner()
   }, [refreshPlanner])
@@ -974,10 +1134,9 @@ export default function TrainingPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
             {/* Left: Check-in stacked above Exercise Progress */}
             <div className="space-y-4">
-              {regions && (
+              {checkInData && (
                 <CheckInCard
-                  regions={regions}
-                  existingCheckIns={checkIns}
+                  checkInData={checkInData}
                   onSubmit={refreshCheckIns}
                 />
               )}

@@ -260,6 +260,7 @@ class RecoveryCheckIn(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     date: dt.date = Field(index=True)
     region: str = Field(index=True)  # body region
+    tracked_tissue_id: int | None = Field(default=None, foreign_key="tracked_tissues.id", index=True)
     soreness_0_10: int = 0
     pain_0_10: int = 0
     stiffness_0_10: int = 0
