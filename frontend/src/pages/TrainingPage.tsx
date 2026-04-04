@@ -1113,7 +1113,8 @@ export default function TrainingPage() {
     getRecoveryCheckInTargets(today()).then(setCheckInData).catch(() => {})
     // Re-plan after check-in since readiness may have changed
     refreshPlanner()
-  }, [refreshPlanner])
+    refreshActivePlan()
+  }, [refreshPlanner, refreshActivePlan])
 
   const handleSavePlan = useCallback((dayLabel: string, regions: string[], exercises: PlannerExercisePrescription[]) => {
     savePlan(dayLabel, regions, exercises, today()).then(() => {

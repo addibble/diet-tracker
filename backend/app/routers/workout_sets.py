@@ -187,8 +187,12 @@ def update_set(
     if not ws:
         raise HTTPException(status_code=404, detail="Set not found")
     exercise = session.get(Exercise, ws.exercise_id)
-    updates = data.model_dump(exclude_unset=True)
-    tissue_feedback = updates.pop("tissue_feedback", None)
+    tissue_feedback = (
+        data.tissue_feedback
+        if "tissue_feedback" in data.model_fields_set
+        else None
+    )
+    updates = data.model_dump(exclude_unset=True, exclude={"tissue_feedback"})
     if "performed_side" in updates and exercise:
         updates["performed_side"] = default_performed_side(
             exercise_name=exercise.name,

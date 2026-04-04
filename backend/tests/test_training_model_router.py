@@ -1,15 +1,19 @@
 from datetime import date
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.models import (
     Exercise,
     ExerciseTissue,
+    PlannedSession,
+    ProgramDay,
+    ProgramDayExercise,
     RecoveryCheckIn,
     RehabPlan,
     Tissue,
     TissueCondition,
     TrackedTissue,
+    TrainingProgram,
     WorkoutSession,
     WorkoutSet,
 )
@@ -326,3 +330,60 @@ def test_recovery_checkin_targets_include_required_tendon_companion_for_symptoma
         reason["code"] == "active_condition"
         for reason in targets[f"tracked_tissue:{tendon_tracked.id}"]["reasons"]
     )
+
+
+def test_create_recovery_checkin_invalidates_unstarted_same_day_plan(client, session: Session):
+    exercise = Exercise(name="Bench Press", equipment="barbell")
+    session.add(exercise)
+    session.commit()
+    session.refresh(exercise)
+
+    program = TrainingProgram(name="Check-in Invalidation Program")
+    session.add(program)
+    session.commit()
+    session.refresh(program)
+
+    day = ProgramDay(
+        program_id=program.id,
+        day_label="Push",
+        target_regions='["chest"]',
+    )
+    session.add(day)
+    session.commit()
+    session.refresh(day)
+
+    session.add(
+        ProgramDayExercise(
+            program_day_id=day.id,
+            exercise_id=exercise.id,
+            target_sets=3,
+            target_rep_min=8,
+            target_rep_max=12,
+            sort_order=0,
+        )
+    )
+    planned = PlannedSession(
+        program_day_id=day.id,
+        date=date(2026, 4, 3),
+        status="planned",
+    )
+    session.add(planned)
+    session.commit()
+
+    response = client.post(
+        "/api/training-model/check-in",
+        json={
+            "date": "2026-04-03",
+            "region": "chest",
+            "soreness_0_10": 5,
+            "pain_0_10": 0,
+            "stiffness_0_10": 0,
+            "readiness_0_10": 4,
+        },
+    )
+
+    assert response.status_code == 201
+    remaining_plan = session.exec(
+        select(PlannedSession).where(PlannedSession.date == date(2026, 4, 3))
+    ).first()
+    assert remaining_plan is None

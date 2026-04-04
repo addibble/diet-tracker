@@ -1,4 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import SymptomSeverityRow from './SymptomSeverityRow'
+import {
+  symptomDbToSeverity,
+  symptomSeverityToDb,
+} from './symptomSeverity'
 import {
   addPlanExercise,
   addWorkoutSet,
@@ -602,7 +607,16 @@ function LogEditor({
         }
       })
       try {
-        await updateWorkoutSet(setId, patch)
+        const updated = await updateWorkoutSet(setId, patch)
+        setSession((prev) => {
+          if (!prev) return prev
+          return {
+            ...prev,
+            sets: prev.sets.map((setRow) => (
+              setRow.id === setId ? { ...updated } : setRow
+            )),
+          }
+        })
         onChanged?.()
       } catch {
         refreshSession() // rollback on error
@@ -1002,18 +1016,26 @@ function SetRow({
             return (
               <div
                 key={tracked.tracked_tissue.id}
-                className="grid gap-1 sm:grid-cols-[minmax(0,1fr)_70px_minmax(0,1fr)] sm:items-center"
+                className="grid gap-2 rounded-md border border-amber-200 bg-white/80 px-2 py-2"
               >
-                <span className="text-[11px] text-amber-900">
-                  {tracked.tracked_tissue.display_name}
-                </span>
-                <NumberInput
-                  value={feedback?.pain_0_10 ?? null}
-                  min={0}
-                  max={10}
-                  onChange={(value) => updateFeedback(tracked.tracked_tissue.id, { pain_0_10: value ?? 0 })}
-                  className="w-full"
-                  placeholder="0-10"
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-medium text-amber-900">
+                    {tracked.tracked_tissue.display_name}
+                  </span>
+                  {feedback?.above_threshold && (
+                    <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-medium text-red-700">
+                      Above threshold
+                    </span>
+                  )}
+                </div>
+                <SymptomSeverityRow
+                  label="Pain"
+                  value={symptomDbToSeverity(feedback?.pain_0_10 ?? 0)}
+                  onChange={(value) => updateFeedback(
+                    tracked.tracked_tissue.id,
+                    { pain_0_10: symptomSeverityToDb(value) },
+                  )}
+                  showDescription={false}
                 />
                 <input
                   type="text"

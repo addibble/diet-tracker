@@ -11,6 +11,9 @@ from app.exercise_loads import bodyweight_by_date, effective_set_load, effective
 from app.models import (
     Exercise,
     ExerciseTissue,
+    PlannedSession,
+    ProgramDay,
+    ProgramDayExercise,
     RecoveryCheckIn,
     RehabPlan,
     Tissue,
@@ -348,6 +351,35 @@ def _target_reason(code: str) -> dict[str, str]:
     return {"code": code, "label": _CHECK_IN_REASON_LABELS[code]}
 
 
+def _invalidate_planned_session_for_date(
+    session: Session,
+    *,
+    target_date: datetime.date,
+) -> None:
+    planned = session.exec(
+        select(PlannedSession)
+        .where(
+            PlannedSession.date == target_date,
+            PlannedSession.status == "planned",
+            PlannedSession.workout_session_id.is_(None),
+        )
+        .order_by(col(PlannedSession.id).desc())
+        .limit(1)
+    ).first()
+    if planned is None:
+        return
+
+    day = session.get(ProgramDay, planned.program_day_id)
+    if day is not None:
+        exercises = session.exec(
+            select(ProgramDayExercise).where(ProgramDayExercise.program_day_id == day.id)
+        ).all()
+        for exercise in exercises:
+            session.delete(exercise)
+        session.delete(day)
+    session.delete(planned)
+
+
 def _condition_requires_recovery_checkin(condition: TissueCondition) -> bool:
     return condition.status in {"tender", "injured"}
 
@@ -633,6 +665,7 @@ def create_check_in(
             notes=data.notes,
         )
     session.add(row)
+    _invalidate_planned_session_for_date(session, target_date=data.date)
     session.commit()
     session.refresh(row)
     tracked_payloads = _tracked_tissue_payload_map(session, include_inactive=True)

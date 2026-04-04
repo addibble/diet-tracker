@@ -2,7 +2,7 @@
 import json
 
 import pytest
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.models import (
     Exercise,
@@ -14,6 +14,7 @@ from app.models import (
     TrainingProgram,
     WorkoutSession,
     WorkoutSet,
+    WorkoutSetTissueFeedback,
 )
 
 
@@ -87,6 +88,75 @@ def test_update_set_partial(client, workout_set):
     assert data["notes"] == "felt good"
     assert data["reps"] == 10  # unchanged
     assert data["weight"] == 135.0  # unchanged
+
+
+def test_update_set_persists_tissue_feedback(client, session: Session, workout_set: WorkoutSet):
+    tissue = Tissue(
+        name="biceps_long_head",
+        display_name="Biceps Long Head",
+        type="muscle",
+        recovery_hours=48.0,
+    )
+    session.add(tissue)
+    session.commit()
+    session.refresh(tissue)
+
+    tracked = TrackedTissue(
+        tissue_id=tissue.id,
+        side="left",
+        display_name="Left Biceps Long Head",
+        active=True,
+    )
+    session.add(tracked)
+    session.commit()
+    session.refresh(tracked)
+
+    first = client.patch(
+        f"/api/workout-sets/{workout_set.id}",
+        json={
+            "tissue_feedback": [
+                {
+                    "tracked_tissue_id": tracked.id,
+                    "pain_0_10": 5,
+                    "symptom_note": "moderate pulling",
+                }
+            ]
+        },
+    )
+    assert first.status_code == 200
+    first_payload = first.json()
+    assert len(first_payload["tissue_feedback"]) == 1
+    assert first_payload["tissue_feedback"][0]["tracked_tissue_id"] == tracked.id
+    assert first_payload["tissue_feedback"][0]["pain_0_10"] == 5
+    assert first_payload["tissue_feedback"][0]["symptom_note"] == "moderate pulling"
+
+    second = client.patch(
+        f"/api/workout-sets/{workout_set.id}",
+        json={
+            "tissue_feedback": [
+                {
+                    "tracked_tissue_id": tracked.id,
+                    "pain_0_10": 2,
+                    "symptom_note": "mild after reset",
+                }
+            ]
+        },
+    )
+    assert second.status_code == 200
+    second_payload = second.json()
+    assert len(second_payload["tissue_feedback"]) == 1
+    assert second_payload["tissue_feedback"][0]["pain_0_10"] == 2
+    assert second_payload["tissue_feedback"][0]["symptom_note"] == "mild after reset"
+
+    rows = session.exec(
+        select(WorkoutSetTissueFeedback).where(
+            WorkoutSetTissueFeedback.workout_set_id == workout_set.id
+        )
+    ).all()
+    assert len(rows) == 1
+    assert rows[0].tracked_tissue_id == tracked.id
+    assert rows[0].pain_0_10 == 2
+    assert rows[0].symptom_note == "mild after reset"
 
 
 # ── POST /api/workout-sessions/{session_id}/sets ──────────────────────
