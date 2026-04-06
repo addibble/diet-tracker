@@ -512,6 +512,7 @@ export interface WkExercise {
   id: number;
   name: string;
   equipment: string | null;
+  allow_heavy_loading: boolean;
   load_input_mode: string;
   laterality: 'bilateral' | 'unilateral' | 'either';
   bodyweight_fraction: number;
@@ -559,6 +560,7 @@ export interface WkSetDetail {
   rpe: number | null;
   rep_completion: string | null;
   notes: string | null;
+  scheme_history?: ExerciseSchemeHistory;
   tissue_feedback: WkSetTissueFeedback[];
 }
 
@@ -735,13 +737,42 @@ export interface WkSetTissueFeedback {
 
 export interface WkExerciseHistory {
   exercise: WkExercise;
+  scheme_history: ExerciseSchemeHistory;
   sessions: {
     date: string;
-    sets: { set_order: number; reps: number | null; weight: number | null; rep_completion: string | null }[];
+    rep_scheme: RepScheme;
+    sets: ExerciseHistorySet[];
     max_weight: number;
     total_volume: number;
     rep_completions: string[];
   }[];
+}
+
+export type RepScheme = 'heavy' | 'medium' | 'volume';
+
+export interface ExerciseHistorySet {
+  set_order: number;
+  reps: number | null;
+  weight: number | null;
+  duration_secs?: number | null;
+  distance_steps?: number | null;
+  rpe?: number | null;
+  rep_completion: string | null;
+  notes?: string | null;
+}
+
+export interface ExerciseSchemeHistoryEntry {
+  date: string;
+  rep_scheme: RepScheme;
+  sets: ExerciseHistorySet[];
+  max_weight: number;
+  total_volume: number;
+}
+
+export interface ExerciseSchemeHistory {
+  heavy: ExerciseSchemeHistoryEntry | null;
+  medium: ExerciseSchemeHistoryEntry | null;
+  volume: ExerciseSchemeHistoryEntry | null;
 }
 
 export interface TrainingModelWindow {
@@ -929,23 +960,13 @@ export interface ExerciseStrength {
 
 // ── Planner Types ──
 
-export interface PlannerSuggestion {
-  day_label: string;
-  readiness_score: number;
-  days_since_last: number | null;
-  target_regions: string[];
-  exercises?: PlannerExercisePrescription[];
-  rationale: string;
-  tomorrow_outlook?: string;
-}
-
 export interface PlannerExercisePrescription {
   exercise_id: number;
   exercise_name: string;
   equipment: string | null;
   laterality?: 'bilateral' | 'unilateral' | 'either';
   performed_side?: 'left' | 'right' | 'center' | 'bilateral' | null;
-  rep_scheme: 'heavy' | 'volume' | 'light';
+  rep_scheme: RepScheme;
   target_sets: number;
   target_reps: string;
   target_weight: number | null;
@@ -956,17 +977,54 @@ export interface PlannerExercisePrescription {
   selection_note?: string | null;
   blocked_variant?: string | null;
   protected_tissues?: string[];
+  workflow_role?: 'group' | 'rehab' | 'accessory' | null;
+  group_label?: string | null;
   selected: boolean;
   last_performance: {
     date: string;
-    sets: { reps: number | null; weight: number | null; rep_completion: string | null }[];
+    rep_scheme: RepScheme;
+    sets: ExerciseHistorySet[];
   } | null;
+  scheme_history: ExerciseSchemeHistory;
+}
+
+export interface PlannerDayPlan {
+  group_id: string;
+  day_label: string;
+  readiness_score: number;
+  days_since_last: number | null;
+  target_regions: string[];
+  exercise_count: number;
+  core_exercise_count: number;
+  exercises: PlannerExercisePrescription[];
+  rationale: string;
+}
+
+export interface PlannerGroupBrief {
+  group_id: string;
+  day_label: string;
+  target_regions: string[];
+  exercise_count: number;
+  today_available_count: number;
+  days_since_last: number;
+  readiness_score: number;
+  planned_for: 'today' | 'tomorrow' | null;
+}
+
+export interface PlannerFilteredTissue {
+  tracked_tissue_id: number;
+  tissue_id: number;
+  target_label: string;
+  status: string;
+  reason: string;
 }
 
 export interface PlannerTodayResponse {
   as_of: string;
-  suggestion: PlannerSuggestion | null;
-  alternatives: PlannerSuggestion[];
+  today_plan: PlannerDayPlan | null;
+  tomorrow_plan: PlannerDayPlan | null;
+  groups: PlannerGroupBrief[];
+  filtered_tissues: PlannerFilteredTissue[];
   message: string | null;
 }
 
@@ -977,6 +1035,7 @@ export const getExercises = (search?: string) =>
 export const updateExercise = (id: number, data: {
   name?: string;
   equipment?: string | null;
+  allow_heavy_loading?: boolean;
   load_input_mode?: string;
   laterality?: 'bilateral' | 'unilateral' | 'either';
   bodyweight_fraction?: number;
@@ -1329,6 +1388,9 @@ export interface SavedPlanExercise {
   selection_note?: string | null;
   blocked_variant?: string | null;
   protected_tissues?: string[];
+  workflow_role?: 'group' | 'rehab' | 'accessory' | null;
+  group_label?: string | null;
+  scheme_history?: ExerciseSchemeHistory;
   completed_sets: {
     id: number;
     set_order: number;

@@ -14,6 +14,13 @@ from datetime import date, timedelta
 
 from sqlmodel import Session, col, select
 
+from app.exercise_history import (
+    REP_SCHEME_VERSION,
+    build_scheme_history,
+    empty_scheme_history,
+    get_exercise_history_map,
+    get_exercise_scheme_history_map,
+)
 from app.exercise_loads import bodyweight_by_date, entered_weight_for_effective_weight, latest_bodyweight, load_progression_direction
 from app.exercise_protection import (
     EARLY_REHAB_STAGES as _EARLY_REHAB_STAGES,
@@ -42,6 +49,7 @@ from app.models import (
     WorkoutSet,
     WorkoutSetTissueFeedback,
 )
+from app.planner_groups import significant_mapping_load
 from app.recovery_check_ins import aggregate_recovery_checkins_for_day
 from app.tracked_tissues import (
     default_performed_side,
@@ -50,7 +58,7 @@ from app.tracked_tissues import (
     get_tracked_tissue_lookup,
     tracked_tissue_side_weights,
 )
-from app.training_model import build_exercise_strength, build_training_model_summary
+from app.training_model import build_exercise_strength
 
 # ── Tissue clusters ──────────────────────────────────────────────────
 
@@ -90,112 +98,10 @@ _CROSS_EDUCATION_ALLOWED_STAGES = _EARLY_REHAB_STAGES | _MID_REHAB_STAGES | {"hi
 
 
 def suggest_today(session: Session, *, as_of: date | None = None) -> dict:
-    """Return auto-generated workout suggestion for today."""
-    today = as_of or date.today()
+    """Return the workflow-based workout planner for today and tomorrow."""
+    from app.planner_workflow import suggest_today_workflow
 
-    summary = build_training_model_summary(session, as_of=as_of, include_exercises=True)
-    tissues_data = summary.get("tissues", [])
-    exercises_data = summary.get("exercises", [])
-
-    if not tissues_data:
-        return {
-            "as_of": today.isoformat(),
-            "suggestion": None,
-            "alternatives": [],
-            "message": "No training data yet. Log some workouts first.",
-        }
-
-    # Load check-ins and build region state
-    todays_checkins = _load_todays_checkins(session, today)
-    region_state = _build_region_state(tissues_data, todays_checkins)
-
-    # Find blocked regions (injured or substantial pain/soreness)
-    blocked_regions = _blocked_regions(region_state, todays_checkins)
-    soft_blocked_regions = _soft_blocked_regions(todays_checkins)
-
-    # Build exercise → region mapping from DB (not from model summary)
-    exercise_region_map = _build_exercise_region_map(session)
-    tracked_conditions = get_all_current_tracked_conditions(session)
-    active_rehab_plans = get_active_rehab_plans_by_tracked_tissue(session)
-    tracked_lookup = {
-        tracked.id: tracked
-        for tracked in get_tracked_tissue_lookup(session).values()
-    }
-    rehab_priorities = _build_rehab_priority_map(
-        session=session,
-        exercises_data=exercises_data,
-        tracked_lookup=tracked_lookup,
-        tracked_conditions=tracked_conditions,
-        active_rehab_plans=active_rehab_plans,
-    )
-    protection_profiles = build_tracked_protection_profiles(session, as_of=today)
-
-    # Find when each region was last trained
-    region_last_trained = _region_last_trained_by_exercise(
-        session, exercise_region_map, today
-    )
-
-    # Score each cluster using only AVAILABLE (non-blocked) regions
-    scored_clusters = _score_clusters(region_state, blocked_regions, region_last_trained)
-    scored_clusters.sort(key=lambda x: x["score"], reverse=True)
-
-    if not scored_clusters or scored_clusters[0]["readiness"] < REST_DAY_THRESHOLD:
-        return {
-            "as_of": today.isoformat(),
-            "suggestion": None,
-            "alternatives": [],
-            "message": "All tissue groups are fatigued. Rest day recommended.",
-        }
-
-    best = scored_clusters[0]
-
-    # Collect adjacent cluster regions for secondary candidates
-    adjacent_regions: set[str] = set()
-    for sc in scored_clusters[1:]:
-        if sc["readiness"] >= REST_DAY_THRESHOLD:
-            adjacent_regions |= sc["available_regions"]
-    adjacent_regions -= best["available_regions"]
-    adjacent_regions -= blocked_regions
-
-    # Select candidate exercises (up to MAX_CANDIDATES)
-    candidates = _select_exercises(
-        exercises_data,
-        best["available_regions"],
-        adjacent_regions,
-        blocked_regions,
-        exercise_region_map,
-        rehab_priorities=rehab_priorities,
-        protection_profiles=protection_profiles,
-        soft_blocked_regions=soft_blocked_regions,
-    )
-
-    # Prescribe rep schemes
-    prescribed = _prescribe_all(session, candidates, tissues_data, as_of=as_of)
-
-    # Alternatives
-    alternatives = [
-        _cluster_brief(sc) for sc in scored_clusters[1:]
-        if sc["readiness"] >= REST_DAY_THRESHOLD
-    ]
-
-    tomorrow_outlook = _tomorrow_outlook(scored_clusters, best)
-
-    suggestion = {
-        "day_label": best["label"],
-        "readiness_score": best["readiness"],
-        "days_since_last": best["avg_days_since"],
-        "target_regions": list(best["available_regions"]),
-        "exercises": prescribed,
-        "rationale": _build_rationale(best),
-        "tomorrow_outlook": tomorrow_outlook,
-    }
-
-    return {
-        "as_of": today.isoformat(),
-        "suggestion": suggestion,
-        "alternatives": alternatives,
-        "message": None,
-    }
+    return suggest_today_workflow(session, as_of=as_of)
 
 
 # ── Plan persistence ─────────────────────────────────────────────────
@@ -269,12 +175,17 @@ def save_plan(
             sort_order=i,
             notes=json.dumps({
                 "rep_scheme": ex.get("rep_scheme"),
+                "rep_scheme_version": (
+                    REP_SCHEME_VERSION if ex.get("rep_scheme") else None
+                ),
                 "target_weight": ex.get("target_weight"),
                 "performed_side": ex.get("performed_side"),
                 "side_explanation": ex.get("side_explanation"),
                 "selection_note": ex.get("selection_note"),
                 "blocked_variant": ex.get("blocked_variant"),
                 "protected_tissues": ex.get("protected_tissues"),
+                "workflow_role": ex.get("workflow_role"),
+                "group_label": ex.get("group_label"),
             }),
         )
         session.add(pde)
@@ -340,12 +251,17 @@ def add_exercises_to_plan(
             sort_order=next_order + i,
             notes=json.dumps({
                 "rep_scheme": ex.get("rep_scheme"),
+                "rep_scheme_version": (
+                    REP_SCHEME_VERSION if ex.get("rep_scheme") else None
+                ),
                 "target_weight": ex.get("target_weight"),
                 "performed_side": ex.get("performed_side"),
                 "side_explanation": ex.get("side_explanation"),
                 "selection_note": ex.get("selection_note"),
                 "blocked_variant": ex.get("blocked_variant"),
                 "protected_tissues": ex.get("protected_tissues"),
+                "workflow_role": ex.get("workflow_role"),
+                "group_label": ex.get("group_label"),
             }),
         )
         session.add(pde)
@@ -540,6 +456,11 @@ def _serialize_saved_plan(session: Session, planned: PlannedSession) -> dict:
 
     # Get logged sets for this workout session
     logged_sets: dict[int, list[dict]] = defaultdict(list)
+    scheme_history_by_exercise = get_exercise_scheme_history_map(
+        session,
+        [pde.exercise_id for pde in day_exercises],
+        limit=40,
+    )
     if planned.workout_session_id:
         sets = session.exec(
             select(WorkoutSet)
@@ -605,6 +526,12 @@ def _serialize_saved_plan(session: Session, planned: PlannedSession) -> dict:
             "selection_note": meta.get("selection_note"),
             "blocked_variant": meta.get("blocked_variant"),
             "protected_tissues": meta.get("protected_tissues") or [],
+            "workflow_role": meta.get("workflow_role"),
+            "group_label": meta.get("group_label"),
+            "scheme_history": scheme_history_by_exercise.get(
+                pde.exercise_id,
+                empty_scheme_history(),
+            ),
             "completed_sets": completed_sets,
             "sets_done": len(completed_sets),
             "done": len(completed_sets) >= pde.target_sets,
@@ -1139,6 +1066,21 @@ def _prescribe_all(
         [r for r in weight_rows if r.logged_at.date() <= today]
     )
     current_bw = latest_bodyweight(bw_by_date_map, today)
+    exercise_ids = [
+        int(exercise_id)
+        for exercise in exercises
+        for exercise_id in [exercise.get("exercise_id") or exercise.get("id")]
+        if exercise_id is not None
+    ]
+    history_by_exercise = get_exercise_history_map(
+        session,
+        exercise_ids,
+        limit=40,
+    )
+    scheme_history_by_exercise = {
+        exercise_id: build_scheme_history(session_rows)
+        for exercise_id, session_rows in history_by_exercise.items()
+    }
     session_primary_regions = {
         region
         for ex in exercises
@@ -1149,6 +1091,7 @@ def _prescribe_all(
         max(1, len(session_primary_regions)),
     )
     heavy_primary_region_counts: defaultdict[str, int] = defaultdict(int)
+    heavy_tissue_counts: defaultdict[int, int] = defaultdict(int)
     heavy_session_count = 0
 
     results = []
@@ -1228,21 +1171,37 @@ def _prescribe_all(
             side_explanation=side_explanation,
             prescription_mode=prescription_mode,
         )
+        rep_scheme, target_reps, intensity_range, rationale = _apply_exercise_heavy_gate(
+            rep_scheme=rep_scheme,
+            target_reps=target_reps,
+            intensity_range=intensity_range,
+            rationale=rationale,
+            exercise=exercise,
+        )
         primary_regions = set(ex.get("primary_regions", ex.get("target_hits", set())))
+        significant_tissue_ids = {
+            int(tm["tissue_id"])
+            for tm in ex.get("tissues", [])
+            if tm.get("tissue_id") is not None and significant_mapping_load(tm) >= 0.3
+        }
         rep_scheme, target_reps, intensity_range, rationale = _apply_session_heavy_budget(
             rep_scheme=rep_scheme,
             target_reps=target_reps,
             intensity_range=intensity_range,
             rationale=rationale,
             primary_regions=primary_regions,
+            significant_tissue_ids=significant_tissue_ids,
             heavy_session_count=heavy_session_count,
             session_heavy_limit=session_heavy_limit,
             heavy_primary_region_counts=heavy_primary_region_counts,
+            heavy_tissue_counts=heavy_tissue_counts,
         )
         if rep_scheme == "heavy":
             heavy_session_count += 1
             for region in primary_regions:
                 heavy_primary_region_counts[region] += 1
+            for tissue_id in significant_tissue_ids:
+                heavy_tissue_counts[tissue_id] += 1
 
         # Find the most restrictive loading factor from tender/rehabbing tissues.
         # Only tissues with a significant routing factor (>= 0.3) are considered
@@ -1298,8 +1257,8 @@ def _prescribe_all(
                     entered_target,
                 )
 
-        last_perf = _get_last_performance(session, exercise_id)
-        last_weight = float(last_perf.get("max_weight", 0.0)) if last_perf else 0.0
+        last_perf = (history_by_exercise.get(exercise_id) or [None])[0]
+        last_weight = _last_session_peak_weight(last_perf)
         last_session_peak_reps = _last_session_peak_reps(last_perf)
         overload_note = None
         progression_direction = load_progression_direction(exercise)
@@ -1377,10 +1336,10 @@ def _prescribe_all(
 
         if rep_scheme == "heavy":
             target_sets = 3
-        elif rep_scheme == "volume":
-            target_sets = 3 if recommendation == "caution" else 4
-        else:
+        elif rep_scheme == "medium":
             target_sets = 2 if weighted_risk >= 55 else 3
+        else:
+            target_sets = 3 if recommendation == "caution" else 4
         if prescription_mode == "direct_rehab" and rehab_stage in _EARLY_REHAB_STAGES:
             target_sets = min(target_sets, 3)
         elif prescription_mode == "direct_rehab" and rehab_stage in _MID_REHAB_STAGES:
@@ -1403,8 +1362,15 @@ def _prescribe_all(
             "selection_note": selection_note,
             "blocked_variant": ex.get("blocked_variant"),
             "protected_tissues": ex.get("protected_tissues", []),
+            "workflow_role": ex.get("workflow_role"),
+            "group_label": ex.get("group_label"),
             "current_e1rm": round(current_e1rm, 2) if current_e1rm else None,
             "selected": ex.get("selected", True),
+            "last_performance": last_perf,
+            "scheme_history": scheme_history_by_exercise.get(
+                exercise_id,
+                empty_scheme_history(),
+            ),
         })
 
     return results
@@ -1418,15 +1384,32 @@ def _select_rep_scheme(
     weighted_risk_7d: float = 0.0,
 ) -> tuple[str, str, tuple[float, float], str]:
     if recommendation == "avoid":
-        return ("light", "15-20", (0.50, 0.60), "Exercise is currently in the avoid band.")
+        return ("volume", "15-20", (0.50, 0.60), "Exercise is currently in the avoid band.")
     if recommendation == "caution" and weighted_risk_7d >= 50:
-        return ("light", "12-15", (0.50, 0.60), "Caution flag and elevated risk; use a light dose.")
+        return ("volume", "12-15", (0.50, 0.60), "Caution flag and elevated risk; use a controlled volume dose.")
     if suitability >= 0.8 and days_since_heavy >= 5 and recommendation == "good":
         return ("heavy", "3-5", (0.80, 0.85), "Well-recovered; strength focus.")
-    elif suitability >= 0.6:
-        return ("volume", "8-12", (0.65, 0.75), "Moderate recovery; hypertrophy.")
-    else:
-        return ("light", "15-20", (0.50, 0.60), "Low readiness; light work.")
+    if suitability >= 0.6:
+        return ("medium", "8-12", (0.65, 0.75), "Moderate recovery; moderate loading.")
+    return ("volume", "12-20", (0.50, 0.65), "Low readiness; use a higher-rep volume dose.")
+
+
+def _apply_exercise_heavy_gate(
+    *,
+    rep_scheme: str,
+    target_reps: str,
+    intensity_range: tuple[float, float],
+    rationale: str,
+    exercise: Exercise,
+) -> tuple[str, str, tuple[float, float], str]:
+    if rep_scheme != "heavy" or exercise.allow_heavy_loading:
+        return rep_scheme, target_reps, intensity_range, rationale
+    return (
+        "medium",
+        "8-12",
+        (0.65, 0.75),
+        f"{rationale} Heavy loading is disabled for this exercise, so it shifts to a medium prescription.",
+    )
 
 
 def _apply_session_heavy_budget(
@@ -1436,9 +1419,11 @@ def _apply_session_heavy_budget(
     intensity_range: tuple[float, float],
     rationale: str,
     primary_regions: set[str],
+    significant_tissue_ids: set[int],
     heavy_session_count: int,
     session_heavy_limit: int,
     heavy_primary_region_counts: dict[str, int],
+    heavy_tissue_counts: dict[int, int],
 ) -> tuple[str, str, tuple[float, float], str]:
     if rep_scheme != "heavy":
         return rep_scheme, target_reps, intensity_range, rationale
@@ -1448,18 +1433,27 @@ def _apply_session_heavy_budget(
         region for region in primary_regions
         if heavy_primary_region_counts.get(region, 0) >= _MAX_HEAVY_EXERCISES_PER_PRIMARY_REGION
     )
-    if not over_session_limit and not saturated_regions:
+    saturated_tissues = [
+        tissue_id
+        for tissue_id in significant_tissue_ids
+        if heavy_tissue_counts.get(tissue_id, 0) >= 1
+    ]
+    if not over_session_limit and not saturated_regions and not saturated_tissues:
         return rep_scheme, target_reps, intensity_range, rationale
 
     if saturated_regions:
         heavy_note = (
             "Heavy slot already used for "
             + ", ".join(saturated_regions)
-            + "; shifting this exercise to a volume prescription."
+            + "; shifting this exercise to a medium prescription."
+        )
+    elif saturated_tissues:
+        heavy_note = (
+            "Heavy slot already used on shared tissues in this session; shifting this exercise to a medium prescription."
         )
     else:
-        heavy_note = "Session heavy budget is already full; shifting this exercise to a volume prescription."
-    return ("volume", "8-12", (0.65, 0.75), f"{rationale} {heavy_note}")
+        heavy_note = "Session heavy budget is already full; shifting this exercise to a medium prescription."
+    return ("medium", "8-12", (0.65, 0.75), f"{rationale} {heavy_note}")
 
 
 def _days_since_heavy_work(session: Session, exercise_id: int, today: date) -> int:
@@ -1487,6 +1481,18 @@ def _last_session_peak_reps(last_perf: dict | None) -> int:
             for set_data in last_perf.get("sets", [])
         ),
         default=0,
+    )
+
+
+def _last_session_peak_weight(last_perf: dict | None) -> float:
+    if not last_perf:
+        return 0.0
+    return max(
+        (
+            float(set_data.get("weight") or 0.0)
+            for set_data in last_perf.get("sets", [])
+        ),
+        default=0.0,
     )
 
 
@@ -1544,26 +1550,7 @@ def _build_selection_note(
 
 
 def _get_last_performance(session: Session, exercise_id: int) -> dict | None:
-    stmt = (
-        select(WorkoutSet, WorkoutSession.date)
-        .join(WorkoutSession, WorkoutSet.session_id == WorkoutSession.id)
-        .where(WorkoutSet.exercise_id == exercise_id)
-        .order_by(col(WorkoutSession.date).desc(), WorkoutSet.set_order)
-    )
-    rows = session.exec(stmt).all()
-    if not rows:
-        return None
-    last_date = rows[0][1]
-    last_sets = [s for s, d in rows if d == last_date]
-    return {
-        "date": str(last_date),
-        "sets": [
-            {"reps": s.reps, "weight": s.weight, "rpe": s.rpe, "rep_completion": s.rep_completion}
-            for s in last_sets
-        ],
-        "all_full": all(s.rep_completion == "full" for s in last_sets),
-        "max_weight": max((s.weight or 0) for s in last_sets),
-    }
+    return (get_exercise_history_map(session, [exercise_id], limit=1).get(exercise_id) or [None])[0]
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -1893,17 +1880,17 @@ def _apply_rehab_stage_prescription(
         note = "Protected rehab stage; keep the dose light and symptom-gated."
         if side_explanation:
             note = f"{note} {side_explanation.capitalize()}."
-        return ("light", "12-20", (0.45, 0.6), note)
+        return ("volume", "12-20", (0.45, 0.6), note)
     if prescription_mode == "direct_rehab" and rehab_stage in _MID_REHAB_STAGES:
         note = "Rehab stage favors controlled rep progression before load."
         if side_explanation:
             note = f"{note} {side_explanation.capitalize()}."
-        return ("volume", "8-15", (0.55, 0.7), note)
+        return ("medium", "10-15", (0.55, 0.7), note)
     if prescription_mode == "direct_rehab" and rehab_stage in _LATE_REHAB_STAGES and rep_scheme == "heavy":
         note = rationale
         if side_explanation:
             note = f"{note} {side_explanation.capitalize()}."
-        return ("volume", "6-10", (0.65, 0.8), note)
+        return ("medium", "6-10", (0.65, 0.8), note)
     if prescription_mode == "cross_education":
         note = "Cross-education support should stay high-intent without counting as local rehab loading."
         if side_explanation:

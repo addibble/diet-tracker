@@ -22,6 +22,7 @@ import {
   type WkSetTissueFeedback,
   type WorkoutSetUpdateInput,
 } from '../api'
+import { formatSchemeHistorySummary } from '../lib/workoutSchemes'
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -55,6 +56,7 @@ interface EditableSet {
   rpe: number | null
   rep_completion: string | null
   notes: string | null
+  scheme_history?: SavedPlanExercise['scheme_history']
   tissue_feedback: WkSetTissueFeedback[]
   load_input_mode?: string
   set_metric_mode?: string
@@ -70,6 +72,7 @@ type ExerciseGroup = {
   set_metric_mode: string
   laterality: 'bilateral' | 'unilateral' | 'either'
   sets: EditableSet[]
+  scheme_history?: SavedPlanExercise['scheme_history']
   // Plan targets (if available)
   target_sets?: number
   target_reps?: string
@@ -310,7 +313,7 @@ function PlanEditor({
           exercise_id: ex.id,
           target_sets: 3,
           target_reps: '8-12',
-          rep_scheme: 'volume',
+          rep_scheme: 'medium',
         }], asOf)
         onChanged?.()
       } catch {
@@ -418,6 +421,7 @@ function PlanExerciseRow({
   onUpdate: (field: string, value: number | string | null) => void
   onRemove: () => void
 }) {
+  const schemeHistorySummary = formatSchemeHistorySummary(ex.scheme_history)
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-2.5">
       <div className="flex items-center gap-2 mb-1.5">
@@ -497,6 +501,9 @@ function PlanExerciseRow({
       {ex.selection_note && (
         <p className="mt-1 text-[11px] text-blue-600">{ex.selection_note}</p>
       )}
+      {schemeHistorySummary && (
+        <p className="mt-1 text-[11px] text-gray-500">Recent: {schemeHistorySummary}</p>
+      )}
     </div>
   )
 }
@@ -571,6 +578,7 @@ function LogEditor({
         set_metric_mode: ex?.set_metric_mode ?? 'reps',
         laterality: ex?.laterality ?? 'bilateral',
         sets,
+        scheme_history: sets[0]?.scheme_history,
       }
     })
   }, [session, exerciseLookup])
@@ -778,6 +786,7 @@ function LogExerciseGroup({
   const targetRef = group.target_reps
     ? `${group.target_sets ?? '?'}×${group.target_reps}${group.target_weight != null ? ` @ ${group.target_weight} lb` : ''}`
     : null
+  const schemeHistorySummary = formatSchemeHistorySummary(group.scheme_history)
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white">
@@ -809,6 +818,11 @@ function LogExerciseGroup({
           >🗑</button>
         </div>
       </div>
+      {schemeHistorySummary && (
+        <div className="px-2.5 py-1 text-[10px] text-gray-500 border-b border-gray-100">
+          Recent: {schemeHistorySummary}
+        </div>
+      )}
 
       {/* Column headers */}
       <div className="px-2.5 pt-1 pb-0.5 flex items-center gap-1 text-[10px] text-gray-400 uppercase tracking-wider">

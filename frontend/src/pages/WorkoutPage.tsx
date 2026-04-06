@@ -83,6 +83,30 @@ function groupSetsByExercise(sets: WkSession['sets']) {
 
 type SortKey = 'name' | 'status' | 'last_worked' | 'recovery' | 'volume_7d'
 
+function SortButton({
+  sortKey,
+  sortAsc,
+  buttonKey,
+  label,
+  onToggle,
+}: {
+  sortKey: SortKey
+  sortAsc: boolean
+  buttonKey: SortKey
+  label: string
+  onToggle: (key: SortKey) => void
+}) {
+  return (
+    <button
+      onClick={() => onToggle(buttonKey)}
+      className={`flex items-center gap-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] transition-colors select-none ${sortKey === buttonKey ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
+    >
+      {label}
+      {sortKey === buttonKey && <span className="opacity-60">{sortAsc ? '↑' : '↓'}</span>}
+    </button>
+  )
+}
+
 function recoveryBarClass(pct: number, status: string | undefined): string {
   if (status === 'injured' || status === 'tender') return 'bg-purple-400'
   if (pct >= 100) return 'bg-emerald-400'
@@ -125,16 +149,6 @@ export function TissueStatusTable({ readiness }: { readiness: WkTissueReadiness[
     })
   }, [readiness, sortKey, sortAsc])
 
-  const SortBtn = ({ k, label }: { k: SortKey; label: string }) => (
-    <button
-      onClick={() => toggleSort(k)}
-      className={`flex items-center gap-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] transition-colors select-none ${sortKey === k ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
-    >
-      {label}
-      {sortKey === k && <span className="opacity-60">{sortAsc ? '↑' : '↓'}</span>}
-    </button>
-  )
-
   if (readiness.length === 0) {
     return (
       <section className="bg-white border border-gray-200 rounded-2xl p-5">
@@ -151,11 +165,11 @@ export function TissueStatusTable({ readiness }: { readiness: WkTissueReadiness[
         <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">Tissue Status</p>
         {/* Column headers / sort controls */}
         <div className="mt-2 grid items-center" style={{ gridTemplateColumns: '1fr 70px 64px 80px 72px' }}>
-          <SortBtn k="name" label="Tissue" />
-          <SortBtn k="status" label="Status" />
-          <SortBtn k="last_worked" label="Last" />
-          <SortBtn k="recovery" label="Recovery" />
-          <div className="text-right"><SortBtn k="volume_7d" label="7d Vol" /></div>
+          <SortButton sortKey={sortKey} sortAsc={sortAsc} buttonKey="name" label="Tissue" onToggle={toggleSort} />
+          <SortButton sortKey={sortKey} sortAsc={sortAsc} buttonKey="status" label="Status" onToggle={toggleSort} />
+          <SortButton sortKey={sortKey} sortAsc={sortAsc} buttonKey="last_worked" label="Last" onToggle={toggleSort} />
+          <SortButton sortKey={sortKey} sortAsc={sortAsc} buttonKey="recovery" label="Recovery" onToggle={toggleSort} />
+          <div className="text-right"><SortButton sortKey={sortKey} sortAsc={sortAsc} buttonKey="volume_7d" label="7d Vol" onToggle={toggleSort} /></div>
         </div>
       </div>
 
@@ -748,15 +762,19 @@ function ExerciseProgressCard({
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    if (selectedId === null) {
-      setHistory(null)
-      return
-    }
-    setLoading(true)
+    if (selectedId === null) return
+    let cancelled = false
     getExerciseHistory(selectedId, 20)
-      .then(setHistory)
-      .catch(() => setHistory(null))
-      .finally(() => setLoading(false))
+      .then((data) => {
+        if (!cancelled) setHistory(data)
+      })
+      .catch(() => {
+        if (!cancelled) setHistory(null)
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => { cancelled = true }
   }, [selectedId])
 
   const chartData = useMemo(() => {
@@ -775,9 +793,12 @@ function ExerciseProgressCard({
       <select
         className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 bg-white"
         value={selectedId ?? ''}
-        onChange={(e) =>
-          setSelectedId(e.target.value ? Number(e.target.value) : null)
-        }
+        onChange={(e) => {
+          const nextId = e.target.value ? Number(e.target.value) : null
+          setSelectedId(nextId)
+          setHistory(null)
+          setLoading(Boolean(nextId))
+        }}
       >
         <option value="">Select an exercise...</option>
         {exercises.map((ex) => (

@@ -2323,19 +2323,19 @@ def handle_get_workout_plan(args: dict, session: "Session") -> dict:
 
     # No saved plan — generate suggestion
     result = suggest_today(session, as_of=as_of)
-    if result.get("suggestion") is None:
+    if result.get("today_plan") is None:
         return {"plan": result.get("message", "No plan available."), "saved": False}
 
-    s = result["suggestion"]
+    today_plan = result["today_plan"]
     lines = [
-        f"Suggested Plan: {s['day_label']}",
-        f"Target regions: {', '.join(s['target_regions'])}",
-        f"Readiness: {round(s['readiness_score'] * 100)}%",
-        f"Rationale: {s['rationale']}",
+        f"Suggested Plan: {today_plan['day_label']}",
+        f"Target regions: {', '.join(today_plan['target_regions'])}",
+        f"Readiness: {round(today_plan['readiness_score'] * 100)}%",
+        f"Rationale: {today_plan['rationale']}",
         "",
         "Exercises:",
     ]
-    for ex in s.get("exercises", []):
+    for ex in today_plan.get("exercises", []):
         weight_str = f" @ {ex['target_weight']} lb" if ex.get("target_weight") else ""
         note = f" ({ex['overload_note']})" if ex.get("overload_note") else ""
         lines.append(
@@ -2343,11 +2343,33 @@ def handle_get_workout_plan(args: dict, session: "Session") -> dict:
             f"{weight_str} [{ex['rep_scheme']}]{note}"
         )
 
-    lines.append("")
-    lines.append(s.get("tomorrow_outlook", ""))
-    if result.get("alternatives"):
-        alt_names = [a["day_label"] for a in result["alternatives"]]
-        lines.append(f"Alternatives: {', '.join(alt_names)}")
+    if result.get("filtered_tissues"):
+        filtered_labels = [
+            f"{item['target_label']} ({item['reason']})"
+            for item in result["filtered_tissues"]
+        ]
+        lines.extend([
+            "",
+            "Filtered today:",
+            "  - " + ", ".join(filtered_labels),
+        ])
+
+    tomorrow_plan = result.get("tomorrow_plan")
+    if tomorrow_plan:
+        lines.extend([
+            "",
+            f"Tomorrow Preview: {tomorrow_plan['day_label']}",
+            f"  Regions: {', '.join(tomorrow_plan['target_regions'])}",
+            f"  Readiness: {round(tomorrow_plan['readiness_score'] * 100)}%",
+        ])
+    if result.get("groups"):
+        alt_names = [
+            group["day_label"]
+            for group in result["groups"]
+            if group.get("planned_for") is None
+        ][:4]
+        if alt_names:
+            lines.append(f"Other groups: {', '.join(alt_names)}")
     lines.append("")
     lines.append("This plan is not saved yet. The user can save it from the Training page.")
 
@@ -2428,7 +2450,7 @@ MODIFY_WORKOUT_PLAN_DEF = {
                     "description": (
                         "For 'add': list of exercise objects with exercise_id (required), "
                         "and optionally target_sets, target_reps (e.g. '8-12'), "
-                        "rep_scheme ('heavy'|'volume'|'light'), target_weight. "
+                        "rep_scheme ('heavy'|'medium'|'volume'), target_weight. "
                         "For 'remove': list of objects with exercise_id."
                     ),
                     "items": {
@@ -2438,7 +2460,7 @@ MODIFY_WORKOUT_PLAN_DEF = {
                             "exercise_id": {"type": "integer"},
                             "target_sets": {"type": "integer", "default": 3},
                             "target_reps": {"type": "string", "default": "8-12"},
-                            "rep_scheme": {"type": "string", "enum": ["heavy", "volume", "light"]},
+                            "rep_scheme": {"type": "string", "enum": ["heavy", "medium", "volume"]},
                             "target_weight": {"type": "number"},
                         },
                     },

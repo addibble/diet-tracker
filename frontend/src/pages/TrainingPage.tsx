@@ -22,14 +22,21 @@ import {
   type TrainingModelSummary,
   type TrainingModelTissueSummary,
   type TrainingModelExerciseInsight,
+  type RecoveryCheckIn,
   type RecoveryCheckInTarget,
   type RecoveryCheckInTargetsResponse,
   type WkExercise,
   type WkExerciseHistory,
+  type PlannerDayPlan,
   type PlannerTodayResponse,
   type PlannerExercisePrescription,
   type SavedPlan,
 } from '../api'
+import {
+  formatSchemeHistorySummary,
+  repSchemeColor,
+  repSchemeLabel,
+} from '../lib/workoutSchemes'
 
 // ── Helpers ──
 
@@ -108,8 +115,18 @@ function CheckInCard({
   )
 
   const selectedTarget = selectedKey ? allTargets.get(selectedKey) ?? null : null
-  const selectedCheckIn = selectedTarget ? (checkInByTarget[selectedTarget.target_key] ?? selectedTarget.existing_check_in ?? null) : null
   const savedKeys = useMemo(() => new Set(checkInData.today_check_ins.map(checkIn => checkIn.target_key)), [checkInData.today_check_ins])
+  const workflowTargets = useMemo(
+    () => checkInData.targets.filter(target =>
+      target.target_kind === 'tracked_tissue'
+      || target.reasons?.some(reason => reason.code === 'active_condition' || reason.code === 'active_rehab'),
+    ),
+    [checkInData.targets],
+  )
+  const workflowDoneCount = useMemo(
+    () => workflowTargets.filter(target => savedKeys.has(target.target_key)).length,
+    [savedKeys, workflowTargets],
+  )
 
   useEffect(() => {
     if (!selectedTarget) {
@@ -164,7 +181,7 @@ function CheckInCard({
     }
   }
 
-  const renderCheckInEditor = (target: RecoveryCheckInTarget, currentCheckIn: typeof selectedCheckIn) => (
+  const renderCheckInEditor = (target: RecoveryCheckInTarget, currentCheckIn: RecoveryCheckIn | null) => (
     <div className="mt-3 rounded-xl border border-gray-200 bg-white/80 p-4 space-y-3 shadow-sm">
       <div className="flex items-center justify-between">
         <div>
@@ -223,17 +240,17 @@ function CheckInCard({
     <div className="bg-white border border-gray-200 rounded-2xl p-5">
       <div className="flex items-center justify-between gap-3 mb-3">
         <div>
-          <h3 className="text-sm font-semibold text-gray-900">Recovery Check-in</h3>
-          <p className="text-xs text-gray-500 mt-0.5">Check in on today&apos;s relevant areas only.</p>
+          <h3 className="text-sm font-semibold text-gray-900">Tissue Check-in</h3>
+          <p className="text-xs text-gray-500 mt-0.5">Start with the injured or rehabbing tissues that should shape today&apos;s plan.</p>
         </div>
         <span className="text-xs font-medium text-gray-500">
-          {checkInData.today_check_ins.length}/{checkInData.targets.length} done
+          {workflowTargets.length > 0 ? `${workflowDoneCount}/${workflowTargets.length} done` : 'none queued'}
         </span>
       </div>
 
-      {checkInData.targets.length > 0 ? (
+      {workflowTargets.length > 0 ? (
         <div className="space-y-2 mb-4">
-          {checkInData.targets.map(target => {
+          {workflowTargets.map(target => {
             const done = savedKeys.has(target.target_key)
             const active = selectedTarget?.target_key === target.target_key
             const currentCheckIn = checkInByTarget[target.target_key] ?? target.existing_check_in ?? null
@@ -302,7 +319,7 @@ function CheckInCard({
         </div>
       ) : (
         <div className="rounded-xl border border-gray-100 bg-gray-50/70 px-3 py-2 mb-4 text-xs text-gray-500">
-          Nothing specific is queued today. Use <span className="font-medium text-gray-700">Other</span> if something feels sore, stiff, or painful.
+          No injured or rehabbing tissues need a dedicated check-in right now. Use <span className="font-medium text-gray-700">Other</span> if something still feels off.
         </div>
       )}
 
@@ -525,9 +542,21 @@ function ExerciseProgressCard({ exercises }: { exercises: WkExercise[] }) {
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    if (!selectedId) { setHistory(null); return }
-    setLoading(true)
-    getExerciseHistory(selectedId, 200).then(setHistory).catch(() => setHistory(null)).finally(() => setLoading(false))
+    if (!selectedId) return
+    let cancelled = false
+    getExerciseHistory(selectedId, 200)
+      .then(data => {
+        if (cancelled) return
+        setHistory(data)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setHistory(null)
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => { cancelled = true }
   }, [selectedId])
 
   // Aggregate history into months
@@ -583,7 +612,12 @@ function ExerciseProgressCard({ exercises }: { exercises: WkExercise[] }) {
       <select
         className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 bg-white mb-3"
         value={selectedId ?? ''}
-        onChange={e => setSelectedId(e.target.value ? Number(e.target.value) : null)}
+        onChange={e => {
+          const nextId = e.target.value ? Number(e.target.value) : null
+          setSelectedId(nextId)
+          setHistory(null)
+          setLoading(Boolean(nextId))
+        }}
       >
         <option value="">Select an exercise...</option>
         {exercises.map(ex => <option key={ex.id} value={ex.id}>{ex.name}</option>)}
@@ -670,10 +704,15 @@ function ExerciseProgressCard({ exercises }: { exercises: WkExercise[] }) {
 
 // ── Planner Card ──
 
-const schemeColor = (scheme: string) =>
-  scheme === 'heavy' ? 'bg-red-100 text-red-700' :
-  scheme === 'volume' ? 'bg-blue-100 text-blue-700' :
-  'bg-green-100 text-green-700'
+const workflowRoleColor = (role?: string | null) =>
+  role === 'rehab' ? 'bg-purple-100 text-purple-700' :
+  role === 'accessory' ? 'bg-amber-100 text-amber-700' :
+  'bg-gray-100 text-gray-700'
+
+const workflowRoleLabel = (role?: string | null) =>
+  role === 'rehab' ? 'rehab' :
+  role === 'accessory' ? 'accessory' :
+  'group'
 
 function ActivePlanCard({
   plan,
@@ -815,25 +854,167 @@ function ActivePlanCard({
   )
 }
 
+function PlanExerciseList({
+  exercises,
+  checkedIds,
+  onToggle,
+  readOnly = false,
+}: {
+  exercises: PlannerExercisePrescription[];
+  checkedIds?: Set<number>;
+  onToggle?: (exerciseId: number) => void;
+  readOnly?: boolean;
+}) {
+  if (exercises.length === 0) {
+    return (
+      <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 p-4 text-center">
+        <p className="text-xs text-gray-500">No matching exercises are queued for this group.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-1.5 max-h-[28rem] overflow-y-auto">
+      {exercises.map((ex) => {
+        const checked = readOnly ? ex.selected !== false : checkedIds?.has(ex.exercise_id) ?? false
+        const schemeHistorySummary = formatSchemeHistorySummary(ex.scheme_history)
+        const content = (
+          <>
+            {!readOnly && (
+              <div className={`mt-0.5 w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors ${
+                checked ? 'bg-gray-900 border-gray-900' : 'bg-white border-gray-300'
+              }`}>
+                {checked && (
+                  <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                )}
+              </div>
+            )}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-sm font-medium text-gray-900">{ex.exercise_name}</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${repSchemeColor(ex.rep_scheme)}`}>
+                  {repSchemeLabel(ex.rep_scheme)}
+                </span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${workflowRoleColor(ex.workflow_role)}`}>
+                  {workflowRoleLabel(ex.workflow_role)}
+                </span>
+                {ex.performed_side && ex.performed_side !== 'bilateral' && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-purple-100 text-purple-700">
+                    {ex.performed_side}
+                  </span>
+                )}
+                {readOnly && !checked && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-white border border-gray-200 text-gray-500">
+                    alternate
+                  </span>
+                )}
+              </div>
+              <div className="text-[11px] text-gray-600 mt-0.5 font-medium">
+                {ex.target_sets} x {ex.target_reps}
+                {ex.target_weight != null && <> @ <span className="text-gray-900">{ex.target_weight} lb</span></>}
+              </div>
+              {ex.group_label && ex.workflow_role !== 'rehab' && (
+                <div className="text-[10px] text-gray-500 mt-0.5">{ex.group_label}</div>
+              )}
+              {ex.side_explanation && (
+                <div className="text-[10px] text-purple-600 mt-0.5">{ex.side_explanation}</div>
+              )}
+              {ex.selection_note && (
+                <div className="text-[10px] text-blue-600 mt-0.5">{ex.selection_note}</div>
+              )}
+              {ex.weight_adjustment_note && (
+                <div className="text-[10px] text-orange-600 mt-0.5">{ex.weight_adjustment_note}</div>
+              )}
+              {ex.overload_note && (
+                <div className="text-[10px] text-amber-600 mt-0.5">{ex.overload_note}</div>
+              )}
+              {schemeHistorySummary && (
+                <div className="text-[10px] text-gray-500 mt-0.5">
+                  Recent: {schemeHistorySummary}
+                </div>
+              )}
+            </div>
+          </>
+        )
+
+        const className = `w-full flex items-start gap-2.5 p-2.5 rounded-lg border text-left transition-all ${
+          checked
+            ? 'border-gray-300 bg-white'
+            : 'border-gray-100 bg-gray-50/50 opacity-60'
+        }`
+
+        return readOnly ? (
+          <div key={ex.exercise_id} className={className}>
+            {content}
+          </div>
+        ) : (
+          <button
+            key={ex.exercise_id}
+            onClick={() => onToggle?.(ex.exercise_id)}
+            className={className}
+          >
+            {content}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function PlannerDayPreviewCard({
+  title,
+  plan,
+}: {
+  title: string;
+  plan: PlannerDayPlan;
+}) {
+  const selectedCount = plan.exercises.filter(exercise => exercise.selected !== false).length
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-2xl p-5">
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <div>
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-semibold text-gray-900">{title}</h3>
+            <span className="text-xs px-2 py-0.5 rounded-lg bg-gray-900 text-white font-medium">{plan.day_label}</span>
+          </div>
+          <p className="text-[11px] text-gray-500 mt-1">{plan.rationale}</p>
+        </div>
+        <div className="text-right">
+          <p className="text-xs text-gray-500">{Math.round(plan.readiness_score * 100)}% ready</p>
+          <p className="text-[11px] text-gray-400 mt-0.5">{selectedCount} selected</p>
+        </div>
+      </div>
+
+      {plan.target_regions.length > 0 && (
+        <div className="flex flex-wrap gap-1 mb-3">
+          {plan.target_regions.map(region => (
+            <span key={region} className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 font-medium">
+              {regionLabel(region)}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <PlanExerciseList exercises={plan.exercises} readOnly />
+    </div>
+  )
+}
+
 function PlannerCard({ planner, onRefresh, onSave }: {
   planner: PlannerTodayResponse;
   onRefresh?: () => void;
   onSave?: (dayLabel: string, regions: string[], exercises: PlannerExercisePrescription[]) => void;
 }) {
-  const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set())
-  const [initialized, setInitialized] = useState(false)
-
-  // Initialize checked state from backend `selected` flags
-  useEffect(() => {
-    if (planner.suggestion?.exercises) {
-      setCheckedIds(new Set(
-        planner.suggestion.exercises
-          .filter(e => e.selected !== false)
-          .map(e => e.exercise_id)
-      ))
-      setInitialized(true)
-    }
-  }, [planner])
+  const todayPlan = planner.today_plan
+  const tomorrowPlan = planner.tomorrow_plan
+  const [checkedIds, setCheckedIds] = useState<Set<number>>(() => new Set(
+    (todayPlan?.exercises || [])
+      .filter(e => e.selected !== false)
+      .map(e => e.exercise_id)
+  ))
 
   const toggleExercise = (id: number) => {
     setCheckedIds(prev => {
@@ -844,11 +1025,11 @@ function PlannerCard({ planner, onRefresh, onSave }: {
     })
   }
 
-  if (!planner.suggestion) {
+  if (!todayPlan && !tomorrowPlan) {
     return (
       <div className="bg-white border border-gray-200 rounded-2xl p-5">
         <div className="flex items-center justify-between mb-2">
-          <h3 className="text-sm font-semibold text-gray-900">Today's Plan</h3>
+          <h3 className="text-sm font-semibold text-gray-900">Planner Workflow</h3>
           {onRefresh && (
             <button onClick={onRefresh} className="text-[10px] text-gray-400 hover:text-gray-600">refresh</button>
           )}
@@ -858,123 +1039,101 @@ function PlannerCard({ planner, onRefresh, onSave }: {
     )
   }
 
-  const s = planner.suggestion
-  const exercises = s.exercises || []
-  const selectedCount = exercises.filter(e => checkedIds.has(e.exercise_id)).length
+  const todayExercises = todayPlan?.exercises || []
+  const selectedCount = todayExercises.filter(exercise => checkedIds.has(exercise.exercise_id)).length
+  const filteredTissues = planner.filtered_tissues || []
+  const otherGroups = planner.groups.filter(group => group.planned_for === null).slice(0, 4)
 
   return (
-    <div className="bg-white border border-gray-200 rounded-2xl p-5">
-      <div className="flex items-center justify-between mb-1">
-        <div className="flex items-center gap-2">
-          <h3 className="text-sm font-semibold text-gray-900">Today's Plan</h3>
-          <span className="text-xs px-2 py-0.5 rounded-lg bg-gray-900 text-white font-medium">{s.day_label}</span>
+    <div className="bg-white border border-gray-200 rounded-2xl p-5 space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-900">Planner Workflow</h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Tissue check-in first, then today&apos;s group with tomorrow&apos;s preview.
+          </p>
         </div>
         <div className="flex items-center gap-2">
+          <span className="text-xs px-2 py-0.5 rounded-lg bg-gray-100 text-gray-700 font-medium">
+            {planner.groups.length} groups
+          </span>
           {onRefresh && (
             <button onClick={onRefresh} className="text-[10px] text-gray-400 hover:text-gray-600">refresh</button>
           )}
-          <span className="text-xs text-gray-500">{Math.round(s.readiness_score * 100)}% ready</span>
         </div>
       </div>
 
-      {s.target_regions.length > 0 && (
-        <div className="flex flex-wrap gap-1 mb-3 mt-2">
-          {s.target_regions.map(r => (
-            <span key={r} className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 font-medium">
-              {regionLabel(r)}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {initialized && exercises.length > 0 && (
-        <div className="space-y-1.5 mb-3 max-h-[28rem] overflow-y-auto">
-          {exercises.map((ex) => {
-            const checked = checkedIds.has(ex.exercise_id)
-            return (
-              <button
-                key={ex.exercise_id}
-                onClick={() => toggleExercise(ex.exercise_id)}
-                className={`w-full flex items-start gap-2.5 p-2.5 rounded-lg border text-left transition-all ${
-                  checked
-                    ? 'border-gray-300 bg-white'
-                    : 'border-gray-100 bg-gray-50/50 opacity-60'
-                }`}
-              >
-                <div className={`mt-0.5 w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors ${
-                  checked ? 'bg-gray-900 border-gray-900' : 'bg-white border-gray-300'
-                }`}>
-                  {checked && (
-                    <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-sm font-medium text-gray-900">{ex.exercise_name}</span>
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${schemeColor(ex.rep_scheme)}`}>
-                      {ex.rep_scheme}
-                    </span>
-                    {ex.performed_side && ex.performed_side !== 'bilateral' && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-purple-100 text-purple-700">
-                        {ex.performed_side}
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[11px] text-gray-600 mt-0.5 font-medium">
-                    {ex.target_sets} x {ex.target_reps}
-                    {ex.target_weight != null && <> @ <span className="text-gray-900">{ex.target_weight} lb</span></>}
-                  </div>
-                  {ex.side_explanation && (
-                    <div className="text-[10px] text-purple-600 mt-0.5">{ex.side_explanation}</div>
-                  )}
-                  {ex.selection_note && (
-                    <div className="text-[10px] text-blue-600 mt-0.5">{ex.selection_note}</div>
-                  )}
-                  {ex.weight_adjustment_note && (
-                    <div className="text-[10px] text-orange-600 mt-0.5">{ex.weight_adjustment_note}</div>
-                  )}
-                  {ex.overload_note && (
-                    <div className="text-[10px] text-amber-600 mt-0.5">{ex.overload_note}</div>
-                  )}
-                </div>
-              </button>
-            )
-          })}
-        </div>
-      )}
-
-      {exercises.length === 0 && (
-        <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 p-4 text-center mb-3">
-          <p className="text-xs text-gray-500">No matching exercises found for these regions.</p>
-        </div>
-      )}
-
-      {exercises.length > 0 && onSave && (
-        <button
-          onClick={() => onSave(
-            s.day_label,
-            s.target_regions,
-            exercises.filter(e => checkedIds.has(e.exercise_id)),
-          )}
-          disabled={selectedCount === 0}
-          className="w-full py-2 text-xs font-medium rounded-xl bg-gray-900 hover:bg-gray-800 text-white transition-colors mb-3 disabled:opacity-40"
-        >
-          Save Plan ({selectedCount} exercises) & Start in Chat
-        </button>
-      )}
-
-      <div className="space-y-1 border-t border-gray-100 pt-2">
-        {s.tomorrow_outlook && (
-          <p className="text-[11px] text-gray-500">{s.tomorrow_outlook}</p>
-        )}
-        {planner.alternatives.length > 0 && (
-          <p className="text-[11px] text-gray-400">
-            Alt: {planner.alternatives.map(a => `${a.day_label} (${Math.round(a.readiness_score * 100)}%)`).join(' · ')}
+      {filteredTissues.length > 0 && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3">
+          <p className="text-xs font-medium text-amber-800">Filtered out of today&apos;s general loading</p>
+          <p className="text-[11px] text-amber-700 mt-1">
+            {filteredTissues.map(tissue => `${tissue.target_label} (${tissue.reason})`).join(' · ')}
           </p>
-        )}
-      </div>
+        </div>
+      )}
+
+      {todayPlan && (
+        <div className="rounded-xl border border-gray-200 p-4">
+          <div className="flex items-start justify-between gap-3 mb-2">
+            <div>
+              <div className="flex items-center gap-2">
+                <h4 className="text-sm font-semibold text-gray-900">Step 2: Today</h4>
+                <span className="text-xs px-2 py-0.5 rounded-lg bg-gray-900 text-white font-medium">{todayPlan.day_label}</span>
+              </div>
+              <p className="text-[11px] text-gray-500 mt-1">{todayPlan.rationale}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-xs text-gray-500">{Math.round(todayPlan.readiness_score * 100)}% ready</p>
+              <p className="text-[11px] text-gray-400 mt-0.5">{todayPlan.days_since_last} weighted days</p>
+            </div>
+          </div>
+
+          {todayPlan.target_regions.length > 0 && (
+            <div className="flex flex-wrap gap-1 mb-3">
+              {todayPlan.target_regions.map(region => (
+                <span key={region} className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 font-medium">
+                  {regionLabel(region)}
+                </span>
+              ))}
+            </div>
+          )}
+
+          <PlanExerciseList
+            exercises={todayExercises}
+            checkedIds={checkedIds}
+            onToggle={toggleExercise}
+          />
+
+          {todayExercises.length > 0 && onSave && (
+            <button
+              onClick={() => onSave(
+                todayPlan.day_label,
+                todayPlan.target_regions,
+                todayExercises.filter(exercise => checkedIds.has(exercise.exercise_id)),
+              )}
+              disabled={selectedCount === 0}
+              className="w-full mt-3 py-2 text-xs font-medium rounded-xl bg-gray-900 hover:bg-gray-800 text-white transition-colors disabled:opacity-40"
+            >
+              Save Today&apos;s Plan ({selectedCount} movements)
+            </button>
+          )}
+        </div>
+      )}
+
+      {tomorrowPlan && (
+        <PlannerDayPreviewCard
+          title={todayPlan ? 'Step 3: Tomorrow Preview' : 'Tomorrow Preview'}
+          plan={tomorrowPlan}
+        />
+      )}
+
+      {otherGroups.length > 0 && (
+        <div className="border-t border-gray-100 pt-3">
+          <p className="text-[11px] text-gray-400">
+            Other groups: {otherGroups.map(group => `${group.day_label} (${Math.round(group.readiness_score * 100)}%)`).join(' · ')}
+          </p>
+        </div>
+      )}
     </div>
   )
 }
@@ -1068,7 +1227,6 @@ export default function TrainingPage() {
   // Model data load (starts immediately but takes longer)
   useEffect(() => {
     let cancelled = false
-    setModelLoading(true)
     getTrainingModelSummary(today(), true).then(data => {
       if (cancelled) return
       setModelSummary(data)
@@ -1081,7 +1239,6 @@ export default function TrainingPage() {
   // Planner load
   useEffect(() => {
     let cancelled = false
-    setPlannerLoading(true)
     getPlannerToday(today()).then(data => {
       if (cancelled) return
       setPlanner(data)
@@ -1150,9 +1307,10 @@ export default function TrainingPage() {
               )}
               <ExerciseProgressCard exercises={allExercises} />
             </div>
-            {/* Right: Today's Plan / Active Workout */}
-            {activePlan
-              ? <ActivePlanCard
+            {/* Right: Workflow planner / active workout */}
+            <div className="space-y-4">
+              {activePlan && (
+                <ActivePlanCard
                   plan={activePlan}
                   onRefresh={refreshActivePlan}
                   onCancel={() => {
@@ -1164,16 +1322,27 @@ export default function TrainingPage() {
                     refreshPlanner()
                   }}
                 />
-              : plannerLoading
-                ? <CardSkeleton lines={8} />
+              )}
+              {plannerLoading
+                ? !activePlan && <CardSkeleton lines={8} />
                 : planner && (
-                  <PlannerCard
-                    planner={planner}
-                    onRefresh={refreshPlanner}
-                    onSave={handleSavePlan}
-                  />
+                  activePlan && planner.tomorrow_plan
+                    ? <PlannerDayPreviewCard title="Tomorrow Preview" plan={planner.tomorrow_plan} />
+                    : <PlannerCard
+                        key={[
+                          planner.as_of,
+                          planner.today_plan?.group_id ?? 'none',
+                          (planner.today_plan?.exercises || [])
+                            .map(exercise => `${exercise.exercise_id}:${exercise.selected ? '1' : '0'}`)
+                            .join(','),
+                        ].join('|')}
+                        planner={planner}
+                        onRefresh={refreshPlanner}
+                        onSave={handleSavePlan}
+                      />
                 )
-            }
+              }
+            </div>
           </div>
         )}
 

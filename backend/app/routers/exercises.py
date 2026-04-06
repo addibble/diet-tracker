@@ -1,20 +1,16 @@
-from datetime import date
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlmodel import Session, col, select
+from sqlmodel import Session, select
 
 from app.auth import get_current_user
 from app.database import get_session
-from app.exercise_loads import bodyweight_by_date, effective_bodyweight_component
-from app.exercise_loads import effective_weight as calc_effective_weight
+from app.exercise_history import build_scheme_history, get_exercise_history_map
+from app.exercise_loads import effective_bodyweight_component
 from app.models import (
     Exercise,
     ExerciseTissue,
     Tissue,
     TissueRelationship,
-    WeightLog,
-    WorkoutSession,
     WorkoutSet,
 )
 from app.tracked_tissues import default_mapping_laterality_mode, infer_exercise_laterality
@@ -37,6 +33,7 @@ class TissueMappingInput(BaseModel):
 class ExerciseCreate(BaseModel):
     name: str
     equipment: str | None = None
+    allow_heavy_loading: bool = True
     load_input_mode: str = "external_weight"
     laterality: str | None = None
     bodyweight_fraction: float = 0.0
@@ -54,6 +51,7 @@ class ExerciseCreate(BaseModel):
 class ExerciseUpdate(BaseModel):
     name: str | None = None
     equipment: str | None = None
+    allow_heavy_loading: bool | None = None
     load_input_mode: str | None = None
     laterality: str | None = None
     bodyweight_fraction: float | None = None
@@ -106,6 +104,7 @@ def _build_exercise_response(exercise: Exercise, session: Session) -> dict:
         "id": exercise.id,
         "name": exercise.name,
         "equipment": exercise.equipment,
+        "allow_heavy_loading": exercise.allow_heavy_loading,
         "load_input_mode": exercise.load_input_mode,
         "laterality": exercise.laterality,
         "bodyweight_fraction": exercise.bodyweight_fraction,
@@ -410,6 +409,7 @@ def create_exercise(
     exercise = Exercise(
         name=data.name,
         equipment=data.equipment,
+        allow_heavy_loading=data.allow_heavy_loading,
         load_input_mode=data.load_input_mode,
         laterality=data.laterality or infer_exercise_laterality(data.name),
         bodyweight_fraction=data.bodyweight_fraction,
@@ -462,6 +462,8 @@ def update_exercise(
         exercise.name = data.name
     if data.equipment is not None:
         exercise.equipment = data.equipment
+    if data.allow_heavy_loading is not None:
+        exercise.allow_heavy_loading = data.allow_heavy_loading
     if data.load_input_mode is not None:
         exercise.load_input_mode = data.load_input_mode
     if data.laterality is not None:
@@ -549,57 +551,10 @@ def get_exercise_history(
     if not exercise:
         raise HTTPException(status_code=404, detail="Exercise not found")
 
-    # Get all sets for this exercise, joined with session date
-    stmt = (
-        select(WorkoutSet, WorkoutSession.date)
-        .join(WorkoutSession, WorkoutSet.session_id == WorkoutSession.id)
-        .where(WorkoutSet.exercise_id == exercise_id)
-        .order_by(col(WorkoutSession.date).desc(), WorkoutSet.set_order)
-    )
-    results = session.exec(stmt).all()
-
-    # Load bodyweight logs for effective weight calculation (counterweight exercises)
-    bodyweight_lookup: dict[date, float] = {}
-    if exercise.load_input_mode in ("bodyweight", "mixed", "assisted_bodyweight"):
-        weight_logs = session.exec(select(WeightLog)).all()
-        bodyweight_lookup = bodyweight_by_date(weight_logs)
-
-    # Group by session date
-    sessions_map: dict[date, list] = {}
-    for ws, d in results:
-        sessions_map.setdefault(d, []).append(ws)
-
-    sessions_out = []
-    for d in sorted(sessions_map.keys(), reverse=True)[:limit]:
-        sets = sessions_map[d]
-        if bodyweight_lookup:
-            eff_weights = [calc_effective_weight(exercise, s, bodyweight_lookup, d) for s in sets]
-            max_weight = max(eff_weights) if eff_weights else 0.0
-            total_volume = sum((s.reps or 0) * ew for s, ew in zip(sets, eff_weights))
-        else:
-            max_weight = max((s.weight or 0) for s in sets)
-            total_volume = sum((s.reps or 0) * (s.weight or 0) for s in sets)
-        completions = [s.rep_completion for s in sets if s.rep_completion]
-        sessions_out.append({
-            "date": str(d),
-            "sets": [
-                {
-                    "set_order": s.set_order,
-                    "reps": s.reps,
-                    "weight": s.weight,
-                    "duration_secs": s.duration_secs,
-                    "rpe": s.rpe,
-                    "rep_completion": s.rep_completion,
-                    "notes": s.notes,
-                }
-                for s in sets
-            ],
-            "max_weight": max_weight,
-            "total_volume": total_volume,
-            "rep_completions": completions,
-        })
+    sessions_out = get_exercise_history_map(session, [exercise_id], limit=limit).get(exercise_id, [])
 
     return {
         "exercise": _build_exercise_response(exercise, session),
         "sessions": sessions_out,
+        "scheme_history": build_scheme_history(sessions_out),
     }

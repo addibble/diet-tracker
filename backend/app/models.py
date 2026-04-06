@@ -99,6 +99,7 @@ class Exercise(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     name: str = Field(unique=True, index=True)
     equipment: str | None = None  # dumbbell, cable, barbell, machine, bodyweight, etc.
+    allow_heavy_loading: bool = True
     load_input_mode: str = "external_weight"
     laterality: str = "bilateral"  # "bilateral", "unilateral", "either"
     bodyweight_fraction: float = 0.0
