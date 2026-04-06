@@ -7,6 +7,7 @@ from sqlmodel import Session, col, select
 
 from app.auth import get_current_user
 from app.database import get_session
+from app.exercise_history import empty_scheme_history, get_exercise_scheme_history_map
 from app.models import (
     Exercise,
     TrackedTissue,
@@ -64,6 +65,12 @@ def _build_session_response(ws: WorkoutSession, session: Session) -> dict:
         for row in session.exec(select(TrackedTissue)).all()
     }
     active_rehab_plans = get_active_rehab_plans_by_tracked_tissue(session)
+    scheme_history_by_exercise = get_exercise_scheme_history_map(
+        session,
+        {workout_set.exercise_id for workout_set in sets},
+        limit=40,
+        exclude_session_ids=[ws.id],
+    )
     set_details = []
     for s in sets:
         exercise = session.get(Exercise, s.exercise_id)
@@ -82,6 +89,10 @@ def _build_session_response(ws: WorkoutSession, session: Session) -> dict:
             "rpe": s.rpe,
             "rep_completion": s.rep_completion,
             "notes": s.notes,
+            "scheme_history": scheme_history_by_exercise.get(
+                s.exercise_id,
+                empty_scheme_history(),
+            ),
             "tissue_feedback": [
                 {
                     "id": row.id,

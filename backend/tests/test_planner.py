@@ -44,7 +44,7 @@ def test_prescribe_all_normalizes_suitability_score(session):
         [],
     )
 
-    assert prescribed[0]["rep_scheme"] == "volume"
+    assert prescribed[0]["rep_scheme"] == "medium"
 
 
 def test_prescribe_all_caps_caution_exercises_out_of_heavy_scheme(session):
@@ -66,7 +66,37 @@ def test_prescribe_all_caps_caution_exercises_out_of_heavy_scheme(session):
         [],
     )
 
-    assert prescribed[0]["rep_scheme"] == "volume"
+    assert prescribed[0]["rep_scheme"] == "medium"
+
+
+def test_prescribe_all_respects_exercise_heavy_loading_flag(session):
+    exercise = Exercise(
+        name="Cable Fly",
+        equipment="cable",
+        allow_heavy_loading=False,
+    )
+    session.add(exercise)
+    session.commit()
+
+    prescribed = _prescribe_all(
+        session,
+        [
+            {
+                "id": exercise.id,
+                "name": exercise.name,
+                "suitability_score": 95,
+                "recommendation": "good",
+                "weighted_risk_7d": 5.0,
+                "target_hits": {"chest"},
+                "primary_regions": {"chest"},
+                "tissues": [],
+            }
+        ],
+        [],
+    )
+
+    assert prescribed[0]["rep_scheme"] == "medium"
+    assert "Heavy loading is disabled" in prescribed[0]["rationale"]
 
 
 # ── _select_exercises: suitability-based deprioritization ────────────────────
@@ -1414,7 +1444,7 @@ def test_prescribe_all_limits_heavy_exercises_per_primary_region(session):
     )
 
     assert prescribed[0]["rep_scheme"] == "heavy"
-    assert prescribed[1]["rep_scheme"] == "volume"
+    assert prescribed[1]["rep_scheme"] == "medium"
     assert "Heavy slot already used" in prescribed[1]["rationale"]
 
 

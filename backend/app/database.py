@@ -5,13 +5,48 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import inspect, text
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 engine = create_engine(settings.database_url, echo=False)
+_SHOULDER_HEAVY_DISABLE_THRESHOLD = 0.5
+_AB_HEAVY_DISABLE_THRESHOLD = 0.3
+_ABDOMINAL_TISSUE_NAMES = {
+    "rectus_abdominis",
+    "external_oblique",
+    "internal_oblique",
+    "transverse_abdominis",
+}
+_SHOULDER_NAME_KEYWORDS = (
+    "shoulder press",
+    "overhead press",
+    "arnold press",
+    "lateral raise",
+    "front raise",
+    "rear delt",
+    "rear-delt",
+    "upright row",
+    "face pull",
+)
+_AB_NAME_KEYWORDS = (
+    "plank",
+    "crunch",
+    "sit up",
+    "sit-up",
+    "leg raise",
+    "flutter kick",
+    "ab wheel",
+    "oblique",
+    "hollow body",
+    "dead bug",
+    "pallof",
+    "chop",
+    "v-up",
+    "v up",
+)
 
 RUNTIME_REQUIRED_TABLES = {
     "tracked_tissues",
@@ -23,6 +58,7 @@ RUNTIME_REQUIRED_TABLES = {
 
 RUNTIME_REQUIRED_COLUMNS = {
     "exercises": {
+        "allow_heavy_loading",
         "load_input_mode",
         "laterality",
         "bodyweight_fraction",
@@ -105,6 +141,7 @@ def apply_db_updates():
     _migrate_add_columns()
     _drop_obsolete_tables()
     _seed_data()
+    _backfill_heavy_loading_defaults()
     _backfill_rep_completion()
     _backfill_special_workout_sets()
     _backfill_historical_bodyweight_anchor()
@@ -168,6 +205,7 @@ def _migrate_add_columns():
         _ensure_columns(
             "exercises",
             {
+                "allow_heavy_loading": "ALTER TABLE exercises ADD COLUMN allow_heavy_loading BOOLEAN DEFAULT 1",
                 "load_input_mode": "ALTER TABLE exercises ADD COLUMN load_input_mode TEXT DEFAULT 'external_weight'",
                 "laterality": "ALTER TABLE exercises ADD COLUMN laterality TEXT DEFAULT 'bilateral'",
                 "bodyweight_fraction": "ALTER TABLE exercises ADD COLUMN bodyweight_fraction FLOAT DEFAULT 0.0",
@@ -436,6 +474,72 @@ def _backfill_historical_bodyweight_anchor():
             },
         )
         conn.commit()
+
+
+def _backfill_heavy_loading_defaults(session: Session | None = None):
+    from app.models import Exercise, ExerciseTissue, Tissue
+
+    if session is None:
+        with Session(engine) as runtime_session:
+            _backfill_heavy_loading_defaults(runtime_session)
+        return
+
+    mapping_rows = session.exec(
+        select(ExerciseTissue, Tissue)
+        .join(Tissue, Tissue.id == ExerciseTissue.tissue_id)
+    ).all()
+    mappings_by_exercise: dict[int, list[tuple[object, object]]] = {}
+    for mapping, tissue in mapping_rows:
+        mappings_by_exercise.setdefault(mapping.exercise_id, []).append((mapping, tissue))
+
+    updated = False
+    for exercise in session.exec(select(Exercise)).all():
+        if exercise.id is None:
+            continue
+        if not _should_disable_heavy_loading(
+            exercise=exercise,
+            mappings=mappings_by_exercise.get(exercise.id, []),
+        ):
+            continue
+        if exercise.allow_heavy_loading:
+            exercise.allow_heavy_loading = False
+            session.add(exercise)
+            updated = True
+
+    if updated:
+        session.commit()
+
+
+def _should_disable_heavy_loading(*, exercise, mappings: list[tuple[object, object]]) -> bool:
+    has_primary_chest = any(
+        getattr(mapping, "role", None) == "primary"
+        and getattr(tissue, "region", None) == "chest"
+        and (
+            (getattr(mapping, "loading_factor", None) or getattr(mapping, "routing_factor", 0.0) or 0.0)
+            >= _SHOULDER_HEAVY_DISABLE_THRESHOLD
+        )
+        for mapping, tissue in mappings
+    )
+    for mapping, tissue in mappings:
+        if getattr(mapping, "role", None) not in {"primary", "secondary"}:
+            continue
+        mapping_factor = getattr(mapping, "loading_factor", None)
+        if mapping_factor is None:
+            mapping_factor = getattr(mapping, "routing_factor", 0.0) or 0.0
+        region = getattr(tissue, "region", None)
+        tissue_name = getattr(tissue, "name", "") or ""
+        if (
+            getattr(mapping, "role", None) == "primary"
+            and region == "shoulders"
+            and mapping_factor >= _SHOULDER_HEAVY_DISABLE_THRESHOLD
+            and not has_primary_chest
+        ):
+            return True
+        if tissue_name in _ABDOMINAL_TISSUE_NAMES and mapping_factor >= _AB_HEAVY_DISABLE_THRESHOLD:
+            return True
+
+    exercise_name = (getattr(exercise, "name", "") or "").lower()
+    return any(keyword in exercise_name for keyword in (*_SHOULDER_NAME_KEYWORDS, *_AB_NAME_KEYWORDS))
 
 
 def _shared_progression_metric(

@@ -360,6 +360,7 @@ function ExerciseMetadataEditor({
 }) {
   const [laterality, setLaterality] = useState(exercise.laterality)
   const [loadInputMode, setLoadInputMode] = useState(exercise.load_input_mode)
+  const [allowHeavyLoading, setAllowHeavyLoading] = useState(exercise.allow_heavy_loading)
   const [bodyweightFraction, setBodyweightFraction] = useState(String(exercise.bodyweight_fraction))
   const [externalLoadMultiplier, setExternalLoadMultiplier] = useState(
     String(exercise.external_load_multiplier),
@@ -378,6 +379,7 @@ function ExerciseMetadataEditor({
   useEffect(() => {
     setLaterality(exercise.laterality)
     setLoadInputMode(exercise.load_input_mode)
+    setAllowHeavyLoading(exercise.allow_heavy_loading)
     setBodyweightFraction(String(exercise.bodyweight_fraction))
     setExternalLoadMultiplier(String(exercise.external_load_multiplier))
     setSetMetricMode(exercise.set_metric_mode)
@@ -395,6 +397,7 @@ function ExerciseMetadataEditor({
       await updateExercise(exercise.id, {
         laterality,
         load_input_mode: loadInputMode,
+        allow_heavy_loading: allowHeavyLoading,
         bodyweight_fraction: Number(bodyweightFraction) || 0,
         external_load_multiplier: Number(externalLoadMultiplier) || 1,
         set_metric_mode: setMetricMode,
@@ -488,6 +491,17 @@ function ExerciseMetadataEditor({
             onChange={(e) => setEstimatedMinutesPerSet(e.target.value)}
             className="rounded border border-gray-300 px-2 py-1 text-xs"
           />
+        </label>
+        <label className="flex items-center gap-2 rounded border border-gray-200 bg-white px-3 py-2">
+          <input
+            type="checkbox"
+            checked={allowHeavyLoading}
+            onChange={(e) => setAllowHeavyLoading(e.target.checked)}
+            className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          />
+          <span className="text-[11px] text-gray-700">
+            Allow heavy loading
+          </span>
         </label>
         <label className="grid gap-1">
           <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">Variant group</span>

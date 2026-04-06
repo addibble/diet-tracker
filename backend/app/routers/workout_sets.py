@@ -10,6 +10,7 @@ from sqlmodel import Session, func, select
 
 from app.auth import get_current_user
 from app.database import get_session
+from app.exercise_history import REP_SCHEME_VERSION, empty_scheme_history, get_exercise_scheme_history_map
 from app.models import (
     Exercise,
     ProgramDayExercise,
@@ -82,6 +83,12 @@ class ProgramDayExerciseUpdate(BaseModel):
 
 def _set_response(s: WorkoutSet, session: Session) -> dict:
     exercise = session.get(Exercise, s.exercise_id)
+    scheme_history = get_exercise_scheme_history_map(
+        session,
+        [s.exercise_id],
+        limit=40,
+        exclude_session_ids=[s.session_id] if s.session_id is not None else None,
+    ).get(s.exercise_id, empty_scheme_history())
     feedback_rows = session.exec(
         select(WorkoutSetTissueFeedback).where(WorkoutSetTissueFeedback.workout_set_id == s.id)
     ).all()
@@ -106,6 +113,7 @@ def _set_response(s: WorkoutSet, session: Session) -> dict:
         "rpe": s.rpe,
         "rep_completion": s.rep_completion,
         "notes": s.notes,
+        "scheme_history": scheme_history,
         "tissue_feedback": [
             {
                 "id": row.id,
@@ -320,6 +328,8 @@ def update_program_day_exercise(
             except (json.JSONDecodeError, TypeError):
                 pass
         meta.update(meta_updates)
+        if "rep_scheme" in meta_updates:
+            meta["rep_scheme_version"] = REP_SCHEME_VERSION
         pde.notes = json.dumps(meta)
 
     session.add(pde)
