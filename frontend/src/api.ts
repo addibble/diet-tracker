@@ -980,6 +980,14 @@ export interface PlannerExercisePrescription {
   workflow_role?: 'group' | 'rehab' | 'accessory' | null;
   group_label?: string | null;
   selected: boolean;
+  selectable?: boolean;
+  planner_status?: 'ready' | 'overworked' | 'blocked';
+  planner_reason?: string;
+  ready_tomorrow?: boolean;
+  ready_tomorrow_reason?: string | null;
+  readiness_score?: number;
+  days_since_last?: number;
+  recommendation?: 'good' | 'caution' | 'avoid';
   last_performance: {
     date: string;
     rep_scheme: RepScheme;
@@ -1005,10 +1013,12 @@ export interface PlannerGroupBrief {
   day_label: string;
   target_regions: string[];
   exercise_count: number;
-  today_available_count: number;
+  available_count: number;
+  ready_tomorrow_count: number;
   days_since_last: number;
   readiness_score: number;
-  planned_for: 'today' | 'tomorrow' | null;
+  rationale: string;
+  exercises: PlannerExercisePrescription[];
 }
 
 export interface PlannerFilteredTissue {

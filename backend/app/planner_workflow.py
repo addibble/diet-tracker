@@ -5,17 +5,18 @@ from datetime import date, timedelta
 
 from sqlmodel import Session, col, select
 
+from app.exercise_history import empty_scheme_history
 from app.exercise_protection import build_tracked_protection_profiles, evaluate_exercise_protection
 from app.models import ExerciseTissue, RecoveryCheckIn, WorkoutSession, WorkoutSet
 from app.planner import (
     _MAX_REHAB_PRIORITY_CANDIDATES,
+    DEFAULT_SELECTED,
     _build_exercise_region_map,
     _build_rehab_priority_map,
     _build_selection_note,
     _prescribe_all,
 )
 from app.planner_groups import (
-    build_similarity_groups,
     combine_tissue_vectors,
     exercise_tissue_vector,
     similarity_to_group_profile,
@@ -79,14 +80,13 @@ def suggest_today_workflow(session: Session, *, as_of: date | None = None) -> di
     blocked_tissue_ids = {row["tissue_id"] for row in filtered_tissues}
     tissue_last_trained = _tissue_last_trained(session, today)
 
-    all_pool = _build_grouping_pool(
+    category_pool = _build_category_pool(
         exercises_data=exercises_data,
         exercise_region_map=exercise_region_map,
         tissue_last_trained=tissue_last_trained,
         tissue_rows_by_id=tissue_rows_by_id,
-        protection_profiles=protection_profiles,
     )
-    if not all_pool:
+    if not category_pool:
         return {
             "as_of": today.isoformat(),
             "today_plan": None,
@@ -96,91 +96,27 @@ def suggest_today_workflow(session: Session, *, as_of: date | None = None) -> di
             "message": "No eligible exercises are available for planning right now.",
         }
 
-    groups = build_similarity_groups(
-        all_pool,
-        priorities=[float(exercise["planning_priority"]) for exercise in all_pool],
-    )
-    group_catalog = _build_group_catalog(
-        groups=groups,
+    groups = _build_ranked_group_catalog(
+        session=session,
+        exercises=category_pool,
         exercise_region_map=exercise_region_map,
         blocked_tissue_ids=blocked_tissue_ids,
         tissue_last_trained=tissue_last_trained,
         tissue_rows_by_id=tissue_rows_by_id,
-    )
-    today_group = _select_today_group(group_catalog)
-    rehab_inserts = _select_rehab_inserts(
-        exercises_data=exercises_data,
-        rehab_priorities=rehab_priorities,
+        filtered_tissues=filtered_tissues,
         protection_profiles=protection_profiles,
-    )
-    if today_group is None:
-        rehab_only_plan = _build_rehab_only_plan(
-            session=session,
-            plan_date=today,
-            rehab_inserts=rehab_inserts,
-            tissues_data=tissues_data,
-            filtered_tissues=filtered_tissues,
-        )
-        return {
-            "as_of": today.isoformat(),
-            "today_plan": _strip_internal_day_fields(rehab_only_plan),
-            "tomorrow_plan": None,
-            "groups": _serialize_group_briefs(group_catalog, today_group_id=None, tomorrow_group_id=None),
-            "filtered_tissues": filtered_tissues,
-            "message": (
-                None
-                if rehab_only_plan is not None
-                else "Today's tissue check-in filtered out every general training group."
-            ),
-        }
-
-    today_accessory_source = [
-        exercise
-        for exercise in all_pool
-        if not (_significant_tissue_ids(exercise) & blocked_tissue_ids)
-    ]
-    today_plan = _build_day_plan(
-        session=session,
-        plan_date=today,
-        group=today_group,
-        core_exercises=today_group["today_available_exercises"],
-        accessory_source=today_accessory_source,
-        rehab_inserts=rehab_inserts,
+        rehab_priorities=rehab_priorities,
         tissues_data=tissues_data,
+        plan_date=today,
     )
-    worked_today_tissues = set(today_plan.get("selected_tissue_ids", [])) if today_plan else set()
-    tomorrow_group = _select_tomorrow_group(
-        group_catalog=group_catalog,
-        exclude_group_id=today_group["group_id"],
-        worked_today_tissues=worked_today_tissues,
-        tissue_last_trained=tissue_last_trained,
-        tissue_rows_by_id=tissue_rows_by_id,
-    )
-    tomorrow_plan = None
-    if tomorrow_group is not None:
-        tomorrow_plan = _build_day_plan(
-            session=session,
-            plan_date=today + timedelta(days=1),
-            group=tomorrow_group,
-            core_exercises=tomorrow_group["exercises"],
-            accessory_source=all_pool,
-            rehab_inserts=rehab_inserts,
-            tissues_data=tissues_data,
-            worked_today_tissues=worked_today_tissues,
-            days_ahead=1,
-        )
 
     return {
         "as_of": today.isoformat(),
-        "today_plan": _strip_internal_day_fields(today_plan),
-        "tomorrow_plan": _strip_internal_day_fields(tomorrow_plan),
-        "groups": _serialize_group_briefs(
-            group_catalog,
-            today_group_id=today_group["group_id"],
-            tomorrow_group_id=tomorrow_group["group_id"] if tomorrow_group else None,
-        ),
+        "today_plan": None,
+        "tomorrow_plan": None,
+        "groups": groups,
         "filtered_tissues": filtered_tissues,
-        "message": None,
+        "message": None if groups else "Today's tissue check-in filtered out every general training group.",
     }
 
 
@@ -277,25 +213,21 @@ def _tissue_last_trained(session: Session, today: date) -> dict[int, int]:
     }
 
 
-def _build_grouping_pool(
+def _build_category_pool(
     *,
     exercises_data: list[dict],
     exercise_region_map: dict[int, list[dict]],
     tissue_last_trained: dict[int, int],
     tissue_rows_by_id: dict[int, dict],
-    protection_profiles: dict[int, list[object]],
 ) -> list[dict]:
     pool: list[dict] = []
     for exercise in exercises_data:
         exercise_id = exercise.get("exercise_id") or exercise.get("id")
-        if not exercise_id or exercise.get("recommendation") == "avoid":
+        if not exercise_id:
             continue
         if not exercise_region_map.get(exercise_id):
             continue
         if not exercise_tissue_vector(exercise):
-            continue
-        protection_eval = evaluate_exercise_protection(exercise, exercise, protection_profiles)
-        if protection_eval["blocked"]:
             continue
         primary_regions = {
             mapping["region"]
@@ -324,6 +256,374 @@ def _build_grouping_pool(
         ),
     )
     return pool
+
+
+def _exercise_projection_metrics(
+    *,
+    exercise: dict,
+    tissue_last_trained: dict[int, int],
+    tissue_rows_by_id: dict[int, dict],
+    days_ahead: int = 0,
+) -> dict:
+    vector = exercise_tissue_vector(exercise)
+    if not vector:
+        suitability = min(float(exercise.get("suitability_score") or 0.0) / 100.0, 1.0)
+        return {
+            "freshness_days": float(_DEFAULT_TISSUE_FRESHNESS_DAYS + days_ahead),
+            "readiness": 0.75,
+            "suitability": round(suitability, 3),
+            "score": round(0.55 + suitability * 0.15, 3),
+        }
+
+    weighted_days = 0.0
+    total_weight = 0.0
+    day_values: list[float] = []
+    weighted_recovery = 0.0
+    recovery_values: list[float] = []
+    for tissue_id, weight in vector.items():
+        base_days = float(tissue_last_trained.get(tissue_id, _DEFAULT_TISSUE_FRESHNESS_DAYS))
+        projected_days = base_days + days_ahead
+        tissue_row = tissue_rows_by_id.get(tissue_id, {})
+        recovery = float(tissue_row.get("recovery_estimate", 0.75))
+        learned_recovery_days = max(float(tissue_row.get("learned_recovery_days", 3.0)), 1.0)
+        if days_ahead > 0:
+            recovery = min(1.0, recovery + (days_ahead / learned_recovery_days))
+        weighted_days += projected_days * weight
+        total_weight += weight
+        day_values.append(projected_days)
+        weighted_recovery += recovery * weight
+        recovery_values.append(recovery)
+
+    average_days = weighted_days / total_weight if total_weight > 0 else 0.0
+    freshness_days = min(day_values) * 0.65 + average_days * 0.35 if day_values else 0.0
+    average_recovery = weighted_recovery / total_weight if total_weight > 0 else 0.0
+    readiness = min(recovery_values) * 0.6 + average_recovery * 0.4 if recovery_values else 0.0
+    suitability = min(float(exercise.get("suitability_score") or 0.0) / 100.0, 1.0)
+    score = min(freshness_days / 10.0, 1.0) * 0.55 + readiness * 0.3 + suitability * 0.15
+    return {
+        "freshness_days": round(freshness_days, 2),
+        "readiness": round(readiness, 3),
+        "suitability": round(suitability, 3),
+        "score": round(score, 3),
+    }
+
+
+def _exercise_group_regions(exercise: dict, exercise_region_map: dict[int, list[dict]]) -> list[str]:
+    dominant_regions = [str(region) for region in exercise.get("dominant_regions", []) if region]
+    if dominant_regions:
+        return dominant_regions[:3]
+
+    exercise_id = exercise.get("exercise_id") or exercise.get("id")
+    if not exercise_id:
+        return []
+    return _group_regions([exercise], exercise_region_map)
+
+
+def _planner_status_rank(status: str) -> int:
+    if status == "ready":
+        return 0
+    if status == "overworked":
+        return 1
+    return 2
+
+
+def _exercise_planner_state(
+    *,
+    exercise: dict,
+    blocked_tissue_ids: set[int],
+    filtered_tissues_by_id: dict[int, dict],
+    protection_eval: dict,
+    rehab_priority: dict | None,
+) -> tuple[str, str, bool]:
+    blocked_hits = sorted(_significant_tissue_ids(exercise) & blocked_tissue_ids)
+    if blocked_hits:
+        blocked_labels = [
+            str(filtered_tissues_by_id[tissue_id]["target_label"])
+            for tissue_id in blocked_hits
+            if tissue_id in filtered_tissues_by_id
+        ]
+        summary = ", ".join(blocked_labels[:2]) if blocked_labels else "today's check-in"
+        return (
+            "blocked",
+            f"Today's tissue check-in is protecting {summary}.",
+            False,
+        )
+
+    if protection_eval["blocked"]:
+        return (
+            "blocked",
+            str(protection_eval.get("gating_reason") or "Protected by the current rehab setup."),
+            False,
+        )
+
+    if rehab_priority is not None:
+        if str(rehab_priority.get("mode") or "") == "direct_rehab":
+            return ("ready", "Direct rehab support is prioritized in this category.", True)
+        return ("ready", "Supportive rehab work is available here today.", True)
+
+    recommendation = str(exercise.get("recommendation") or "good")
+    details = [str(detail) for detail in exercise.get("recommendation_details", []) if detail]
+    if recommendation == "good":
+        return ("ready", details[0] if details else "Fresh enough to train today.", True)
+    return (
+        "overworked",
+        details[0] if details else "Recent tissue load is still elevated today.",
+        True,
+    )
+
+
+def _exercise_ready_tomorrow(
+    *,
+    status: str,
+    selectable: bool,
+    today_metrics: dict,
+    tomorrow_metrics: dict,
+) -> bool:
+    if not selectable or status != "overworked":
+        return False
+    return (
+        float(tomorrow_metrics["score"]) >= 0.62
+        and float(tomorrow_metrics["score"]) >= float(today_metrics["score"]) + 0.07
+    )
+
+
+def _unselectable_planner_entry(candidate: dict) -> dict:
+    return {
+        "exercise_id": candidate["exercise_id"],
+        "exercise_name": candidate["exercise_name"],
+        "equipment": candidate.get("equipment"),
+        "laterality": candidate.get("laterality"),
+        "performed_side": candidate.get("performed_side"),
+        "rep_scheme": "volume",
+        "target_sets": 0,
+        "target_reps": "Unavailable today",
+        "target_weight": None,
+        "rationale": candidate["planner_reason"],
+        "overload_note": None,
+        "weight_adjustment_note": None,
+        "side_explanation": None,
+        "selection_note": None,
+        "blocked_variant": None,
+        "protected_tissues": list(candidate.get("protected_tissues") or []),
+        "workflow_role": candidate.get("workflow_role"),
+        "group_label": candidate.get("group_label"),
+        "selected": False,
+        "last_performance": None,
+        "scheme_history": empty_scheme_history(),
+        "planner_status": candidate["planner_status"],
+        "planner_reason": candidate["planner_reason"],
+        "ready_tomorrow": candidate["ready_tomorrow"],
+        "ready_tomorrow_reason": candidate.get("ready_tomorrow_reason"),
+        "selectable": False,
+        "readiness_score": candidate["today_metrics"]["readiness"],
+        "days_since_last": candidate["today_metrics"]["freshness_days"],
+        "recommendation": candidate.get("recommendation", "avoid"),
+    }
+
+
+def _planner_entry_sort_key(entry: dict) -> tuple:
+    return (
+        _planner_status_rank(str(entry.get("planner_status") or "blocked")),
+        0 if entry.get("workflow_role") == "rehab" else 1,
+        0 if entry.get("ready_tomorrow") else 1,
+        -float(entry.get("readiness_score") or 0.0),
+        -float(entry.get("days_since_last") or 0.0),
+        str(entry.get("exercise_name") or ""),
+    )
+
+
+def _group_target_regions(entries: list[dict]) -> list[str]:
+    region_scores: dict[str, float] = defaultdict(float)
+    for entry in entries:
+        for index, region in enumerate(entry.get("_group_regions", [])):
+            region_scores[str(region)] += max(0.2, 1.0 - index * 0.2)
+    return [
+        region
+        for region, _score in sorted(
+            region_scores.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:3]
+    ]
+
+
+def _group_summary_metrics(entries: list[dict]) -> tuple[float, float]:
+    available = [entry for entry in entries if entry.get("selectable")]
+    source = available[:3] or entries[:3]
+    if not source:
+        return (0.0, 0.0)
+    readiness = sum(float(entry.get("readiness_score") or 0.0) for entry in source) / len(source)
+    freshness = sum(float(entry.get("days_since_last") or 0.0) for entry in source) / len(source)
+    return (round(readiness, 3), round(freshness, 2))
+
+
+def _group_rationale(*, label: str, entries: list[dict]) -> str:
+    available_count = sum(1 for entry in entries if entry.get("selectable"))
+    ready_tomorrow_count = sum(1 for entry in entries if entry.get("ready_tomorrow"))
+    if available_count == 0:
+        return f"{label} is blocked today by current symptoms or rehab protections."
+
+    parts = [f"{available_count} selectable movement{'s' if available_count != 1 else ''} are ranked here today."]
+    if entries and entries[0].get("workflow_role") == "rehab":
+        parts.append("Rehab-supporting options rise to the top in this category.")
+    if ready_tomorrow_count > 0:
+        parts.append(
+            f"{ready_tomorrow_count} other movement{'s' if ready_tomorrow_count != 1 else ''} may be ready tomorrow."
+        )
+    return " ".join(parts)
+
+
+def _mark_default_selected_groups(groups: list[dict]) -> None:
+    selected = 0
+    for group in groups:
+        for entry in group["exercises"]:
+            should_select = bool(entry.get("selectable")) and selected < DEFAULT_SELECTED
+            entry["selected"] = should_select
+            if should_select:
+                selected += 1
+
+
+def _build_ranked_group_catalog(
+    *,
+    session: Session,
+    exercises: list[dict],
+    exercise_region_map: dict[int, list[dict]],
+    blocked_tissue_ids: set[int],
+    tissue_last_trained: dict[int, int],
+    tissue_rows_by_id: dict[int, dict],
+    filtered_tissues: list[dict],
+    protection_profiles: dict[int, list[object]],
+    rehab_priorities: dict[int, dict],
+    tissues_data: list[dict],
+    plan_date: date,
+) -> list[dict]:
+    filtered_tissues_by_id = {row["tissue_id"]: row for row in filtered_tissues}
+    candidates: list[dict] = []
+    for exercise in exercises:
+        exercise_id = int(exercise.get("exercise_id") or exercise.get("id") or 0)
+        if exercise_id <= 0:
+            continue
+
+        rehab_priority = rehab_priorities.get(exercise_id)
+        preferred_side = rehab_priority.get("preferred_side") if rehab_priority else None
+        protection_eval = evaluate_exercise_protection(
+            exercise,
+            exercise,
+            protection_profiles,
+            preferred_side=preferred_side,
+        )
+        group_regions = _exercise_group_regions(exercise, exercise_region_map)
+        group_label = _group_label(group_regions)
+        today_metrics = _exercise_projection_metrics(
+            exercise=exercise,
+            tissue_last_trained=tissue_last_trained,
+            tissue_rows_by_id=tissue_rows_by_id,
+        )
+        tomorrow_metrics = _exercise_projection_metrics(
+            exercise=exercise,
+            tissue_last_trained=tissue_last_trained,
+            tissue_rows_by_id=tissue_rows_by_id,
+            days_ahead=1,
+        )
+        planner_status, planner_reason, selectable = _exercise_planner_state(
+            exercise=exercise,
+            blocked_tissue_ids=blocked_tissue_ids,
+            filtered_tissues_by_id=filtered_tissues_by_id,
+            protection_eval=protection_eval,
+            rehab_priority=rehab_priority,
+        )
+        ready_tomorrow = _exercise_ready_tomorrow(
+            status=planner_status,
+            selectable=selectable,
+            today_metrics=today_metrics,
+            tomorrow_metrics=tomorrow_metrics,
+        )
+        ready_tomorrow_reason = (
+            "Projected recovery improves by tomorrow."
+            if ready_tomorrow
+            else None
+        )
+        candidates.append({
+            **exercise,
+            "exercise_id": exercise_id,
+            "exercise_name": exercise.get("exercise_name") or exercise.get("name"),
+            "performed_side": preferred_side if preferred_side in {"left", "right", "center", "bilateral"} else exercise.get("performed_side"),
+            "workflow_role": "rehab" if rehab_priority else "group",
+            "group_label": group_label,
+            "_group_regions": group_regions,
+            "protected_tissues": list(protection_eval.get("protected_tissues", [])),
+            "planner_status": planner_status,
+            "planner_reason": planner_reason,
+            "ready_tomorrow": ready_tomorrow,
+            "ready_tomorrow_reason": ready_tomorrow_reason,
+            "selectable": selectable,
+            "today_metrics": today_metrics,
+            "tomorrow_metrics": tomorrow_metrics,
+        })
+
+    prescribed = _prescribe_all(
+        session,
+        [candidate for candidate in candidates if candidate.get("selectable")],
+        tissues_data,
+        as_of=plan_date,
+    )
+    prescribed_by_exercise_id = {
+        int(entry["exercise_id"]): entry
+        for entry in prescribed
+    }
+
+    grouped_entries: dict[str, list[dict]] = defaultdict(list)
+    for candidate in candidates:
+        prescribed_row = prescribed_by_exercise_id.get(candidate["exercise_id"])
+        if prescribed_row is None:
+            entry = _unselectable_planner_entry(candidate)
+        else:
+            entry = {
+                **prescribed_row,
+                "planner_status": candidate["planner_status"],
+                "planner_reason": candidate["planner_reason"],
+                "ready_tomorrow": candidate["ready_tomorrow"],
+                "ready_tomorrow_reason": candidate.get("ready_tomorrow_reason"),
+                "selectable": bool(candidate["selectable"]),
+                "readiness_score": candidate["today_metrics"]["readiness"],
+                "days_since_last": candidate["today_metrics"]["freshness_days"],
+                "recommendation": candidate.get("recommendation", "good"),
+            }
+        entry["_group_regions"] = candidate["_group_regions"]
+        grouped_entries[str(candidate["group_label"])].append(entry)
+
+    groups: list[dict] = []
+    for index, (label, entries) in enumerate(grouped_entries.items(), start=1):
+        entries.sort(key=_planner_entry_sort_key)
+        readiness_score, freshness_days = _group_summary_metrics(entries)
+        groups.append({
+            "group_id": f"group-{index}",
+            "day_label": label,
+            "target_regions": _group_target_regions(entries),
+            "exercise_count": len(entries),
+            "available_count": sum(1 for entry in entries if entry.get("selectable")),
+            "ready_tomorrow_count": sum(1 for entry in entries if entry.get("ready_tomorrow")),
+            "readiness_score": readiness_score,
+            "days_since_last": freshness_days,
+            "rationale": _group_rationale(label=label, entries=entries),
+            "exercises": entries,
+        })
+
+    groups.sort(
+        key=lambda group: (
+            _planner_status_rank(
+                str(group["exercises"][0].get("planner_status") if group["exercises"] else "blocked")
+            ),
+            -float(group["readiness_score"]),
+            -float(group["days_since_last"] or 0.0),
+            -int(group["available_count"]),
+            str(group["day_label"]),
+        )
+    )
+    for group in groups:
+        for entry in group["exercises"]:
+            entry.pop("_group_regions", None)
+    _mark_default_selected_groups(groups)
+    return groups
 
 
 def _exercise_dominant_regions(

@@ -2323,25 +2323,37 @@ def handle_get_workout_plan(args: dict, session: "Session") -> dict:
 
     # No saved plan — generate suggestion
     result = suggest_today(session, as_of=as_of)
-    if result.get("today_plan") is None:
+    groups = result.get("groups") or []
+    if not groups:
         return {"plan": result.get("message", "No plan available."), "saved": False}
 
-    today_plan = result["today_plan"]
     lines = [
-        f"Suggested Plan: {today_plan['day_label']}",
-        f"Target regions: {', '.join(today_plan['target_regions'])}",
-        f"Readiness: {round(today_plan['readiness_score'] * 100)}%",
-        f"Rationale: {today_plan['rationale']}",
+        "Ranked Workout Categories:",
         "",
-        "Exercises:",
     ]
-    for ex in today_plan.get("exercises", []):
-        weight_str = f" @ {ex['target_weight']} lb" if ex.get("target_weight") else ""
-        note = f" ({ex['overload_note']})" if ex.get("overload_note") else ""
-        lines.append(
-            f"  - {ex['exercise_name']}: {ex['target_sets']}x{ex['target_reps']}"
-            f"{weight_str} [{ex['rep_scheme']}]{note}"
-        )
+    for group in groups[:4]:
+        lines.extend([
+            f"{group['day_label']}: {round(group['readiness_score'] * 100)}% ready",
+            f"  Regions: {', '.join(group.get('target_regions', []))}",
+            f"  Available: {group.get('available_count', 0)}/{group.get('exercise_count', 0)}",
+            f"  Rationale: {group.get('rationale', '')}",
+        ])
+        if group.get("ready_tomorrow_count"):
+            lines.append(f"  Ready tomorrow: {group['ready_tomorrow_count']}")
+        for ex in group.get("exercises", [])[:4]:
+            status = ex.get("planner_status", "ready")
+            if ex.get("selectable", True):
+                weight_str = f" @ {ex['target_weight']} lb" if ex.get("target_weight") else ""
+                note = f" ({ex['overload_note']})" if ex.get("overload_note") else ""
+                lines.append(
+                    f"    - {ex['exercise_name']}: {ex['target_sets']}x{ex['target_reps']}"
+                    f"{weight_str} [{ex['rep_scheme']}] ({status}){note}"
+                )
+            else:
+                lines.append(
+                    f"    - {ex['exercise_name']}: blocked today ({ex.get('planner_reason', status)})"
+                )
+        lines.append("")
 
     if result.get("filtered_tissues"):
         filtered_labels = [
@@ -2354,22 +2366,6 @@ def handle_get_workout_plan(args: dict, session: "Session") -> dict:
             "  - " + ", ".join(filtered_labels),
         ])
 
-    tomorrow_plan = result.get("tomorrow_plan")
-    if tomorrow_plan:
-        lines.extend([
-            "",
-            f"Tomorrow Preview: {tomorrow_plan['day_label']}",
-            f"  Regions: {', '.join(tomorrow_plan['target_regions'])}",
-            f"  Readiness: {round(tomorrow_plan['readiness_score'] * 100)}%",
-        ])
-    if result.get("groups"):
-        alt_names = [
-            group["day_label"]
-            for group in result["groups"]
-            if group.get("planned_for") is None
-        ][:4]
-        if alt_names:
-            lines.append(f"Other groups: {', '.join(alt_names)}")
     lines.append("")
     lines.append("This plan is not saved yet. The user can save it from the Training page.")
 

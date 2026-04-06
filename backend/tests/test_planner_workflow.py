@@ -13,6 +13,7 @@ from app.models import (
 )
 from app.planner import _prescribe_all, suggest_today
 from app.planner_groups import build_similarity_groups
+from app.planner_workflow import _exercise_ready_tomorrow
 
 
 def _add_tissue(session, *, name: str, display_name: str, region: str) -> Tissue:
@@ -190,7 +191,7 @@ def test_prescribe_all_limits_heavy_exercises_on_shared_tissue(session):
     assert prescribed[1]["rep_scheme"] == "medium"
 
 
-def test_workflow_uses_tissue_checkin_to_plan_today_and_tomorrow(session):
+def test_workflow_groups_rank_exercises_by_category_and_status(session):
     today = date(2026, 4, 5)
     quad = _add_tissue(session, name="rectus_femoris", display_name="Rectus Femoris", region="quads")
     adductor = _add_tissue(session, name="adductor_longus", display_name="Adductor Longus", region="hips")
@@ -295,14 +296,52 @@ def test_workflow_uses_tissue_checkin_to_plan_today_and_tomorrow(session):
 
     result = suggest_today(session, as_of=today)
 
-    assert result["today_plan"] is not None
-    assert result["tomorrow_plan"] is not None
+    assert result["today_plan"] is None
+    assert result["tomorrow_plan"] is None
     assert result["filtered_tissues"][0]["target_label"] == "Left Adductor Longus"
 
-    today_names = [exercise["exercise_name"] for exercise in result["today_plan"]["exercises"]]
-    assert any(name in today_names for name in ["Seated Leg Curl", "Back Extension"])
-    assert "Leg Press" not in today_names
-    assert "Bulgarian Split Squat" not in today_names
+    assert result["groups"]
+    assert result["groups"][0]["day_label"] == "Leg Pull"
 
-    tomorrow_names = [exercise["exercise_name"] for exercise in result["tomorrow_plan"]["exercises"]]
-    assert any(name in tomorrow_names for name in ["Leg Press", "Bulgarian Split Squat"])
+    groups_by_label = {group["day_label"]: group for group in result["groups"]}
+    leg_pull = groups_by_label["Leg Pull"]
+    assert leg_pull["available_count"] >= 2
+    assert any(
+        exercise["exercise_name"] == "Seated Leg Curl" and exercise["planner_status"] == "ready"
+        for exercise in leg_pull["exercises"]
+    )
+    assert any(
+        exercise["exercise_name"] == "Back Extension" and exercise["planner_status"] == "ready"
+        for exercise in leg_pull["exercises"]
+    )
+
+    leg_push = groups_by_label["Leg Push"]
+    blocked_by_name = {
+        exercise["exercise_name"]: exercise
+        for exercise in leg_push["exercises"]
+        if exercise["planner_status"] == "blocked"
+    }
+    assert "Leg Press" in blocked_by_name
+    assert "Bulgarian Split Squat" in blocked_by_name
+    assert all(not exercise["selectable"] for exercise in blocked_by_name.values())
+
+
+def test_ready_tomorrow_requires_overworked_improvement():
+    assert _exercise_ready_tomorrow(
+        status="overworked",
+        selectable=True,
+        today_metrics={"score": 0.5},
+        tomorrow_metrics={"score": 0.65},
+    )
+    assert not _exercise_ready_tomorrow(
+        status="ready",
+        selectable=True,
+        today_metrics={"score": 0.5},
+        tomorrow_metrics={"score": 0.7},
+    )
+    assert not _exercise_ready_tomorrow(
+        status="overworked",
+        selectable=False,
+        today_metrics={"score": 0.5},
+        tomorrow_metrics={"score": 0.7},
+    )

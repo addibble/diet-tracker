@@ -9,6 +9,7 @@ import {
   applyExerciseMappingWarning,
   createRehabPlan,
   createTissueCondition,
+  getTrainingModelSummary,
   getTissues,
   getExercises,
   getRehabProtocols,
@@ -17,11 +18,18 @@ import {
   updateRehabPlan,
   updateExercise,
   type RehabProtocol,
+  type TrainingModelSummary,
   type TrackedTissueReadiness,
   type WkTissue,
   type WkExercise,
   type WkTissueReadiness,
 } from '../api'
+import {
+  CapacityCard,
+  ExerciseProgressCard,
+  ExerciseStatusCard,
+  TissueStatusCard,
+} from '../components/TrainingInsights'
 
 // ── Types ──
 
@@ -1409,23 +1417,26 @@ export default function TissueAdminPage() {
   const [readiness, setReadiness] = useState<WkTissueReadiness[]>([])
   const [trackedReadiness, setTrackedReadiness] = useState<TrackedTissueReadiness[]>([])
   const [rehabProtocols, setRehabProtocols] = useState<RehabProtocol[]>([])
+  const [modelSummary, setModelSummary] = useState<TrainingModelSummary | null>(null)
   const [view, setView] = useState<View>('tissues')
   const [loading, setLoading] = useState(true)
 
   const load = async () => {
     try {
-      const [t, e, r, tr, protocols] = await Promise.all([
+      const [t, e, r, tr, protocols, summary] = await Promise.all([
         getTissues(),
         getExercises(),
         getTissueReadiness(),
         getTrackedTissueReadiness(),
         getRehabProtocols(),
+        getTrainingModelSummary(undefined, true).catch(() => null),
       ])
       setTissues(t)
       setExercises(e)
       setReadiness(r)
       setTrackedReadiness(tr)
       setRehabProtocols(protocols)
+      setModelSummary(summary)
     } catch (err) {
       console.error('Failed to load data', err)
     } finally {
@@ -1484,9 +1495,9 @@ export default function TissueAdminPage() {
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
-          <h1 className="text-lg font-semibold text-gray-800">Tissue & Exercise Admin</h1>
+          <h1 className="text-lg font-semibold text-gray-800">Tissues & Exercises</h1>
           <p className="text-sm text-gray-500">
-            Use the <span className="font-medium text-gray-700">Tissues</span> view below to manage per-side conditions and rehab plans.
+            Review training-model status, then manage the detailed tissue and exercise metadata below.
           </p>
         </div>
         <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-0.5">
@@ -1509,19 +1520,49 @@ export default function TissueAdminPage() {
         </div>
       </div>
 
+      {modelSummary && (
+        <div className="flex flex-wrap gap-3">
+          <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5">
+            <span className="text-xs font-medium text-red-600">{modelSummary.overview.at_risk_count} at risk</span>
+          </div>
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5">
+            <span className="text-xs font-medium text-emerald-600">{modelSummary.overview.recovering_count} recovering</span>
+          </div>
+          <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5">
+            <span className="text-xs font-medium text-gray-600">{modelSummary.overview.tracked_tissues} tracked</span>
+          </div>
+        </div>
+      )}
+
       {view === 'tissues' && (
-        <TissueView
-          tissues={tissuesWithExercises}
-          exercises={exercises}
-          readinessMap={readinessMap}
-          trackedReadinessByTissue={trackedReadinessByTissue}
-          rehabProtocols={rehabProtocols}
-          onSave={load}
-        />
+        <div className="space-y-4">
+          {modelSummary && (
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+              <TissueStatusCard tissues={modelSummary.tissues} />
+              <CapacityCard tissues={modelSummary.tissues} />
+            </div>
+          )}
+          <TissueView
+            tissues={tissuesWithExercises}
+            exercises={exercises}
+            readinessMap={readinessMap}
+            trackedReadinessByTissue={trackedReadinessByTissue}
+            rehabProtocols={rehabProtocols}
+            onSave={load}
+          />
+        </div>
       )}
 
       {view === 'exercises' && (
-        <ExerciseView exercises={exercises} tissues={tissues} onSave={load} />
+        <div className="space-y-4">
+          {modelSummary && (
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+              <ExerciseStatusCard exercises={modelSummary.exercises} />
+              <ExerciseProgressCard exercises={exercises} />
+            </div>
+          )}
+          <ExerciseView exercises={exercises} tissues={tissues} onSave={load} />
+        </div>
       )}
     </div>
   )
