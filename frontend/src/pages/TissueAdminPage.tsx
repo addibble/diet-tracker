@@ -959,15 +959,8 @@ function TissueView({
           return (
             <div key={t.id} className="px-4 py-2 hover:bg-gray-50/80 transition-colors">
               {/* Row 1: Identity + quick model badges */}
-              <div className="flex items-center gap-2 flex-wrap">
-                <button
-                  type="button"
-                  onClick={() => toggleExpanded(t.id)}
-                  className="text-[10px] text-gray-400 hover:text-gray-600 w-4"
-                  title={isExpanded ? 'Collapse' : 'Expand model details'}
-                >
-                  {isExpanded ? '▾' : '▸'}
-                </button>
+              <div className="flex items-center gap-2 flex-wrap cursor-pointer" onClick={() => toggleExpanded(t.id)}>
+                <span className="text-[10px] text-gray-300 select-none">{isExpanded ? '▼' : '▶'}</span>
                 <span className="text-sm font-medium text-gray-800">{t.display_name}</span>
                 <span className="text-[10px] font-mono text-gray-400">{t.name}</span>
                 <span className={`text-[10px] px-1.5 py-px rounded font-medium ${TYPE_BADGE[t.type] ?? 'bg-gray-100 text-gray-600'}`}>
