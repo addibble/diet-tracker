@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   getExerciseHistory,
   type TrainingModelExerciseInsight,
-  type TrainingModelTissueSummary,
   type WkExercise,
   type WkExerciseHistory,
 } from '../api'
@@ -10,109 +9,14 @@ import {
 const riskColor = (risk: number) =>
   risk >= 75 ? 'text-red-600' : risk >= 55 ? 'text-amber-600' : risk >= 30 ? 'text-yellow-600' : 'text-emerald-600'
 
-const riskBg = (risk: number) =>
-  risk >= 75 ? 'bg-red-50 border-red-200' : risk >= 55 ? 'bg-amber-50 border-amber-200' : risk >= 30 ? 'bg-yellow-50 border-yellow-200' : 'bg-emerald-50 border-emerald-200'
-
 const recommendationBadge = (recommendation: string) => {
   if (recommendation === 'avoid') return 'bg-red-100 text-red-700 border-red-200'
   if (recommendation === 'caution') return 'bg-amber-100 text-amber-700 border-amber-200'
   return 'bg-emerald-100 text-emerald-700 border-emerald-200'
 }
 
-const progressBar = (value: number, max: number, color: string) => (
-  <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-100">
-    <div className={`h-full rounded-full ${color}`} style={{ width: `${Math.min(100, (value / max) * 100)}%` }} />
-  </div>
-)
-
 const fmtVol = (value: number) =>
   value >= 10000 ? `${(value / 1000).toFixed(0)}k` : value >= 1000 ? `${(value / 1000).toFixed(1)}k` : Math.round(value).toString()
-
-export function TissueStatusCard({ tissues }: { tissues: TrainingModelTissueSummary[] }) {
-  const [filter, setFilter] = useState<'all' | 'elevated' | 'monitor' | 'recovered'>('all')
-  const elevated = tissues.filter(tissue => tissue.risk_7d >= 55)
-  const monitor = tissues.filter(tissue => tissue.risk_7d >= 30 && tissue.risk_7d < 55)
-  const recovered = tissues.filter(tissue => tissue.risk_7d < 30 && tissue.recovery_estimate >= 0.75)
-  const filtered = filter === 'elevated'
-    ? elevated
-    : filter === 'monitor'
-      ? monitor
-      : filter === 'recovered'
-        ? recovered
-        : tissues
-
-  return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-5">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-semibold text-gray-900">Tissue Status</h3>
-          <p className="mt-0.5 text-xs text-gray-500">Risk, recovery, and current condition by tissue.</p>
-        </div>
-      </div>
-
-      <div className="mb-3 flex flex-wrap gap-1.5">
-        {([
-          ['all', 'All'],
-          ['elevated', `Elevated (${elevated.length})`],
-          ['monitor', `Monitor (${monitor.length})`],
-          ['recovered', `Recovered (${recovered.length})`],
-        ] as const).map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            onClick={() => setFilter(value)}
-            className={`rounded-lg border px-2.5 py-1 text-xs transition-all ${
-              filter === value
-                ? value === 'elevated'
-                  ? 'border-red-300 bg-red-100 font-semibold text-red-700'
-                  : value === 'monitor'
-                    ? 'border-amber-300 bg-amber-100 font-semibold text-amber-700'
-                    : value === 'recovered'
-                      ? 'border-emerald-300 bg-emerald-100 font-semibold text-emerald-700'
-                      : 'border-gray-900 bg-gray-900 font-semibold text-white'
-                : 'border-gray-200 bg-white text-gray-500 hover:border-gray-300'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      <div className="max-h-72 space-y-1.5 overflow-y-auto">
-        {filtered.map(tissue => (
-          <div key={tissue.tissue.id} className={`flex items-center gap-3 rounded-lg border p-2.5 ${riskBg(tissue.risk_7d)}`}>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <span className="truncate text-sm font-medium text-gray-900">{tissue.tissue.display_name}</span>
-                {tissue.current_condition && tissue.current_condition.status !== 'healthy' && (
-                  <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
-                    tissue.current_condition.status === 'injured'
-                      ? 'bg-red-200 text-red-800'
-                      : tissue.current_condition.status === 'tender'
-                        ? 'bg-amber-200 text-amber-800'
-                        : 'bg-blue-200 text-blue-800'
-                  }`}>
-                    {tissue.current_condition.status}
-                  </span>
-                )}
-              </div>
-              <div className="mt-1 flex flex-wrap gap-3 text-[11px] text-gray-500">
-                <span>Cap: {tissue.capacity_trend_30d_pct > 0 ? '+' : ''}{tissue.capacity_trend_30d_pct}%/30d</span>
-                <span>Rec: {Math.round(tissue.recovery_estimate * 100)}%</span>
-                {tissue.contributors[0] && <span className="text-gray-400">{tissue.contributors[0]}</span>}
-              </div>
-            </div>
-            <div className="shrink-0 text-right">
-              <span className={`text-lg font-bold tabular-nums ${riskColor(tissue.risk_7d)}`}>{tissue.risk_7d}</span>
-              <span className="ml-0.5 text-[10px] text-gray-400">%</span>
-            </div>
-          </div>
-        ))}
-        {filtered.length === 0 && <p className="py-2 text-sm text-gray-400">No tissues in this category.</p>}
-      </div>
-    </div>
-  )
-}
 
 export function ExerciseStatusCard({ exercises }: { exercises: TrainingModelExerciseInsight[] }) {
   const [filter, setFilter] = useState<'all' | 'good' | 'caution' | 'avoid'>('all')
@@ -190,56 +94,6 @@ export function ExerciseStatusCard({ exercises }: { exercises: TrainingModelExer
           </div>
         ))}
         {filtered.length === 0 && <p className="py-2 text-sm text-gray-400">No exercises in this category.</p>}
-      </div>
-    </div>
-  )
-}
-
-export function CapacityCard({ tissues }: { tissues: TrainingModelTissueSummary[] }) {
-  const sorted = [...tissues]
-    .filter(tissue => tissue.capacity_trend_30d_pct !== 0)
-    .sort((left, right) => right.capacity_trend_30d_pct - left.capacity_trend_30d_pct)
-
-  if (sorted.length === 0) return null
-
-  const growing = sorted.filter(tissue => tissue.capacity_trend_30d_pct > 0)
-  const declining = sorted.filter(tissue => tissue.capacity_trend_30d_pct < 0)
-
-  return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-5">
-      <h3 className="mb-3 text-sm font-semibold text-gray-900">
-        Capacity Trends <span className="font-normal text-gray-400">30d</span>
-      </h3>
-      <div className="space-y-3">
-        {growing.length > 0 && (
-          <div>
-            <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-600">Growing</p>
-            <div className="space-y-1.5">
-              {growing.map(tissue => (
-                <div key={tissue.tissue.id} className="flex items-center gap-2">
-                  <span className="flex-1 truncate text-xs text-gray-700">{tissue.tissue.display_name}</span>
-                  <span className="text-xs font-semibold tabular-nums text-emerald-600">+{tissue.capacity_trend_30d_pct}%</span>
-                  <div className="w-16">{progressBar(tissue.capacity_trend_30d_pct, 20, 'bg-emerald-400')}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {declining.length > 0 && (
-          <div>
-            <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-red-600">Declining</p>
-            <div className="space-y-1.5">
-              {declining.map(tissue => (
-                <div key={tissue.tissue.id} className="flex items-center gap-2">
-                  <span className="flex-1 truncate text-xs text-gray-700">{tissue.tissue.display_name}</span>
-                  <span className="text-xs font-semibold tabular-nums text-red-600">{tissue.capacity_trend_30d_pct}%</span>
-                  <div className="w-16">{progressBar(Math.abs(tissue.capacity_trend_30d_pct), 20, 'bg-red-400')}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   )

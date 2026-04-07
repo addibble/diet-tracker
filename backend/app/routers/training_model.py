@@ -804,7 +804,6 @@ def create_check_in(
             existing.soreness_0_10 = 0
             existing.pain_0_10 = data.pain_0_10 or 0
             existing.stiffness_0_10 = 0
-            existing.readiness_0_10 = 5
             existing.notes = data.notes
             row = existing
         else:
@@ -815,7 +814,6 @@ def create_check_in(
                 soreness_0_10=0,
                 pain_0_10=data.pain_0_10 or 0,
                 stiffness_0_10=0,
-                readiness_0_10=5,
                 notes=data.notes,
             )
         session.add(row)
