@@ -27,6 +27,7 @@ from app.models import (
     Tissue,
     TissueCondition,
     TissueModelConfig,
+    TissueRegionLink,
     TrackedTissue,
     TrainingExclusionWindow,
     TrainingProgram,
@@ -71,6 +72,15 @@ class TissueState:
     collapse_flag: bool
     failure_count: int
     contributors: list[str]
+    fatigue_input: float = 0.0
+    current_soreness: int = 0
+
+
+@dataclass
+class RecoveryLearningResult:
+    learned_recovery_days: float
+    volume_rebound: float
+    subjective_days: float | None
 
 
 def build_training_model_summary(
@@ -80,6 +90,13 @@ def build_training_model_summary(
     include_exercises: bool = False,
 ) -> dict:
     context = _build_context(session, as_of=as_of)
+
+    # Load region links for all tissues
+    region_links = list(session.exec(select(TissueRegionLink)).all())
+    regions_by_tissue: dict[int, list[str]] = defaultdict(list)
+    for link in region_links:
+        regions_by_tissue[link.tissue_id].append(link.region)
+
     tissues = []
     for tissue in context["tissues"]:
         state = context["states_by_tissue"][tissue.id][-1] if context["states_by_tissue"][tissue.id] else None
@@ -102,6 +119,28 @@ def build_training_model_summary(
             context["configs"][tissue.id].capacity_prior,
             prefer_strain=tissue.type in {"joint", "tendon"},
         )
+        # Last trained date: last date with non-zero load
+        last_trained_date = None
+        exposure_data = context["exposures_by_tissue"][tissue.id]
+        for d in reversed(context["all_dates"]):
+            rec = exposure_data.get(d)
+            if rec and (rec.raw_load > 0 or rec.strain_load > 0):
+                last_trained_date = d.isoformat()
+                break
+        # Recovery learning intermediates
+        rl = context["recovery_learning"][tissue.id]
+        # Overworked status from risk thresholds
+        risk = state.risk_7d
+        if risk >= 75:
+            overworked = "avoid"
+        elif risk >= 55:
+            overworked = "caution"
+        else:
+            overworked = "good"
+        # Region data
+        tissue_regions = regions_by_tissue.get(tissue.id, [])
+        if not tissue_regions and tissue.region:
+            tissue_regions = [tissue.region]
         tissues.append(
             {
                 "tissue": _serialize_tissue(tissue, context["configs"][tissue.id]),
@@ -124,6 +163,15 @@ def build_training_model_summary(
                     for item in context["states_by_tissue"][tissue.id]
                     if item.collapse_flag
                 ][-5:],
+                # New fields for model transparency
+                "fatigue_input": round(state.fatigue_input, 3),
+                "current_soreness": state.current_soreness,
+                "volume_rebound": round(rl.volume_rebound, 3),
+                "subjective_days": round(rl.subjective_days, 3) if rl.subjective_days is not None else None,
+                "overworked": overworked,
+                "tissue_region": tissue.region,
+                "tissue_regions": tissue_regions,
+                "last_trained_date": last_trained_date,
             }
         )
     tissues.sort(key=lambda item: (item["risk_7d"], item["risk_14d"]), reverse=True)
@@ -399,6 +447,8 @@ def build_tissue_history(
             "risk_14d": state.risk_14d,
             "collapse_flag": state.collapse_flag,
             "contributors": state.contributors,
+            "fatigue_input": round(state.fatigue_input, 3),
+            "current_soreness": state.current_soreness,
         }
         for state in series
         if state.date >= cutoff
@@ -678,7 +728,7 @@ def _build_context(session: Session, *, as_of: date | None) -> dict:
         session, tissues, exposures_by_tissue, as_of=as_of,
     )
 
-    recovery_days = {
+    recovery_learning = {
         tissue.id: _learn_recovery_days(
             all_dates,
             exposures_by_tissue[tissue.id],
@@ -689,6 +739,7 @@ def _build_context(session: Session, *, as_of: date | None) -> dict:
         )
         for tissue in tissues
     }
+    recovery_days = {tid: result.learned_recovery_days for tid, result in recovery_learning.items()}
     for tissue in tissues:
         condition = current_conditions.get(tissue.id)
         if condition and condition.get("recovery_hours_override") is not None:
@@ -761,6 +812,7 @@ def _build_context(session: Session, *, as_of: date | None) -> dict:
         "exercise_tissue_stats": exercise_tissue_stats,
         "states_by_tissue": states_by_tissue,
         "recovery_days": recovery_days,
+        "recovery_learning": recovery_learning,
         "exclusion_windows": exclusion_windows,
         "e1rm_by_exercise": e1rm_by_exercise,
         "exposures_by_tissue": exposures_by_tissue,
@@ -1071,6 +1123,8 @@ def _compute_tissue_states(
                 collapse_flag=current_date in collapse_dates,
                 failure_count=record.failures,
                 contributors=_merge_contributors(contributors_7d, contributors_14d),
+                fatigue_input=fatigue_input,
+                current_soreness=current_soreness,
             )
         )
         if current_date in collapse_dates:
@@ -1192,7 +1246,7 @@ def _learn_recovery_days(
     *,
     prefer_strain: bool = False,
     checkin_data: dict[date, dict] | None = None,
-) -> float:
+) -> RecoveryLearningResult:
     exposures = [
         _record_load(exposure_by_date.get(day, ExposureRecord(day)), prefer_strain=prefer_strain)
         for day in all_dates
@@ -1224,6 +1278,7 @@ def _learn_recovery_days(
         volume_rebound = round((seed + midpoint) / 2.0, 3)
 
     # Blend with soreness-calibrated recovery from check-in data when available
+    subjective_days: float | None = None
     if checkin_data:
         subjective_days = _subjective_recovery_days(
             all_dates,
@@ -1233,12 +1288,21 @@ def _learn_recovery_days(
             baseline_days=volume_rebound,
         )
         if subjective_days is not None:
-            return round(
+            final = round(
                 max(volume_rebound * 0.85, 0.7 * volume_rebound + 0.3 * subjective_days),
                 3,
             )
+            return RecoveryLearningResult(
+                learned_recovery_days=final,
+                volume_rebound=volume_rebound,
+                subjective_days=subjective_days,
+            )
 
-    return volume_rebound
+    return RecoveryLearningResult(
+        learned_recovery_days=volume_rebound,
+        volume_rebound=volume_rebound,
+        subjective_days=None,
+    )
 
 
 def _subjective_recovery_days(
