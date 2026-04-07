@@ -792,6 +792,19 @@ export interface TrainingModelTissueSummary {
   tissue_region: string | null;
   tissue_regions: string[];
   last_trained_date: string | null;
+  raw_load: number;
+  condition_severity: number;
+  prior_event_signal: number;
+  failure_count: number;
+  risk_features_7d: {
+    normalized_load: number;
+    acute_ratio: number;
+    ramp_ratio: number;
+    condition: number;
+    prior: number;
+    failures: number;
+    soreness: number;
+  } | null;
 }
 
 export interface TrainingModelExerciseInsight {
