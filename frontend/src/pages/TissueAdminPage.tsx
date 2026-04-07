@@ -1019,33 +1019,71 @@ function TissueView({
               {/* Expandable model detail panel */}
               {isExpanded && model && (
                 <div className="mt-2 ml-6 p-3 bg-gray-50 rounded-lg border border-gray-200 text-[11px]">
+                  {/* Recovery & Fatigue */}
+                  <div className="mb-2">
+                    <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Recovery &amp; Fatigue</span>
+                  </div>
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-1.5">
-                    <ModelValue label="recovery_estimate" value={model.recovery_estimate.toFixed(3)} kind="derived" tip="1/(1+acute_fatigue) × soreness_factor" />
+                    <ModelValue label="recovery_estimate" value={model.recovery_estimate.toFixed(3)} kind="derived" tip="1/(1+acute_fatigue) × clamp(1 - soreness×0.04, 0.75, 1)" />
                     <ModelValue label="learned_recovery_days" value={`${model.learned_recovery_days.toFixed(2)}d`} kind="derived" tip="blend(volume_rebound, subjective_days)" />
-                    <ModelValue label="days_since_trained" value={daysSince != null ? `${daysSince}d` : '—'} kind="derived" tip="Days since last non-zero load" />
-                    <ModelValue label="acute_fatigue" value={model.acute_fatigue.toFixed(3)} kind="derived" tip="decay(prior, fatigue_tau) + fatigue_input/capacity" />
-                    <ModelValue label="fatigue_input" value={model.fatigue_input.toFixed(3)} kind="derived" tip="max(fatigue_load, strain_load) for joint/tendon; else fatigue_load" />
-                    <ModelValue label="current_capacity" value={model.current_capacity.toFixed(3)} kind="derived" tip="max(baseline×0.55, drift + adaptation - penalty)" />
-                    <ModelValue label="baseline_capacity" value={model.baseline_capacity.toFixed(3)} kind="derived" tip="75th percentile of non-zero training days" />
-                    <ModelValue label="recovery_state" value={model.recovery_estimate.toFixed(3)} kind="derived" tip="Same as recovery_estimate: 1/(1+acute_fatigue) × clamp(1-soreness×0.04, 0.75, 1)" />
                     <ModelValue label="volume_rebound" value={`${model.volume_rebound.toFixed(3)}d`} kind="derived" tip="(seed + median_rebound_days) / 2" />
-                    <ModelValue label="subjective_days" value={model.subjective_days != null ? `${model.subjective_days.toFixed(3)}d` : '—'} kind="derived" tip="Soreness-calibrated recovery: days until soreness ≤ 2 post-workout" />
-                    <ModelValue label="current_soreness" value={String(model.current_soreness)} kind="db" tip="Inherited from region soreness check-ins, weighted by exercise exposure" />
+                    <ModelValue label="subjective_days" value={model.subjective_days != null ? `${model.subjective_days.toFixed(3)}d` : '—'} kind="derived" tip="Days until soreness ≤ 2 post-workout" />
+                    <ModelValue label="days_since_trained" value={daysSince != null ? `${daysSince}d` : '—'} kind="derived" tip="Days since last non-zero load" />
+                    <ModelValue label="acute_fatigue" value={model.acute_fatigue.toFixed(3)} kind="derived" tip="decay(prior, fatigue_tau) + fatigue_input / capacity" />
+                    <ModelValue label="fatigue_input" value={model.fatigue_input.toFixed(3)} kind="derived" tip="max(fatigue_load, strain_load) for joint/tendon; else fatigue_load" />
+                    <ModelValue label="current_soreness" value={String(model.current_soreness)} kind="db" tip="Inherited from region soreness, weighted by exercise exposure" />
                     <ModelValue label="overworked" value={model.overworked} kind="derived" tip="'avoid' if risk≥75, 'caution' if risk≥55, else 'good'" />
+                  </div>
+
+                  {/* Load & Capacity */}
+                  <div className="mt-3 mb-2">
+                    <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Load &amp; Capacity</span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-1.5">
+                    <ModelValue label="raw_load" value={model.raw_load.toFixed(3)} kind="derived" tip="Sum of fatigue_load from today's exercises" />
                     <ModelValue label="normalized_load" value={model.normalized_load.toFixed(3)} kind="derived" tip="raw_load / max(current_capacity, 1.0)" />
                     <ModelValue label="chronic_load" value={model.chronic_load.toFixed(3)} kind="derived" tip="decay(prior, max(7, recovery_days×6)) + normalized_load" />
-                    <ModelValue label="ramp_ratio" value={model.ramp_ratio.toFixed(3)} kind="derived" tip="7d_avg / max(28d_avg/4, baseline×0.15, 1.0)" />
-                    <ModelValue label="risk_7d" value={`${model.risk_7d}%`} kind="derived" tip="sigmoid(weighted_sum of 7 factors) × 100" />
-                    <ModelValue label="risk_14d" value={`${model.risk_14d}%`} kind="derived" tip="Same formula, 14d window, ramp dampened ×0.9" />
+                    <ModelValue label="current_capacity" value={model.current_capacity.toFixed(3)} kind="derived" tip="max(baseline×0.55, drift + adaptation - penalty)" />
+                    <ModelValue label="baseline_capacity" value={model.baseline_capacity.toFixed(3)} kind="derived" tip="75th percentile of non-zero training days" />
                     <ModelValue label="capacity_trend_30d" value={`${model.capacity_trend_30d_pct > 0 ? '+' : ''}${model.capacity_trend_30d_pct.toFixed(2)}%`} kind="derived" tip="(recent_cap - earlier_cap) / earlier_cap × 100" />
+                    <ModelValue label="ramp_ratio" value={model.ramp_ratio.toFixed(3)} kind="derived" tip="7d_avg / max(28d_avg/4, baseline×0.15, 1.0)" />
                     <ModelValue label="collapse_count" value={String(model.collapse_count)} kind="derived" tip="Total collapse events detected" />
-                    <ModelValue label="regions" value={model.tissue_regions.join(', ') || '—'} kind="db" tip="Region associations from TissueRegionLink" />
                   </div>
-                  {model.contributors.length > 0 && (
-                    <div className="mt-2 text-[10px] text-gray-500">
-                      <span className="font-medium">Risk contributors:</span> {model.contributors.join(', ')}
+
+                  {/* Risk */}
+                  <div className="mt-3 mb-2">
+                    <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Risk Scoring (7d)</span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-1.5">
+                    <ModelValue label="risk_7d" value={`${model.risk_7d}%`} kind="derived" tip="sigmoid(weighted_sum of 7 features) × 100" />
+                    <ModelValue label="risk_14d" value={`${model.risk_14d}%`} kind="derived" tip="Same formula, 14d window, ramp ×0.9" />
+                    <ModelValue label="condition_severity" value={String(model.condition_severity)} kind="derived" tip="0-4 from condition status: injured≥4, tender≥2, rehabbing≥1, healthy=0" />
+                    <ModelValue label="prior_event_signal" value={model.prior_event_signal.toFixed(3)} kind="derived" tip="Similarity of current load to prior collapse loads" />
+                    <ModelValue label="failure_count" value={String(model.failure_count)} kind="db" tip="Failed reps recorded in recent sessions" />
+                  </div>
+                  {model.risk_features_7d && (
+                    <div className="mt-1.5 ml-2 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-x-3 gap-y-1">
+                      {Object.entries(model.risk_features_7d).map(([key, val]) => (
+                        <span key={key} className="text-[10px] text-gray-500">
+                          <span className="text-gray-400">{key}:</span> <b className={val > 0 ? 'text-amber-700' : 'text-gray-400'}>{val.toFixed(4)}</b>
+                        </span>
+                      ))}
                     </div>
                   )}
+                  {model.contributors.length > 0 && (
+                    <div className="mt-1.5 text-[10px] text-gray-500">
+                      <span className="font-medium">Top contributors:</span> {model.contributors.join(', ')}
+                    </div>
+                  )}
+
+                  {/* Metadata */}
+                  <div className="mt-3 mb-2">
+                    <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Metadata</span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-1.5">
+                    <ModelValue label="regions" value={model.tissue_regions.join(', ') || '—'} kind="db" tip="Region associations from TissueRegionLink" />
+                  </div>
+
                   {/* Model config (DB values) */}
                   {t.model_config && (
                     <div className="mt-2 pt-2 border-t border-gray-200">

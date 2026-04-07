@@ -74,6 +74,9 @@ class TissueState:
     contributors: list[str]
     fatigue_input: float = 0.0
     current_soreness: int = 0
+    condition_severity: int = 0
+    prior_event_signal: float = 0.0
+    risk_features_7d: dict[str, float] | None = None
 
 
 @dataclass
@@ -172,6 +175,13 @@ def build_training_model_summary(
                 "tissue_region": tissue.region,
                 "tissue_regions": tissue_regions,
                 "last_trained_date": last_trained_date,
+                "raw_load": round(state.raw_load, 3),
+                "condition_severity": state.condition_severity,
+                "prior_event_signal": round(state.prior_event_signal, 3),
+                "failure_count": state.failure_count,
+                "risk_features_7d": {
+                    k: round(v, 4) for k, v in state.risk_features_7d.items()
+                } if state.risk_features_7d else None,
             }
         )
     tissues.sort(key=lambda item: (item["risk_7d"], item["risk_14d"]), reverse=True)
@@ -668,7 +678,7 @@ def _load_recovery_checkins(
         )
 
     for row in legacy_rows:
-        uses_legacy_soreness_signal = row.soreness_0_10 > 0 or row.readiness_0_10 != 5
+        uses_legacy_soreness_signal = row.soreness_0_10 > 0
         if not uses_legacy_soreness_signal:
             continue
         if row.tracked_tissue_id is not None:
@@ -1072,7 +1082,7 @@ def _compute_tissue_states(
             baseline_capacity,
             prior_collapse_loads,
         )
-        risk_7d, contributors_7d = _score_risk(
+        risk_7d, contributors_7d, features_7d = _score_risk(
             normalized_load=recent_7 / max(current_capacity, 1.0),
             acute_fatigue=acute_fatigue,
             ramp_ratio=ramp_ratio,
@@ -1084,7 +1094,7 @@ def _compute_tissue_states(
             ramp_sensitivity=config.ramp_sensitivity,
             risk_sensitivity=config.risk_sensitivity,
         )
-        risk_14d, contributors_14d = _score_risk(
+        risk_14d, contributors_14d, _ = _score_risk(
             normalized_load=(recent_28 / 4.0) / max(current_capacity, 1.0),
             acute_fatigue=acute_fatigue,
             ramp_ratio=ramp_ratio * 0.9,
@@ -1125,6 +1135,9 @@ def _compute_tissue_states(
                 contributors=_merge_contributors(contributors_7d, contributors_14d),
                 fatigue_input=fatigue_input,
                 current_soreness=current_soreness,
+                condition_severity=condition_severity,
+                prior_event_signal=prior_event_signal,
+                risk_features_7d=features_7d,
             )
         )
         if current_date in collapse_dates:
@@ -1465,7 +1478,7 @@ def _score_risk(
     current_soreness: int = 0,
     ramp_sensitivity: float = 1.0,
     risk_sensitivity: float = 1.0,
-) -> tuple[int, list[str]]:
+) -> tuple[int, list[str], dict[str, float]]:
     features = {
         "normalized_load": max(0.0, normalized_load - 0.7),
         "acute_ratio": max(0.0, acute_fatigue - 0.8),
@@ -1504,7 +1517,7 @@ def _score_risk(
     score *= max(risk_sensitivity, 0.75)
     risk = int(round(_clamp(100.0 / (1.0 + math.exp(-4.0 * (score - 0.45))), 0.0, 100.0)))
     contributors = [label for _, label in sorted(contributions, reverse=True)[:3]]
-    return risk, contributors
+    return risk, contributors, features
 
 
 def _prior_event_similarity(

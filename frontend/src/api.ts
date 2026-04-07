@@ -167,11 +167,6 @@ export function foodMacroPerServing(food: Food, macro: keyof Macros): number {
 }
 
 // Helper to get a recipe's total macro value by macro key
-export function recipeTotalMacro(recipe: Recipe, macro: keyof Macros): number {
-  const key = `total_${macro}` as keyof Recipe;
-  return recipe[key] as number;
-}
-
 export interface Food {
   id: number;
   name: string;
@@ -329,21 +324,6 @@ export interface MacroTarget extends Macros {
   next_day: string | null;
 }
 
-// Parsed meal item from LLM
-export interface ParsedItem {
-  name: string;
-  amount_grams: number;
-  food_id: number | null;
-  source: string; // "db", "usda", or "unknown"
-  serving_size_grams: number;
-  macros_per_serving: Macros;
-}
-
-export interface ParseResult {
-  items: ParsedItem[];
-  new_foods: Food[]; // Foods auto-created from USDA
-}
-
 // Auth
 export const login = (password: string) =>
   request('/auth/login', { method: 'POST', body: JSON.stringify({ password }) });
@@ -376,8 +356,6 @@ export const deleteFood = (id: number) =>
 
 // Recipes
 export const getRecipes = () => request<Recipe[]>('/recipes');
-
-export const getRecipe = (id: number) => request<Recipe>(`/recipes/${id}`);
 
 export const createRecipe = (data: { name: string; components: { food_id: number; amount_grams: number }[] }) =>
   request<Recipe>('/recipes', { method: 'POST', body: JSON.stringify(data) });
@@ -814,6 +792,19 @@ export interface TrainingModelTissueSummary {
   tissue_region: string | null;
   tissue_regions: string[];
   last_trained_date: string | null;
+  raw_load: number;
+  condition_severity: number;
+  prior_event_signal: number;
+  failure_count: number;
+  risk_features_7d: {
+    normalized_load: number;
+    acute_ratio: number;
+    ramp_ratio: number;
+    condition: number;
+    prior: number;
+    failures: number;
+    soreness: number;
+  } | null;
 }
 
 export interface TrainingModelExerciseInsight {
@@ -1457,13 +1448,6 @@ export interface SavedPlanExercise {
   sets_done: number;
   done: boolean;
 }
-
-// Parse meal with LLM
-export const parseMeal = (description: string) =>
-  request<ParseResult>('/meals/parse', {
-    method: 'POST',
-    body: JSON.stringify({ description }),
-  });
 
 // Chat-based meal logging
 export interface ChatMessage {
