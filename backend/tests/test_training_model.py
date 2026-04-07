@@ -130,6 +130,17 @@ def test_training_model_summary_and_history_include_exclusion_windows(client, se
     assert tendon_row["current_capacity"] > 0
     assert tendon_row["learned_recovery_days"] > 0
 
+    # Verify new model transparency fields are present
+    for tissue_row in payload["tissues"]:
+        assert "fatigue_input" in tissue_row
+        assert "current_soreness" in tissue_row
+        assert "volume_rebound" in tissue_row
+        assert "subjective_days" in tissue_row  # may be null
+        assert tissue_row["overworked"] in ("good", "caution", "avoid")
+        assert "tissue_region" in tissue_row
+        assert isinstance(tissue_row["tissue_regions"], list)
+        assert "last_trained_date" in tissue_row
+
     summary_with_exercises = client.get(
         "/api/training-model/summary?as_of=2026-01-12&include_exercises=true"
     )
@@ -141,6 +152,10 @@ def test_training_model_summary_and_history_include_exclusion_windows(client, se
     history_payload = history.json()
     assert history_payload["tissue"]["id"] == quad.id
     assert all(not point["date"].startswith("2025-12-2") for point in history_payload["history"] if point["collapse_flag"])
+    # Verify new history point fields
+    for point in history_payload["history"]:
+        assert "fatigue_input" in point
+        assert "current_soreness" in point
 
 
 def test_training_model_marks_precollapse_risk_before_trouble(client, session):

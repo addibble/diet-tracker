@@ -25,12 +25,11 @@ import {
   type WkTissue,
   type WkExercise,
   type WkTissueReadiness,
+  type TrainingModelTissueSummary,
 } from '../api'
 import {
-  CapacityCard,
   ExerciseProgressCard,
   ExerciseStatusCard,
-  TissueStatusCard,
 } from '../components/TrainingInsights'
 
 // ── Types ──
@@ -98,6 +97,39 @@ const ROLE_FILTER_OPTIONS: { value: ExerciseRoleFilter; label: string }[] = [
   { value: 'stabilizer', label: 'Stabilizer' },
 ]
 
+type TissueStatusFilter = 'recovered' | 'monitor' | 'elevated' | 'overworked'
+
+const STATUS_COLORS: Record<TissueStatusFilter, string> = {
+  recovered: 'bg-green-100 text-green-700',
+  monitor: 'bg-yellow-100 text-yellow-700',
+  elevated: 'bg-orange-100 text-orange-700',
+  overworked: 'bg-red-100 text-red-700',
+}
+
+const STATUS_FILTER_OPTIONS: { value: TissueStatusFilter; label: string }[] = [
+  { value: 'recovered', label: 'Recovered' },
+  { value: 'monitor', label: 'Monitor' },
+  { value: 'elevated', label: 'Elevated' },
+  { value: 'overworked', label: 'Overworked' },
+]
+
+function getTissueStatus(summary: TrainingModelTissueSummary): TissueStatusFilter {
+  if (summary.risk_7d >= 75) return 'overworked'
+  if (summary.risk_7d >= 55) return 'elevated'
+  if (summary.risk_7d >= 30) return 'monitor'
+  return 'recovered'
+}
+
+type SortField = 'name' | 'capacity_trend' | 'risk' | 'recovery'
+type SortDir = 'asc' | 'desc'
+
+const SORT_OPTIONS: { value: SortField; label: string }[] = [
+  { value: 'name', label: 'Name' },
+  { value: 'capacity_trend', label: 'Capacity Trend' },
+  { value: 'risk', label: 'Risk (Status)' },
+  { value: 'recovery', label: 'Recovery' },
+]
+
 const LATERALITY_OPTIONS = [
   { value: 'bilateral', label: 'Bilateral' },
   { value: 'unilateral', label: 'Unilateral' },
@@ -151,6 +183,12 @@ function formatLastWorked(isoDate: string | null, hoursSince: number | null): st
   const days = hoursSince / 24
   if (days < 1.5) return '1d ago'
   return `${Math.round(days)}d ago`
+}
+
+function daysSinceDate(isoDate: string | null): number | null {
+  if (!isoDate) return null
+  const msPerDay = 86400000
+  return Math.round((new Date().getTime() - new Date(isoDate).getTime()) / msPerDay)
 }
 
 function formatSide(side: string) {
@@ -588,12 +626,26 @@ function ExerciseMetadataEditor({
 
 // ── Tissue View ──
 
+function ModelValue({ label, value, kind, tip }: { label: string; value: string; kind: 'db' | 'derived'; tip: string }) {
+  return (
+    <div className="flex items-baseline gap-1" title={tip}>
+      <span className="font-mono text-gray-500">{label}:</span>
+      <span className="font-semibold text-gray-800">{value}</span>
+      <span className={`text-[9px] px-1 rounded ${kind === 'db' ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-500'}`}>
+        {kind === 'db' ? 'DB' : 'Derived'}
+      </span>
+    </div>
+  )
+}
+
 function TissueView({
   tissues,
   exercises,
   readinessMap,
   trackedReadinessByTissue,
   rehabProtocols,
+  modelTissues,
+  regions,
   onSave,
 }: {
   tissues: TissueWithExercises[]
@@ -601,13 +653,19 @@ function TissueView({
   readinessMap: Map<number, WkTissueReadiness>
   trackedReadinessByTissue: Map<number, TrackedTissueReadiness[]>
   rehabProtocols: RehabProtocol[]
+  modelTissues: TrainingModelTissueSummary[]
+  regions: RegionInfo[]
   onSave: () => void
 }) {
   const [search, setSearch] = useState('')
   const [selectedTypes, setSelectedTypes] = useState<TissueTypeFilter[]>([])
   const [selectedConditions, setSelectedConditions] = useState<ConditionFilter[]>([])
   const [selectedRoles, setSelectedRoles] = useState<ExerciseRoleFilter[]>([])
-
+  const [selectedStatuses, setSelectedStatuses] = useState<TissueStatusFilter[]>([])
+  const [selectedRegions, setSelectedRegions] = useState<string[]>([])
+  const [sortField, setSortField] = useState<SortField>('name')
+  const [sortDir, setSortDir] = useState<SortDir>('asc')
+  const [expandedTissues, setExpandedTissues] = useState<Set<number>>(new Set())
   const toggleTypeFilter = (value: TissueTypeFilter) => {
     setSelectedTypes((current) =>
       current.includes(value) ? current.filter((item) => item !== value) : [...current, value],
@@ -626,13 +684,64 @@ function TissueView({
     )
   }
 
+  const toggleStatusFilter = (value: TissueStatusFilter) => {
+    setSelectedStatuses((current) =>
+      current.includes(value) ? current.filter((item) => item !== value) : [...current, value],
+    )
+  }
+
+  const toggleRegionFilter = (value: string) => {
+    setSelectedRegions((current) =>
+      current.includes(value) ? current.filter((item) => item !== value) : [...current, value],
+    )
+  }
+
+  const toggleExpanded = (tissueId: number) => {
+    setExpandedTissues((current) => {
+      const next = new Set(current)
+      if (next.has(tissueId)) next.delete(tissueId)
+      else next.add(tissueId)
+      return next
+    })
+  }
+
+  // Build lookup maps
+  const modelByTissueId = useMemo(() => {
+    const map = new Map<number, TrainingModelTissueSummary>()
+    for (const mt of modelTissues) map.set(mt.tissue.id, mt)
+    return map
+  }, [modelTissues])
+
+  const regionOptions = useMemo(() => {
+    const unique = new Set<string>()
+    for (const r of regions) unique.add(r.region)
+    return Array.from(unique).sort().map((r) => {
+      const info = regions.find((ri) => ri.region === r)
+      return { value: r, label: info?.label ?? titleCase(r) }
+    })
+  }, [regions])
+
+  // Build region membership map for filtering
+  const tissueRegions = useMemo(() => {
+    const map = new Map<number, Set<string>>()
+    for (const r of regions) {
+      for (const t of r.tissues) {
+        const existing = map.get(t.id) ?? new Set()
+        existing.add(r.region)
+        map.set(t.id, existing)
+      }
+    }
+    return map
+  }, [regions])
+
   const hasTagFilters =
-    selectedTypes.length > 0 || selectedConditions.length > 0 || selectedRoles.length > 0
+    selectedTypes.length > 0 || selectedConditions.length > 0 || selectedRoles.length > 0 ||
+    selectedStatuses.length > 0 || selectedRegions.length > 0
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
 
-    return tissues.filter((t) => {
+    const result = tissues.filter((t) => {
       if (q && !t.name.toLowerCase().includes(q) && !t.display_name.toLowerCase().includes(q)) {
         return false
       }
@@ -652,9 +761,45 @@ function TissueView({
         }
       }
 
+      if (selectedStatuses.length > 0) {
+        const model = modelByTissueId.get(t.id)
+        if (!model) return false
+        const status = getTissueStatus(model)
+        if (!selectedStatuses.includes(status)) return false
+      }
+
+      if (selectedRegions.length > 0) {
+        const tRegions = tissueRegions.get(t.id)
+        if (!tRegions || !selectedRegions.some((r) => tRegions.has(r))) return false
+      }
+
       return true
     })
-  }, [tissues, search, selectedTypes, selectedConditions, readinessMap, trackedReadinessByTissue])
+
+    // Sort
+    result.sort((a, b) => {
+      let cmp = 0
+      const ma = modelByTissueId.get(a.id)
+      const mb = modelByTissueId.get(b.id)
+      switch (sortField) {
+        case 'name':
+          cmp = a.display_name.localeCompare(b.display_name)
+          break
+        case 'capacity_trend':
+          cmp = (ma?.capacity_trend_30d_pct ?? 0) - (mb?.capacity_trend_30d_pct ?? 0)
+          break
+        case 'risk':
+          cmp = (ma?.risk_7d ?? 0) - (mb?.risk_7d ?? 0)
+          break
+        case 'recovery':
+          cmp = (ma?.recovery_estimate ?? 0) - (mb?.recovery_estimate ?? 0)
+          break
+      }
+      return sortDir === 'desc' ? -cmp : cmp
+    })
+
+    return result
+  }, [tissues, search, selectedTypes, selectedConditions, selectedStatuses, selectedRegions, readinessMap, trackedReadinessByTissue, modelByTissueId, tissueRegions, sortField, sortDir])
 
   return (
     <div>
@@ -673,6 +818,8 @@ function TissueView({
               setSelectedTypes([])
               setSelectedConditions([])
               setSelectedRoles([])
+              setSelectedStatuses([])
+              setSelectedRegions([])
             }}
             className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
           >
@@ -712,6 +859,34 @@ function TissueView({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">
+            Tissue status
+          </span>
+          {STATUS_FILTER_OPTIONS.map((option) => (
+            <FilterButton
+              key={option.value}
+              label={option.label}
+              toneClassName={STATUS_COLORS[option.value]}
+              selected={selectedStatuses.includes(option.value)}
+              onClick={() => toggleStatusFilter(option.value)}
+            />
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">
+            Region
+          </span>
+          {regionOptions.map((option) => (
+            <FilterButton
+              key={option.value}
+              label={option.label}
+              toneClassName="bg-blue-100 text-blue-700"
+              selected={selectedRegions.includes(option.value)}
+              onClick={() => toggleRegionFilter(option.value)}
+            />
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">
             Exercise role
           </span>
           {ROLE_FILTER_OPTIONS.map((option) => (
@@ -727,6 +902,35 @@ function TissueView({
         <p className="text-[10px] text-gray-400">
           Role filters only change the exercise mappings shown inside each tissue row.
         </p>
+
+        {/* Sort controls */}
+        <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-gray-100">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">
+            Sort by
+          </span>
+          {SORT_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => {
+                if (sortField === option.value) {
+                  setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+                } else {
+                  setSortField(option.value)
+                  setSortDir(option.value === 'name' ? 'asc' : 'desc')
+                }
+              }}
+              className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                sortField === option.value
+                  ? 'bg-gray-800 text-white border-transparent shadow-sm'
+                  : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50 hover:text-gray-700'
+              }`}
+            >
+              {option.label}
+              {sortField === option.value && (sortDir === 'asc' ? ' ↑' : ' ↓')}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="bg-white border border-gray-200 rounded-xl overflow-hidden divide-y divide-gray-100">
@@ -747,10 +951,23 @@ function TissueView({
             selectedRoles.length === 0
               ? t.exercises
               : t.exercises.filter((ex) => selectedRoles.includes(ex.role as ExerciseRoleFilter))
+          const model = modelByTissueId.get(t.id)
+          const status = model ? getTissueStatus(model) : null
+          const isExpanded = expandedTissues.has(t.id)
+          const daysSince = daysSinceDate(model?.last_trained_date ?? null)
 
           return (
             <div key={t.id} className="px-4 py-2 hover:bg-gray-50/80 transition-colors">
+              {/* Row 1: Identity + quick model badges */}
               <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => toggleExpanded(t.id)}
+                  className="text-[10px] text-gray-400 hover:text-gray-600 w-4"
+                  title={isExpanded ? 'Collapse' : 'Expand model details'}
+                >
+                  {isExpanded ? '▾' : '▸'}
+                </button>
                 <span className="text-sm font-medium text-gray-800">{t.display_name}</span>
                 <span className="text-[10px] font-mono text-gray-400">{t.name}</span>
                 <span className={`text-[10px] px-1.5 py-px rounded font-medium ${TYPE_BADGE[t.type] ?? 'bg-gray-100 text-gray-600'}`}>
@@ -766,19 +983,89 @@ function TissueView({
                     healthy
                   </span>
                 ) : null}
-                <span className="text-[10px] text-gray-400" title={readiness?.last_trained ?? 'never'}>
-                  ⏱ {formatLastWorked(readiness?.last_trained ?? null, readiness?.hours_since ?? null)}
-                </span>
-                <span className="text-[10px] text-gray-400">{t.recovery_hours}h</span>
-                {t.model_config && (
-                  <span className="text-[10px] text-gray-400">
-                    cap {t.model_config.capacity_prior.toFixed(1)} · rec {t.model_config.recovery_tau_days.toFixed(1)}d
+                {status && (
+                  <span className={`text-[10px] px-1.5 py-px rounded font-medium ${STATUS_COLORS[status]}`}>
+                    {status}
                   </span>
                 )}
+                {model && (
+                  <>
+                    <span className="text-[10px] text-gray-500" title="Recovery estimate (0-1)">
+                      🔋 {(model.recovery_estimate * 100).toFixed(0)}%
+                    </span>
+                    <span className="text-[10px] text-gray-500" title={`Risk 7d: ${model.risk_7d}%`}>
+                      ⚠️ {model.risk_7d}%
+                    </span>
+                    <span
+                      className={`text-[10px] ${model.capacity_trend_30d_pct >= 0 ? 'text-green-600' : 'text-red-500'}`}
+                      title={`Capacity trend 30d: ${model.capacity_trend_30d_pct > 0 ? '+' : ''}${model.capacity_trend_30d_pct.toFixed(1)}%`}
+                    >
+                      {model.capacity_trend_30d_pct >= 0 ? '↑' : '↓'} {Math.abs(model.capacity_trend_30d_pct).toFixed(1)}%
+                    </span>
+                    {model.overworked !== 'good' && (
+                      <span className={`text-[10px] px-1.5 py-px rounded font-medium ${model.overworked === 'avoid' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                        {model.overworked}
+                      </span>
+                    )}
+                  </>
+                )}
+                <span className="text-[10px] text-gray-400" title={model?.last_trained_date ?? readiness?.last_trained ?? 'never'}>
+                  ⏱ {daysSince != null
+                    ? `${daysSince}d ago`
+                    : formatLastWorked(readiness?.last_trained ?? null, readiness?.hours_since ?? null)}
+                </span>
               </div>
 
+              {/* Expandable model detail panel */}
+              {isExpanded && model && (
+                <div className="mt-2 ml-6 p-3 bg-gray-50 rounded-lg border border-gray-200 text-[11px]">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-1.5">
+                    <ModelValue label="recovery_estimate" value={model.recovery_estimate.toFixed(3)} kind="derived" tip="1/(1+acute_fatigue) × soreness_factor" />
+                    <ModelValue label="learned_recovery_days" value={`${model.learned_recovery_days.toFixed(2)}d`} kind="derived" tip="blend(volume_rebound, subjective_days)" />
+                    <ModelValue label="days_since_trained" value={daysSince != null ? `${daysSince}d` : '—'} kind="derived" tip="Days since last non-zero load" />
+                    <ModelValue label="acute_fatigue" value={model.acute_fatigue.toFixed(3)} kind="derived" tip="decay(prior, fatigue_tau) + fatigue_input/capacity" />
+                    <ModelValue label="fatigue_input" value={model.fatigue_input.toFixed(3)} kind="derived" tip="max(fatigue_load, strain_load) for joint/tendon; else fatigue_load" />
+                    <ModelValue label="current_capacity" value={model.current_capacity.toFixed(3)} kind="derived" tip="max(baseline×0.55, drift + adaptation - penalty)" />
+                    <ModelValue label="baseline_capacity" value={model.baseline_capacity.toFixed(3)} kind="derived" tip="75th percentile of non-zero training days" />
+                    <ModelValue label="recovery_state" value={model.recovery_estimate.toFixed(3)} kind="derived" tip="Same as recovery_estimate: 1/(1+acute_fatigue) × clamp(1-soreness×0.04, 0.75, 1)" />
+                    <ModelValue label="volume_rebound" value={`${model.volume_rebound.toFixed(3)}d`} kind="derived" tip="(seed + median_rebound_days) / 2" />
+                    <ModelValue label="subjective_days" value={model.subjective_days != null ? `${model.subjective_days.toFixed(3)}d` : '—'} kind="derived" tip="Soreness-calibrated recovery: days until soreness ≤ 2 post-workout" />
+                    <ModelValue label="current_soreness" value={String(model.current_soreness)} kind="db" tip="Inherited from region soreness check-ins, weighted by exercise exposure" />
+                    <ModelValue label="overworked" value={model.overworked} kind="derived" tip="'avoid' if risk≥75, 'caution' if risk≥55, else 'good'" />
+                    <ModelValue label="normalized_load" value={model.normalized_load.toFixed(3)} kind="derived" tip="raw_load / max(current_capacity, 1.0)" />
+                    <ModelValue label="chronic_load" value={model.chronic_load.toFixed(3)} kind="derived" tip="decay(prior, max(7, recovery_days×6)) + normalized_load" />
+                    <ModelValue label="ramp_ratio" value={model.ramp_ratio.toFixed(3)} kind="derived" tip="7d_avg / max(28d_avg/4, baseline×0.15, 1.0)" />
+                    <ModelValue label="risk_7d" value={`${model.risk_7d}%`} kind="derived" tip="sigmoid(weighted_sum of 7 factors) × 100" />
+                    <ModelValue label="risk_14d" value={`${model.risk_14d}%`} kind="derived" tip="Same formula, 14d window, ramp dampened ×0.9" />
+                    <ModelValue label="capacity_trend_30d" value={`${model.capacity_trend_30d_pct > 0 ? '+' : ''}${model.capacity_trend_30d_pct.toFixed(2)}%`} kind="derived" tip="(recent_cap - earlier_cap) / earlier_cap × 100" />
+                    <ModelValue label="collapse_count" value={String(model.collapse_count)} kind="derived" tip="Total collapse events detected" />
+                    <ModelValue label="regions" value={model.tissue_regions.join(', ') || '—'} kind="db" tip="Region associations from TissueRegionLink" />
+                  </div>
+                  {model.contributors.length > 0 && (
+                    <div className="mt-2 text-[10px] text-gray-500">
+                      <span className="font-medium">Risk contributors:</span> {model.contributors.join(', ')}
+                    </div>
+                  )}
+                  {/* Model config (DB values) */}
+                  {t.model_config && (
+                    <div className="mt-2 pt-2 border-t border-gray-200">
+                      <span className="text-[10px] font-semibold text-gray-500">DB Config:</span>
+                      <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                        <span className="text-[10px] text-gray-500">recovery_hours: <b>{t.recovery_hours}h</b></span>
+                        <span className="text-[10px] text-gray-500">capacity_prior: <b>{t.model_config.capacity_prior}</b></span>
+                        <span className="text-[10px] text-gray-500">recovery_tau_days: <b>{t.model_config.recovery_tau_days}d</b></span>
+                        <span className="text-[10px] text-gray-500">fatigue_tau_days: <b>{t.model_config.fatigue_tau_days}d</b></span>
+                        <span className="text-[10px] text-gray-500">collapse_drop_threshold: <b>{t.model_config.collapse_drop_threshold}</b></span>
+                        <span className="text-[10px] text-gray-500">ramp_sensitivity: <b>{t.model_config.ramp_sensitivity}</b></span>
+                        <span className="text-[10px] text-gray-500">risk_sensitivity: <b>{t.model_config.risk_sensitivity}</b></span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {visibleExercises.length > 0 ? (
-                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                <div className="mt-1 ml-6 flex flex-wrap gap-x-3 gap-y-1">
                   {visibleExercises.map((ex) => {
                     const fullExercise = exercises.find((e) => e.id === ex.exercise_id)
                     return (
@@ -805,13 +1092,13 @@ function TissueView({
                   })}
                 </div>
               ) : t.exercises.length > 0 && selectedRoles.length > 0 ? (
-                <p className="mt-1 text-[11px] italic text-gray-400">
+                <p className="mt-1 ml-6 text-[11px] italic text-gray-400">
                   No exercise mappings match the selected role filters.
                 </p>
               ) : null}
 
               {trackedReadinessByTissue.get(t.id)?.length ? (
-                <div className="mt-2 grid gap-2">
+                <div className="mt-2 ml-6 grid gap-2">
                   {trackedReadinessByTissue.get(t.id)!.map((tracked) => (
                     <TrackedTissueCard
                       key={tracked.tracked_tissue.id}
@@ -826,6 +1113,144 @@ function TissueView({
           )
         })}
       </div>
+
+      {/* Calculation Reference */}
+      <CalculationReference />
+    </div>
+  )
+}
+
+function CalculationReference() {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mt-6 rounded-xl border border-gray-200 bg-white">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
+      >
+        <span>📐 Calculation Reference — How Every Value Is Computed</span>
+        <span className="text-gray-400">{open ? '▾' : '▸'}</span>
+      </button>
+      {open && (
+        <div className="px-4 pb-4 text-[11px] leading-relaxed text-gray-700 space-y-4">
+          <section>
+            <h3 className="font-semibold text-gray-900 text-xs mb-1">DB-Stored Values (Source of Truth)</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-0.5 font-mono text-[10px]">
+              <div><span className="text-blue-600">recovery_hours</span> — Tissue table (default 48h)</div>
+              <div><span className="text-blue-600">capacity_prior</span> — TissueModelConfig (default 1.0)</div>
+              <div><span className="text-blue-600">recovery_tau_days</span> — TissueModelConfig (default 3.0d)</div>
+              <div><span className="text-blue-600">fatigue_tau_days</span> — TissueModelConfig (default 2.0d)</div>
+              <div><span className="text-blue-600">collapse_drop_threshold</span> — TissueModelConfig (default 0.45)</div>
+              <div><span className="text-blue-600">ramp_sensitivity</span> — TissueModelConfig (default 1.0)</div>
+              <div><span className="text-blue-600">risk_sensitivity</span> — TissueModelConfig (default 1.0)</div>
+              <div><span className="text-blue-600">soreness_0_10</span> — RegionSorenessCheckIn → distributed to tissues by exercise exposure</div>
+              <div><span className="text-blue-600">condition status/severity</span> — TissueCondition (append-only log, latest row wins)</div>
+            </div>
+          </section>
+
+          <section>
+            <h3 className="font-semibold text-gray-900 text-xs mb-1">Derived Values (with formulas)</h3>
+            <div className="space-y-2 font-mono text-[10px]">
+              <Formula
+                name="fatigue_input"
+                formula="max(fatigue_load, strain_load) for joint/tendon; else fatigue_load"
+              />
+              <Formula
+                name="acute_fatigue"
+                formula="decay(prior, fatigue_tau) + fatigue_input / max(capacity, 1.0)"
+                note="decay(v, τ) = v × e^(-1/τ)"
+              />
+              <Formula
+                name="recovery_state"
+                formula="1/(1 + acute_fatigue) × clamp(1 − soreness×0.04, 0.75, 1.0)"
+                note="Same as recovery_estimate. Range 0-1."
+              />
+              <Formula
+                name="chronic_load"
+                formula="decay(prior, max(7, recovery_days×6)) + normalized_load"
+              />
+              <Formula
+                name="capacity"
+                formula="max(baseline×0.55, drift + adaptation − penalty)"
+                note="drift = cap + (baseline−cap)×0.04 | adaptation = baseline × max(0, min(load,1.15)−0.45) × 0.03 × recovery | penalty = baseline × max(0, load−1.25) × 0.035"
+              />
+              <Formula
+                name="ramp_ratio"
+                formula="7d_avg / max(28d_avg/4, baseline×0.15, 1.0)"
+                note=">1.0 = acute overload, >1.3 = collapse risk"
+              />
+              <Formula
+                name="baseline_capacity"
+                formula="75th percentile of non-zero training day loads (min 1.0)"
+              />
+              <Formula
+                name="learned_recovery_days"
+                formula="blend(volume_rebound, subjective_days)"
+                note="final = max(vol_rebound×0.85, 0.7×vol_rebound + 0.3×subjective_days)"
+              />
+              <Formula
+                name="volume_rebound"
+                formula="(seed + median_rebound_days) / 2"
+                note="seed = recovery_hours/24 or recovery_tau_days. Rebound = days until load returns to 80% of pre-dip level."
+              />
+              <Formula
+                name="subjective_days"
+                formula="median(days until soreness ≤ 2 post-workout)"
+                note="Peak soreness checked +1 to +3d. Bonus: +1.0d if peak≥7, +0.5d if peak≥4."
+              />
+              <Formula
+                name="risk_7d"
+                formula="sigmoid(Σ weight_i × feature_i) × 100"
+                note="Features: load(31%), fatigue(24%), ramp(20%), condition(10%), prior(7%), failures(5%), soreness(7%). Sigmoid: 100/(1+e^(-4×(score−0.45)))"
+              />
+              <Formula
+                name="overworked"
+                formula="'avoid' if risk_7d≥75, 'caution' if risk_7d≥55, else 'good'"
+              />
+              <Formula
+                name="normalized_load"
+                formula="raw_load / max(current_capacity, 1.0)"
+              />
+              <Formula
+                name="capacity_trend_30d"
+                formula="(recent_cap − earlier_cap) / earlier_cap × 100"
+              />
+            </div>
+          </section>
+
+          <section>
+            <h3 className="font-semibold text-gray-900 text-xs mb-1">Global Constants (planner)</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-0.5 font-mono text-[10px]">
+              <div>TISSUE_FATIGUE_HARD_FLOOR = 0.4</div>
+              <div>TISSUE_FATIGUE_SOFT_FLOOR = 0.7</div>
+              <div>REST_DAY_THRESHOLD = 0.35</div>
+              <div>DEFAULT_FRESHNESS_DAYS = 21</div>
+            </div>
+          </section>
+
+          <section>
+            <h3 className="font-semibold text-gray-900 text-xs mb-1">Potentially Dead Code</h3>
+            <ul className="list-disc list-inside text-[10px] text-gray-500 space-y-0.5">
+              <li><b>RecoveryCheckIn.readiness_0_10</b> — stored in DB but always defaults to 5, never read</li>
+              <li><b>ramp_sensitivity / risk_sensitivity</b> — in TissueModelConfig but always 1.0, never configured per-tissue</li>
+              <li><b>fatigue_factor</b> on ExerciseTissue — mostly overridden by routing_factor logic</li>
+              <li><b>Dual 7d/14d risk</b> — nearly identical calculation, ramp dampened ×0.9 for 14d</li>
+            </ul>
+          </section>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Formula({ name, formula, note }: { name: string; formula: string; note?: string }) {
+  return (
+    <div>
+      <span className="text-gray-900 font-semibold">{name}</span>
+      <span className="text-gray-500"> = </span>
+      <span className="text-gray-700">{formula}</span>
+      {note && <div className="ml-4 text-[9px] text-gray-400 italic">{note}</div>}
     </div>
   )
 }
@@ -1597,18 +2022,14 @@ export default function TissueAdminPage() {
 
       {view === 'tissues' && (
         <div className="space-y-4">
-          {modelSummary && (
-            <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-              <TissueStatusCard tissues={modelSummary.tissues} />
-              <CapacityCard tissues={modelSummary.tissues} />
-            </div>
-          )}
           <TissueView
             tissues={tissuesWithExercises}
             exercises={exercises}
             readinessMap={readinessMap}
             trackedReadinessByTissue={trackedReadinessByTissue}
             rehabProtocols={rehabProtocols}
+            modelTissues={modelSummary?.tissues ?? []}
+            regions={regions}
             onSave={load}
           />
         </div>

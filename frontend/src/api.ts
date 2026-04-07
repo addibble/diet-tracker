@@ -806,6 +806,14 @@ export interface TrainingModelTissueSummary {
     updated_at: string;
   } | null;
   recent_collapses: string[];
+  fatigue_input: number;
+  current_soreness: number;
+  volume_rebound: number;
+  subjective_days: number | null;
+  overworked: 'good' | 'caution' | 'avoid';
+  tissue_region: string | null;
+  tissue_regions: string[];
+  last_trained_date: string | null;
 }
 
 export interface TrainingModelExerciseInsight {
@@ -875,6 +883,8 @@ export interface TrainingModelHistoryPoint {
   risk_14d: number;
   collapse_flag: boolean;
   contributors: string[];
+  fatigue_input: number;
+  current_soreness: number;
 }
 
 export interface TrainingModelTissueHistory {
