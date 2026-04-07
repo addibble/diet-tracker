@@ -796,6 +796,14 @@ export interface TrainingModelTissueSummary {
   condition_severity: number;
   prior_event_signal: number;
   failure_count: number;
+  last_failure_date: string | null;
+  prior_acute_fatigue: number;
+  fatigue_load: number;
+  strain_load: number;
+  recent_7d_load: number;
+  recent_28d_load: number;
+  recovery_seed_days: number;
+  median_rebound_days: number | null;
   risk_features_7d: {
     normalized_load: number;
     acute_ratio: number;
