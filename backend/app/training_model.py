@@ -77,6 +77,11 @@ class TissueState:
     condition_severity: int = 0
     prior_event_signal: float = 0.0
     risk_features_7d: dict[str, float] | None = None
+    prior_acute_fatigue: float = 0.0
+    fatigue_load: float = 0.0
+    strain_load: float = 0.0
+    recent_7d_load: float = 0.0
+    recent_28d_load: float = 0.0
 
 
 @dataclass
@@ -84,6 +89,8 @@ class RecoveryLearningResult:
     learned_recovery_days: float
     volume_rebound: float
     subjective_days: float | None
+    recovery_seed_days: float = 0.0
+    median_rebound_days: float | None = None
 
 
 def build_training_model_summary(
@@ -124,11 +131,16 @@ def build_training_model_summary(
         )
         # Last trained date: last date with non-zero load
         last_trained_date = None
+        last_failure_date = None
         exposure_data = context["exposures_by_tissue"][tissue.id]
         for d in reversed(context["all_dates"]):
             rec = exposure_data.get(d)
-            if rec and (rec.raw_load > 0 or rec.strain_load > 0):
-                last_trained_date = d.isoformat()
+            if rec:
+                if last_trained_date is None and (rec.raw_load > 0 or rec.strain_load > 0):
+                    last_trained_date = d.isoformat()
+                if last_failure_date is None and rec.failures > 0:
+                    last_failure_date = d.isoformat()
+            if last_trained_date and last_failure_date:
                 break
         # Recovery learning intermediates
         rl = context["recovery_learning"][tissue.id]
@@ -171,6 +183,8 @@ def build_training_model_summary(
                 "current_soreness": state.current_soreness,
                 "volume_rebound": round(rl.volume_rebound, 3),
                 "subjective_days": round(rl.subjective_days, 3) if rl.subjective_days is not None else None,
+                "recovery_seed_days": round(rl.recovery_seed_days, 3),
+                "median_rebound_days": round(rl.median_rebound_days, 3) if rl.median_rebound_days is not None else None,
                 "overworked": overworked,
                 "tissue_region": tissue.region,
                 "tissue_regions": tissue_regions,
@@ -179,6 +193,12 @@ def build_training_model_summary(
                 "condition_severity": state.condition_severity,
                 "prior_event_signal": round(state.prior_event_signal, 3),
                 "failure_count": state.failure_count,
+                "last_failure_date": last_failure_date,
+                "prior_acute_fatigue": round(state.prior_acute_fatigue, 3),
+                "fatigue_load": round(state.fatigue_load, 3),
+                "strain_load": round(state.strain_load, 3),
+                "recent_7d_load": round(state.recent_7d_load, 3),
+                "recent_28d_load": round(state.recent_28d_load, 3),
                 "risk_features_7d": {
                     k: round(v, 4) for k, v in state.risk_features_7d.items()
                 } if state.risk_features_7d else None,
@@ -1052,6 +1072,7 @@ def _compute_tissue_states(
             if prefer_strain
             else record.fatigue_load
         )
+        prior_acute_fatigue = acute_fatigue
         acute_fatigue = _decay(acute_fatigue, fatigue_tau) + (
             fatigue_input / max(current_capacity, 1.0)
         )
@@ -1138,6 +1159,11 @@ def _compute_tissue_states(
                 condition_severity=condition_severity,
                 prior_event_signal=prior_event_signal,
                 risk_features_7d=features_7d,
+                prior_acute_fatigue=prior_acute_fatigue,
+                fatigue_load=record.fatigue_load,
+                strain_load=record.strain_load,
+                recent_7d_load=recent_7,
+                recent_28d_load=recent_28,
             )
         )
         if current_date in collapse_dates:
@@ -1285,10 +1311,11 @@ def _learn_recovery_days(
                 break
     if not rebound_days:
         volume_rebound = seed
+        median_rebound = None
     else:
         rebound_days.sort()
-        midpoint = rebound_days[len(rebound_days) // 2]
-        volume_rebound = round((seed + midpoint) / 2.0, 3)
+        median_rebound = rebound_days[len(rebound_days) // 2]
+        volume_rebound = round((seed + median_rebound) / 2.0, 3)
 
     # Blend with soreness-calibrated recovery from check-in data when available
     subjective_days: float | None = None
@@ -1309,12 +1336,16 @@ def _learn_recovery_days(
                 learned_recovery_days=final,
                 volume_rebound=volume_rebound,
                 subjective_days=subjective_days,
+                recovery_seed_days=seed,
+                median_rebound_days=float(median_rebound) if median_rebound is not None else None,
             )
 
     return RecoveryLearningResult(
         learned_recovery_days=volume_rebound,
         volume_rebound=volume_rebound,
         subjective_days=None,
+        recovery_seed_days=seed,
+        median_rebound_days=float(median_rebound) if median_rebound is not None else None,
     )
 
 

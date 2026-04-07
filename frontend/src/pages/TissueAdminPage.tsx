@@ -1003,6 +1003,24 @@ function TissueView({
                 const f = model.risk_features_7d
                 const sorenessClamp = Math.max(0.75, Math.min(1.0, 1 - model.current_soreness * 0.04))
                 const recovBase = 1 / (1 + model.acute_fatigue)
+                const fatigueTau = cfg?.fatigue_tau_days ?? 2
+                const decayedPrior = model.prior_acute_fatigue * Math.exp(-1 / fatigueTau)
+                const fatigueAddition = model.fatigue_input / Math.max(model.current_capacity, 1.0)
+                const preferStrain = t.type === 'joint' || t.type === 'tendon'
+                // capacity intermediates
+                const drift = model.current_capacity + (model.baseline_capacity - model.current_capacity) * 0.04
+                const adaptation = model.baseline_capacity * Math.max(0, Math.min(model.normalized_load, 1.15) - 0.45) * 0.03 * model.recovery_estimate
+                const penalty = model.baseline_capacity * Math.max(0, model.normalized_load - 1.25) * 0.035
+                const capacityFloor = model.baseline_capacity * 0.55
+                // ramp intermediates
+                const rampDenom = Math.max(model.recent_28d_load / 4.0, model.baseline_capacity * 0.15, 1.0)
+                // risk score intermediates
+                const riskWeights: Record<string, number> = {normalized_load: 0.31, acute_ratio: 0.24, ramp_ratio: 0.20, condition: 0.10, prior: 0.07, failures: 0.05, soreness: 0.07}
+                const riskScore = f ? Object.entries(f).reduce((sum, [k, v]) => sum + v * (riskWeights[k] ?? 0), 0) * (cfg?.risk_sensitivity ?? 1) : 0
+                // failure recency
+                const failureDaysAgo = model.last_failure_date
+                  ? Math.round((Date.now() - new Date(model.last_failure_date).getTime()) / 86400000)
+                  : null
                 return (
                 <div className="mt-2 ml-6 p-3 bg-gray-50 rounded-lg border border-gray-200 font-mono text-[10px] leading-relaxed space-y-1.5">
                   {/* DB Config */}
@@ -1037,15 +1055,69 @@ function TissueView({
                   <div>
                     <span className="text-gray-900 font-semibold">acute_fatigue</span>
                     <span className="text-gray-400"> = </span>
-                    <span className="text-gray-600">decay(prior, <b className="text-blue-600">{cfg?.fatigue_tau_days ?? '?'}d</b><span className="text-gray-400 text-[8px]"> [fatigue_tau]</span>) + <b className="text-amber-700">{model.fatigue_input.toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [fatigue_input]</span> / max(<b className="text-amber-700">{model.current_capacity.toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [capacity]</span>, 1.0)</span>
+                    <span className="text-gray-600">
+                      decay(<b className="text-amber-700">{model.prior_acute_fatigue.toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [prior]</span>, <b className="text-blue-600">{fatigueTau}d</b><span className="text-gray-400 text-[8px]"> [fatigue_tau]</span>)
+                      {' + '}
+                      <b className="text-amber-700">{model.fatigue_input.toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [fatigue_input]</span>
+                      {' / max('}
+                      <b className="text-amber-700">{model.current_capacity.toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [capacity]</span>
+                      {', 1.0)'}
+                    </span>
+                    <span className="text-gray-400"> = </span>
+                    <span className="text-gray-600">{decayedPrior.toFixed(3)} + {fatigueAddition.toFixed(3)}</span>
                     <span className="text-gray-400"> = </span>
                     <b className="text-gray-900">{model.acute_fatigue.toFixed(3)}</b>
+                  </div>
+
+                  <div className="ml-4 text-[9px] text-gray-500">
+                    <span className="text-gray-900 font-semibold">fatigue_input</span>
+                    <span className="text-gray-400"> = </span>
+                    {preferStrain ? (
+                      <span>max(<b className="text-amber-700">{model.fatigue_load.toFixed(3)}</b><span className="text-gray-400"> [fatigue_load]</span>, <b className="text-amber-700">{model.strain_load.toFixed(3)}</b><span className="text-gray-400"> [strain_load]</span>)</span>
+                    ) : (
+                      <span><b className="text-amber-700">{model.fatigue_load.toFixed(3)}</b><span className="text-gray-400"> [fatigue_load] (muscle: no strain)</span></span>
+                    )}
+                    <span className="text-gray-400"> = </span>
+                    <b className="text-gray-900">{model.fatigue_input.toFixed(3)}</b>
+                  </div>
+
+                  <hr className="border-gray-200" />
+
+                  {/* Learned Recovery */}
+                  <div>
+                    <span className="text-gray-900 font-semibold">volume_rebound</span>
+                    <span className="text-gray-400"> = </span>
+                    {model.median_rebound_days != null ? (
+                      <span className="text-gray-600">
+                        (<b className="text-blue-600">{model.recovery_seed_days.toFixed(1)}</b><span className="text-gray-400 text-[8px]"> [seed=recovery_hours/24]</span>
+                        {' + '}
+                        <b className="text-amber-700">{model.median_rebound_days.toFixed(1)}</b><span className="text-gray-400 text-[8px]"> [median_rebound]</span>) / 2
+                      </span>
+                    ) : (
+                      <span className="text-gray-600">
+                        <b className="text-blue-600">{model.recovery_seed_days.toFixed(1)}</b><span className="text-gray-400 text-[8px]"> [seed=recovery_hours/24]</span>
+                        <span className="text-gray-400"> (no rebound data)</span>
+                      </span>
+                    )}
+                    <span className="text-gray-400"> = </span>
+                    <b className="text-gray-900">{model.volume_rebound.toFixed(2)}d</b>
                   </div>
 
                   <div>
                     <span className="text-gray-900 font-semibold">learned_recovery_days</span>
                     <span className="text-gray-400"> = </span>
-                    <span className="text-gray-600">max(<b className="text-amber-700">{model.volume_rebound.toFixed(2)}</b><span className="text-gray-400 text-[8px]"> [vol_rebound]</span>×0.85, 0.7×<b className="text-amber-700">{model.volume_rebound.toFixed(2)}</b><span className="text-gray-400 text-[8px]"> [vol_rebound]</span> + 0.3×<b className="text-amber-700">{model.subjective_days != null ? model.subjective_days.toFixed(2) : '—'}</b><span className="text-gray-400 text-[8px]"> [subj_days]</span>)</span>
+                    {model.subjective_days != null ? (
+                      <span className="text-gray-600">
+                        max(<b className="text-amber-700">{model.volume_rebound.toFixed(2)}</b><span className="text-gray-400 text-[8px]"> [vol_rebound]</span>×0.85,
+                        {' 0.7×'}<b className="text-amber-700">{model.volume_rebound.toFixed(2)}</b>
+                        {' + 0.3×'}<b className="text-amber-700">{model.subjective_days.toFixed(2)}</b><span className="text-gray-400 text-[8px]"> [subj_days]</span>)
+                      </span>
+                    ) : (
+                      <span className="text-gray-600">
+                        <b className="text-amber-700">{model.volume_rebound.toFixed(2)}</b><span className="text-gray-400 text-[8px]"> [vol_rebound]</span>
+                        <span className="text-gray-400"> (no soreness data → vol_rebound used directly)</span>
+                      </span>
+                    )}
                     <span className="text-gray-400"> = </span>
                     <b className="text-gray-900">{model.learned_recovery_days.toFixed(2)}d</b>
                   </div>
@@ -1064,7 +1136,10 @@ function TissueView({
                   <div>
                     <span className="text-gray-900 font-semibold">chronic_load</span>
                     <span className="text-gray-400"> = </span>
-                    <span className="text-gray-600">decay(prior, max(7, <b className="text-amber-700">{model.learned_recovery_days.toFixed(1)}</b><span className="text-gray-400 text-[8px]"> [recovery_days]</span>×6)) + <b className="text-amber-700">{model.normalized_load.toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [norm_load]</span></span>
+                    <span className="text-gray-600">
+                      decay(prior, max(7, <b className="text-amber-700">{model.learned_recovery_days.toFixed(1)}</b><span className="text-gray-400 text-[8px]"> [recovery_days]</span>×6={Math.max(7, model.learned_recovery_days * 6).toFixed(0)}d))
+                      {' + '}<b className="text-amber-700">{model.normalized_load.toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [norm_load]</span>
+                    </span>
                     <span className="text-gray-400"> = </span>
                     <b className="text-gray-900">{model.chronic_load.toFixed(3)}</b>
                   </div>
@@ -1072,9 +1147,14 @@ function TissueView({
                   <div>
                     <span className="text-gray-900 font-semibold">current_capacity</span>
                     <span className="text-gray-400"> = </span>
-                    <span className="text-gray-600">max(<b className="text-amber-700">{model.baseline_capacity.toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [baseline]</span>×0.55, drift + adaptation − penalty)</span>
+                    <span className="text-gray-600">max(<b className="text-amber-700">{capacityFloor.toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [baseline×0.55]</span>, drift + adapt − penalty)</span>
                     <span className="text-gray-400"> = </span>
                     <b className="text-gray-900">{model.current_capacity.toFixed(3)}</b>
+                  </div>
+                  <div className="ml-4 text-[9px] text-gray-500">
+                    drift = cap + (baseline−cap)×0.04 = <b className="text-amber-700">{drift.toFixed(3)}</b>
+                    {' | '}adapt = baseline×max(0, min(norm_load,1.15)−0.45)×0.03×recov = <b className="text-amber-700">{adaptation.toFixed(4)}</b>
+                    {' | '}penalty = baseline×max(0, norm_load−1.25)×0.035 = <b className="text-amber-700">{penalty.toFixed(4)}</b>
                   </div>
 
                   <div>
@@ -1088,7 +1168,16 @@ function TissueView({
                   <div>
                     <span className="text-gray-900 font-semibold">ramp_ratio</span>
                     <span className="text-gray-400"> = </span>
-                    <span className="text-gray-600">7d_avg / max(28d_avg/4, <b className="text-amber-700">{model.baseline_capacity.toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [baseline]</span>×0.15, 1.0)</span>
+                    <span className="text-gray-600">
+                      <b className="text-amber-700">{model.recent_7d_load.toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [7d_load]</span>
+                      {' / max('}
+                      <b className="text-amber-700">{(model.recent_28d_load / 4).toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [28d/4]</span>
+                      {', '}
+                      <b className="text-amber-700">{(model.baseline_capacity * 0.15).toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [base×.15]</span>
+                      {', 1.0) = '}
+                      <b className="text-amber-700">{model.recent_7d_load.toFixed(3)}</b>{' / '}
+                      <b className="text-amber-700">{rampDenom.toFixed(3)}</b>
+                    </span>
                     <span className="text-gray-400"> = </span>
                     <b className="text-gray-900">{model.ramp_ratio.toFixed(3)}</b>
                   </div>
@@ -1108,7 +1197,9 @@ function TissueView({
                   <div>
                     <span className="text-gray-900 font-semibold">risk_7d</span>
                     <span className="text-gray-400"> = </span>
-                    <span className="text-gray-600">sigmoid(Σ w×feat) × <b className="text-blue-600">{cfg?.risk_sensitivity ?? 1}</b><span className="text-gray-400 text-[8px]"> [risk_sens]</span></span>
+                    <span className="text-gray-600">
+                      sigmoid(4 × (<b className="text-amber-700">{riskScore.toFixed(4)}</b><span className="text-gray-400 text-[8px]"> [Σw×feat]</span> − 0.45)) × 100
+                    </span>
                     <span className="text-gray-400"> → </span>
                     <b className={`${model.risk_7d >= 75 ? 'text-red-600' : model.risk_7d >= 55 ? 'text-amber-600' : model.risk_7d >= 30 ? 'text-yellow-600' : 'text-emerald-600'}`}>
                       {model.risk_7d}%
@@ -1119,26 +1210,43 @@ function TissueView({
                   </div>
 
                   {f && (
-                    <div className="ml-4 text-[9px] text-gray-500">
-                      <span className="text-gray-400">features (post-threshold): </span>
-                      {Object.entries(f).map(([key, val]) => (
-                        <span key={key} className="mr-2">
-                          {key}=<b className={val > 0 ? 'text-amber-700' : 'text-gray-400'}>{val.toFixed(4)}</b>
-                          <span className="text-gray-300">
-                            ×{({normalized_load: '.31', acute_ratio: '.24', ramp_ratio: '.20', condition: '.10', prior: '.07', failures: '.05', soreness: '.07'} as Record<string, string>)[key] ?? '?'}
-                          </span>
-                        </span>
-                      ))}
+                    <div className="ml-4 text-[9px] text-gray-500 space-y-0.5">
+                      {Object.entries(f).map(([key, postThreshold]) => {
+                        const w = riskWeights[key] ?? 0
+                        const rawValue = key === 'normalized_load' ? (model.recent_7d_load / Math.max(model.current_capacity, 1))
+                          : key === 'acute_ratio' ? model.acute_fatigue
+                          : key === 'ramp_ratio' ? model.ramp_ratio
+                          : key === 'condition' ? model.condition_severity
+                          : key === 'prior' ? model.prior_event_signal
+                          : key === 'failures' ? model.failure_count
+                          : key === 'soreness' ? model.current_soreness
+                          : 0
+                        const transform = key === 'normalized_load' ? `max(0, ${typeof rawValue === 'number' ? rawValue.toFixed(3) : rawValue} − 0.7)`
+                          : key === 'acute_ratio' ? `max(0, ${typeof rawValue === 'number' ? rawValue.toFixed(3) : rawValue} − 0.8)`
+                          : key === 'ramp_ratio' ? `max(0, (${typeof rawValue === 'number' ? rawValue.toFixed(3) : rawValue} − 1.0)×${cfg?.ramp_sensitivity ?? 1})`
+                          : key === 'condition' ? `${rawValue}/4`
+                          : key === 'prior' ? `${typeof rawValue === 'number' ? rawValue.toFixed(3) : rawValue}`
+                          : key === 'failures' ? `min(${rawValue}, 2)/2`
+                          : key === 'soreness' ? `min(${rawValue}, 10)/10`
+                          : '?'
+                        return (
+                          <div key={key}>
+                            <b className={postThreshold > 0 ? 'text-amber-700' : 'text-gray-400'}>{key}</b>
+                            <span className="text-gray-400"> = {transform} = </span>
+                            <b className={postThreshold > 0 ? 'text-amber-700' : 'text-gray-400'}>{postThreshold.toFixed(4)}</b>
+                            <span className="text-gray-300"> × {w.toFixed(2)}</span>
+                            <span className="text-gray-400"> = </span>
+                            <b className={postThreshold * w > 0.02 ? 'text-red-600' : 'text-gray-400'}>{(postThreshold * w).toFixed(4)}</b>
+                            {key === 'failures' && failureDaysAgo != null && (
+                              <span className={`ml-1 ${failureDaysAgo > 14 ? 'text-gray-400' : 'text-amber-600'}`}>
+                                (last failure: {failureDaysAgo}d ago{failureDaysAgo > 14 ? ' — stale' : ''})
+                              </span>
+                            )}
+                          </div>
+                        )
+                      })}
                     </div>
                   )}
-
-                  <div className="ml-4 text-[9px] text-gray-500">
-                    <span className="text-gray-400">raw inputs: </span>
-                    <b className="text-amber-700">{model.condition_severity}</b><span className="text-gray-400"> [cond_severity] </span>
-                    <b className="text-amber-700">{model.prior_event_signal.toFixed(3)}</b><span className="text-gray-400"> [prior_event] </span>
-                    <b className="text-amber-700">{model.failure_count}</b><span className="text-gray-400"> [failures] </span>
-                    <b className="text-blue-600">{cfg?.ramp_sensitivity ?? 1}</b><span className="text-gray-400"> [ramp_sens]</span>
-                  </div>
 
                   {model.contributors.length > 0 && (
                     <div className="ml-4 text-[9px] text-gray-500">
