@@ -9,6 +9,7 @@ import {
   applyExerciseMappingWarning,
   createRehabPlan,
   createTissueCondition,
+  getExerciseHistory,
   getTrainingModelSummary,
   getRegions,
   getTissues,
@@ -20,21 +21,20 @@ import {
   updateExercise,
   type RehabProtocol,
   type RegionInfo,
+  type RepScheme,
+  type TrainingModelExerciseInsight,
   type TrainingModelSummary,
   type TrackedTissueReadiness,
+  type WkExerciseHistory,
   type WkTissue,
   type WkExercise,
   type WkTissueReadiness,
   type TrainingModelTissueSummary,
 } from '../api'
-import {
-  ExerciseProgressCard,
-  ExerciseStatusCard,
-} from '../components/TrainingInsights'
 
 // ── Types ──
 
-type View = 'tissues' | 'regions' | 'exercises'
+type View = 'tissues' | 'exercises'
 
 interface TissueWithExercises extends WkTissue {
   exercises: {
@@ -1686,29 +1686,258 @@ function TrackedTissueCard({
   )
 }
 
+// ── Exercise Progress Chart (inline per-exercise) ──
+
+const SCHEME_COLORS: Record<RepScheme, string> = {
+  heavy: '#ef4444',
+  medium: '#f59e0b',
+  volume: '#3b82f6',
+}
+
+function ExerciseProgressInline({ exerciseId }: { exerciseId: number }) {
+  const [history, setHistory] = useState<WkExerciseHistory | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    getExerciseHistory(exerciseId, 200)
+      .then(data => { if (!cancelled) setHistory(data) })
+      .catch(() => { if (!cancelled) setHistory(null) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [exerciseId])
+
+  const sessionData = useMemo(() => {
+    if (!history) return []
+    return history.sessions
+      .map(session => {
+        // Find max weight from fully-completed sets
+        let maxWeight = 0
+        for (const set of session.sets) {
+          if (set.weight && set.weight > 0 && set.rep_completion === 'full') {
+            maxWeight = Math.max(maxWeight, set.weight)
+          }
+        }
+        // Fall back to any set if none were "full"
+        if (maxWeight === 0) {
+          for (const set of session.sets) {
+            if (set.weight && set.weight > 0) maxWeight = Math.max(maxWeight, set.weight)
+          }
+        }
+        return {
+          date: session.date,
+          scheme: session.rep_scheme,
+          maxWeight,
+          totalVolume: session.total_volume,
+        }
+      })
+      .filter(s => s.maxWeight > 0)
+      .sort((a, b) => a.date.localeCompare(b.date))
+  }, [history])
+
+  if (loading) return <p className="text-[10px] text-gray-400 py-1">Loading chart...</p>
+  if (!history || sessionData.length === 0) return <p className="text-[10px] text-gray-400 py-1">No session history.</p>
+
+  const svgWidth = 400
+  const chartHeight = 120
+  const marginLeft = 38
+  const marginRight = 8
+  const marginTop = 8
+  const marginBottom = 22
+  const plotWidth = svgWidth - marginLeft - marginRight
+  const plotHeight = chartHeight - marginTop - marginBottom
+
+  const maxWeight = Math.max(...sessionData.map(s => s.maxWeight)) * 1.1
+  const count = sessionData.length
+  const step = count > 1 ? plotWidth / (count - 1) : plotWidth / 2
+
+  const toX = (i: number) => marginLeft + (count > 1 ? i * step : plotWidth / 2)
+  const toY = (v: number) => marginTop + ((maxWeight - v) / maxWeight) * plotHeight
+
+  // Build per-scheme polylines
+  const byScheme: Record<string, { x: number; y: number }[]> = { heavy: [], medium: [], volume: [] }
+  sessionData.forEach((s, i) => {
+    byScheme[s.scheme]?.push({ x: toX(i), y: toY(s.maxWeight) })
+  })
+
+  const sessions = history.sessions.length
+  const schemes = [...new Set(sessionData.map(s => s.scheme))]
+
+  // Summary stats per scheme
+  const schemeStats = schemes.map(scheme => {
+    const pts = sessionData.filter(s => s.scheme === scheme)
+    const best = Math.max(...pts.map(p => p.maxWeight))
+    const latest = pts[pts.length - 1]?.maxWeight ?? 0
+    return { scheme, best, latest, count: pts.length }
+  })
+
+  return (
+    <div className="mt-2">
+      <div className="flex items-center gap-3 mb-1">
+        <span className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold">Max Weight by Scheme</span>
+        <span className="text-[10px] text-gray-400">{sessions} sessions</span>
+        <div className="flex gap-2 ml-auto">
+          {schemes.map(s => (
+            <span key={s} className="flex items-center gap-1 text-[10px]">
+              <span className="inline-block w-2 h-2 rounded-full" style={{ background: SCHEME_COLORS[s] }} />
+              {titleCase(s)}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {schemeStats.length > 0 && (
+        <div className="flex gap-3 mb-1.5">
+          {schemeStats.map(st => (
+            <div key={st.scheme} className="text-[10px] text-gray-500">
+              <span className="font-medium" style={{ color: SCHEME_COLORS[st.scheme] }}>{titleCase(st.scheme)}</span>
+              {': '}best {st.best}lb, latest {st.latest}lb ({st.count})
+            </div>
+          ))}
+        </div>
+      )}
+
+      <svg viewBox={`0 0 ${svgWidth} ${chartHeight}`} className="w-full" style={{ height: `${chartHeight}px` }}>
+        {/* Grid lines */}
+        {[0, 0.5, 1].map((frac, i) => {
+          const val = frac * maxWeight
+          const y = toY(val)
+          return (
+            <g key={i}>
+              <line x1={marginLeft} x2={svgWidth - marginRight} y1={y} y2={y} stroke="#e5e7eb" strokeDasharray="3 3" />
+              <text x={marginLeft - 3} y={y + 3} textAnchor="end" fontSize="8" fill="#9ca3af">{Math.round(val)}</text>
+            </g>
+          )
+        })}
+
+        {/* Dots for each session (colored by scheme) */}
+        {sessionData.map((s, i) => (
+          <circle key={`${s.date}-${s.scheme}`} cx={toX(i)} cy={toY(s.maxWeight)} r={2.5}
+            fill={SCHEME_COLORS[s.scheme]} opacity={0.8} />
+        ))}
+
+        {/* Connect dots within same scheme */}
+        {Object.entries(byScheme).map(([scheme, pts]) => (
+          pts.length >= 2 && (
+            <polyline key={scheme}
+              points={pts.map(p => `${p.x},${p.y}`).join(' ')}
+              fill="none" stroke={SCHEME_COLORS[scheme as RepScheme]} strokeWidth={1.5}
+              strokeLinejoin="round" opacity={0.6} />
+          )
+        ))}
+
+        {/* Date labels (sparse) */}
+        {sessionData.map((s, i) => {
+          const showLabel = count <= 20 || i === 0 || i === count - 1 || i % Math.ceil(count / 8) === 0
+          return showLabel ? (
+            <text key={`label-${i}`} x={toX(i)} y={chartHeight - 4} textAnchor="middle" fontSize="7" fill="#9ca3af">
+              {new Date(s.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+            </text>
+          ) : null
+        })}
+      </svg>
+    </div>
+  )
+}
+
 // ── Exercise View ──
+
+const RECOMMENDATION_BADGE: Record<string, string> = {
+  avoid: 'bg-red-100 text-red-700 border-red-200',
+  caution: 'bg-amber-100 text-amber-700 border-amber-200',
+  good: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+}
+
+const RISK_COLOR = (risk: number) =>
+  risk >= 75 ? 'text-red-600' : risk >= 55 ? 'text-amber-600' : risk >= 30 ? 'text-yellow-600' : 'text-emerald-600'
 
 function ExerciseView({
   exercises,
   tissues,
+  exerciseInsights,
+  regions,
   onSave,
 }: {
   exercises: WkExercise[]
   tissues: WkTissue[]
+  exerciseInsights: TrainingModelExerciseInsight[]
+  regions: RegionInfo[]
   onSave: () => void
 }) {
   const [search, setSearch] = useState('')
+  const [selectedRecommendations, setSelectedRecommendations] = useState<string[]>([])
+  const [selectedRegions, setSelectedRegions] = useState<string[]>([])
+  const [expandedId, setExpandedId] = useState<number | null>(null)
   const [applyingWarningKey, setApplyingWarningKey] = useState<string | null>(null)
+
   const tissueNameById = useMemo(
     () => new Map(tissues.map((tissue) => [tissue.id, tissue.display_name])),
     [tissues],
   )
 
+  const insightById = useMemo(() => {
+    const map = new Map<number, TrainingModelExerciseInsight>()
+    for (const ins of exerciseInsights) map.set(ins.id, ins)
+    return map
+  }, [exerciseInsights])
+
+  // Build exercise→regions mapping via tissue mappings
+  const exerciseRegions = useMemo(() => {
+    const tissueToRegions = new Map<number, Set<string>>()
+    for (const region of regions) {
+      for (const tissue of region.tissues) {
+        const existing = tissueToRegions.get(tissue.id) ?? new Set()
+        existing.add(region.region)
+        tissueToRegions.set(tissue.id, existing)
+      }
+    }
+    const result = new Map<number, Set<string>>()
+    for (const ex of exercises) {
+      const exRegions = new Set<string>()
+      for (const mapping of ex.tissues) {
+        const tRegions = tissueToRegions.get(mapping.tissue_id)
+        if (tRegions) tRegions.forEach(r => exRegions.add(r))
+      }
+      result.set(ex.id, exRegions)
+    }
+    return result
+  }, [exercises, regions])
+
+  const allRegionOptions = useMemo(() => {
+    return regions.map(r => ({ value: r.region, label: r.label }))
+      .sort((a, b) => a.label.localeCompare(b.label))
+  }, [regions])
+
+  const hasFilters = selectedRecommendations.length > 0 || selectedRegions.length > 0
+
   const filtered = useMemo(() => {
-    if (!search) return exercises
-    const q = search.toLowerCase()
-    return exercises.filter((e) => e.name.toLowerCase().includes(q))
-  }, [exercises, search])
+    let result = exercises
+    if (search) {
+      const q = search.toLowerCase()
+      result = result.filter((e) => e.name.toLowerCase().includes(q))
+    }
+    if (selectedRecommendations.length > 0) {
+      result = result.filter(e => {
+        const ins = insightById.get(e.id)
+        return ins && selectedRecommendations.includes(ins.recommendation)
+      })
+    }
+    if (selectedRegions.length > 0) {
+      result = result.filter(e => {
+        const eRegions = exerciseRegions.get(e.id)
+        return eRegions && selectedRegions.some(r => eRegions.has(r))
+      })
+    }
+    return result
+  }, [exercises, search, selectedRecommendations, selectedRegions, insightById, exerciseRegions])
+
+  const toggleRecommendation = (val: string) => {
+    setSelectedRecommendations(cur => cur.includes(val) ? cur.filter(v => v !== val) : [...cur, val])
+  }
+
+  const toggleRegion = (val: string) => {
+    setSelectedRegions(cur => cur.includes(val) ? cur.filter(v => v !== val) : [...cur, val])
+  }
 
   const handleApplyWarning = async (
     exerciseId: number,
@@ -1731,193 +1960,253 @@ function ExerciseView({
     }
   }
 
+  const recCounts = useMemo(() => {
+    const counts = { good: 0, caution: 0, avoid: 0 }
+    for (const ex of exercises) {
+      const ins = insightById.get(ex.id)
+      if (ins) counts[ins.recommendation]++
+    }
+    return counts
+  }, [exercises, insightById])
+
   return (
     <div>
-      <input
-        type="text"
-        placeholder="Filter exercises..."
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        className="w-full max-w-sm border border-gray-300 rounded-lg px-3 py-1.5 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-blue-400"
-      />
+      {/* Filters */}
+      <div className="space-y-2 mb-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="text"
+            placeholder="Filter exercises..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="flex-1 min-w-[200px] max-w-sm border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+          />
+          {hasFilters && (
+            <button
+              type="button"
+              onClick={() => { setSelectedRecommendations([]); setSelectedRegions([]) }}
+              className="text-[10px] text-gray-400 hover:text-gray-600 underline"
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+
+        {/* Recommendation filter */}
+        <div className="flex flex-wrap gap-1.5">
+          <span className="text-[10px] text-gray-400 font-medium self-center mr-1">Status:</span>
+          {(['good', 'caution', 'avoid'] as const).map(rec => (
+            <button
+              key={rec}
+              type="button"
+              onClick={() => toggleRecommendation(rec)}
+              className={`rounded-lg border px-2 py-0.5 text-[11px] transition-all ${
+                selectedRecommendations.includes(rec)
+                  ? RECOMMENDATION_BADGE[rec] + ' font-semibold border-current'
+                  : 'border-gray-200 bg-white text-gray-500 hover:border-gray-300'
+              }`}
+            >
+              {titleCase(rec)} ({recCounts[rec]})
+            </button>
+          ))}
+        </div>
+
+        {/* Region filter */}
+        {allRegionOptions.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            <span className="text-[10px] text-gray-400 font-medium self-center mr-1">Region:</span>
+            {allRegionOptions.map(opt => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => toggleRegion(opt.value)}
+                className={`rounded-lg border px-2 py-0.5 text-[11px] transition-all ${
+                  selectedRegions.includes(opt.value)
+                    ? 'border-sky-300 bg-sky-100 font-semibold text-sky-700'
+                    : 'border-gray-200 bg-white text-gray-500 hover:border-gray-300'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <p className="text-[11px] text-gray-400 mb-2">{filtered.length} exercise{filtered.length !== 1 ? 's' : ''}</p>
 
       <div className="bg-white border border-gray-200 rounded-xl overflow-hidden divide-y divide-gray-100">
         {filtered.length === 0 && (
           <p className="text-sm text-gray-500 p-4">No exercises found.</p>
         )}
-        {filtered.map((ex) => (
-          <div key={ex.id} className="px-4 py-2.5 hover:bg-gray-50/80 transition-colors">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-sm font-medium text-gray-800">{ex.name}</span>
-              {ex.equipment && (
-                <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-px rounded">
-                  {ex.equipment}
+        {filtered.map((ex) => {
+          const insight = insightById.get(ex.id)
+          const isExpanded = expandedId === ex.id
+          return (
+            <div key={ex.id} className="px-4 py-2.5 hover:bg-gray-50/80 transition-colors">
+              {/* Header row with status integration */}
+              <div className="flex items-center gap-2 flex-wrap cursor-pointer" onClick={() => setExpandedId(isExpanded ? null : ex.id)}>
+                <span className="text-[10px] text-gray-300 select-none">{isExpanded ? '▼' : '▶'}</span>
+                <span className="text-sm font-medium text-gray-800">{ex.name}</span>
+                {insight && (
+                  <span className={`rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${RECOMMENDATION_BADGE[insight.recommendation]}`}>
+                    {insight.recommendation}
+                  </span>
+                )}
+                {ex.equipment && (
+                  <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-px rounded">
+                    {ex.equipment}
+                  </span>
+                )}
+                <span className="text-[10px] rounded bg-blue-50 px-1.5 py-px text-blue-700">
+                  {titleCase(ex.load_input_mode)}
                 </span>
-              )}
-              <span className="text-[10px] rounded bg-blue-50 px-1.5 py-px text-blue-700">
-                {titleCase(ex.load_input_mode)}
-              </span>
-              <span className="text-[10px] rounded bg-purple-50 px-1.5 py-px text-purple-700">
-                {titleCase(ex.set_metric_mode)}
-              </span>
-              <span className="text-[10px] rounded bg-gray-100 px-1.5 py-px text-gray-600">
-                {titleCase(ex.laterality)}
-              </span>
-              {ex.variant_group && (
-                <span className="text-[10px] rounded bg-emerald-50 px-1.5 py-px text-emerald-700">
-                  {ex.variant_group}
+                <span className="text-[10px] rounded bg-purple-50 px-1.5 py-px text-purple-700">
+                  {titleCase(ex.set_metric_mode)}
                 </span>
-              )}
-            </div>
+                {ex.variant_group && (
+                  <span className="text-[10px] rounded bg-emerald-50 px-1.5 py-px text-emerald-700">
+                    {ex.variant_group}
+                  </span>
+                )}
+                {/* Risk score on the right */}
+                {insight && (
+                  <div className="ml-auto flex items-center gap-2">
+                    {insight.current_e1rm != null && (
+                      <span className="text-[10px] text-gray-400">e1RM: {insight.current_e1rm}lb</span>
+                    )}
+                    <span className="text-[10px] text-gray-400">suit: {Math.round(insight.suitability_score)}%</span>
+                    <span className={`text-base font-bold tabular-nums ${RISK_COLOR(insight.weighted_risk_7d)}`}>
+                      {Math.round(insight.weighted_risk_7d)}
+                    </span>
+                    <span className="text-[10px] text-gray-400">%</span>
+                  </div>
+                )}
+              </div>
 
-            <div className="mt-2 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-              <div className="rounded-lg border border-gray-200 bg-white p-2 text-[11px] text-gray-600">
-                <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">
-                  Load semantics
-                </div>
-                <div className="mt-1 space-y-0.5">
-                  <p>{weightFieldLabel(ex)}</p>
-                  <p>Bodyweight fraction: {ex.bodyweight_fraction.toFixed(2)}</p>
-                  <p>External multiplier: x{ex.external_load_multiplier.toFixed(2)}</p>
-                </div>
-              </div>
-              <div className="rounded-lg border border-gray-200 bg-white p-2 text-[11px] text-gray-600">
-                <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">
-                  Variant metadata
-                </div>
-                <div className="mt-1 space-y-0.5">
-                  <p>Grip: {titleCase(ex.grip_style)}</p>
-                  <p>Width: {titleCase(ex.grip_width)}</p>
-                  <p>Support: {titleCase(ex.support_style)}</p>
-                </div>
-              </div>
-              <div className="rounded-lg border border-gray-200 bg-white p-2 text-[11px] text-gray-600 md:col-span-2">
-                <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">
-                  Load preview
-                </div>
-                <div className="mt-1 space-y-0.5">
-                  {loadPreviewLines(ex).map((line) => (
-                    <p key={line}>{line}</p>
+              {/* Risk details line */}
+              {insight && insight.recommendation_details.length > 0 && (
+                <div className="mt-0.5 ml-5 flex flex-wrap gap-1">
+                  {insight.recommendation_details.slice(0, 3).map(detail => (
+                    <span key={detail} className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">
+                      {detail}
+                    </span>
                   ))}
                 </div>
-              </div>
-            </div>
+              )}
 
-            {ex.mapping_warnings.length > 0 && (
-              <div className="mt-2 space-y-1">
-                {ex.mapping_warnings.map((warning, index) => (
-                  <div
-                    key={`${warning.code}-${warning.source_tissue_id}-${warning.target_tissue_id}-${index}`}
-                    className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800"
-                  >
-                    <p className="font-medium">{warning.message}</p>
-                    <p className="mt-0.5 text-[10px] text-amber-700">
-                      Suggested companion tissue: {tissueNameById.get(warning.target_tissue_id) ?? `#${warning.target_tissue_id}`}
-                    </p>
-                    {warning.suggested_mapping && (
-                      <p className="mt-0.5 text-[10px] text-amber-700">
-                        Quick-add defaults: {warning.suggested_mapping.role}, load {warning.suggested_mapping.loading_factor.toFixed(2)}, laterality {titleCase(warning.suggested_mapping.laterality_mode)}
-                      </p>
-                    )}
-                    {warning.code === 'missing-related-tissue' && warning.suggested_mapping && (
-                      <button
-                        type="button"
-                        onClick={() => handleApplyWarning(ex.id, warning)}
-                        disabled={applyingWarningKey === `${ex.id}-${warning.code}-${warning.source_tissue_id}-${warning.target_tissue_id}`}
-                        className="mt-2 rounded border border-amber-300 bg-white px-2 py-1 text-[10px] font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
-                      >
-                        {applyingWarningKey === `${ex.id}-${warning.code}-${warning.source_tissue_id}-${warning.target_tissue_id}`
-                          ? 'Adding...'
-                          : 'Add suggested mapping'}
-                      </button>
-                    )}
+              {/* Expanded content */}
+              {isExpanded && (
+                <div className="mt-2 ml-5 space-y-2">
+                  {/* Progress chart */}
+                  <ExerciseProgressInline exerciseId={ex.id} />
+
+                  {/* Metadata panels */}
+                  <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+                    <div className="rounded-lg border border-gray-200 bg-white p-2 text-[11px] text-gray-600">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">
+                        Load semantics
+                      </div>
+                      <div className="mt-1 space-y-0.5">
+                        <p>{weightFieldLabel(ex)}</p>
+                        <p>Bodyweight fraction: {ex.bodyweight_fraction.toFixed(2)}</p>
+                        <p>External multiplier: x{ex.external_load_multiplier.toFixed(2)}</p>
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 bg-white p-2 text-[11px] text-gray-600">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">
+                        Variant metadata
+                      </div>
+                      <div className="mt-1 space-y-0.5">
+                        <p>Grip: {titleCase(ex.grip_style)}</p>
+                        <p>Width: {titleCase(ex.grip_width)}</p>
+                        <p>Support: {titleCase(ex.support_style)}</p>
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 bg-white p-2 text-[11px] text-gray-600 md:col-span-2">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">
+                        Load preview
+                      </div>
+                      <div className="mt-1 space-y-0.5">
+                        {loadPreviewLines(ex).map((line) => (
+                          <p key={line}>{line}</p>
+                        ))}
+                      </div>
+                    </div>
                   </div>
-                ))}
-              </div>
-            )}
 
-            {ex.tissues.length > 0 ? (
-              <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
-                {ex.tissues.map((t) => (
-                  <span key={t.tissue_id} className="inline-flex items-center gap-1 text-[11px]">
-                    <span className="text-gray-600">{t.tissue_display_name}</span>
-                    <span className="text-[10px] font-mono text-gray-400">({t.tissue_name})</span>
-                    <span className={`text-[10px] px-1.5 py-px rounded font-medium ${TYPE_BADGE[t.tissue_type] ?? 'bg-gray-100 text-gray-600'}`}>
-                      {t.tissue_type}
-                    </span>
-                    <span className={`px-1 py-px rounded text-[9px] font-medium ${ROLE_COLORS[t.role] ?? ROLE_COLORS.stabilizer}`}>
-                      {t.role}
-                    </span>
-                    <span className="text-[10px] font-mono text-gray-400">
-                      r{t.routing_factor.toFixed(2)}
-                    </span>
-                    <LoadingEditor
-                      value={t.loading_factor}
-                      role={t.role}
-                      exerciseId={ex.id}
-                      tissueId={t.tissue_id}
-                      exercise={ex}
-                      onSave={onSave}
-                    />
-                  </span>
-                ))}
-              </div>
-            ) : (
-              <p className="text-[11px] text-gray-400 mt-0.5 italic">No tissue mappings</p>
-            )}
+                  {/* Mapping warnings */}
+                  {ex.mapping_warnings.length > 0 && (
+                    <div className="space-y-1">
+                      {ex.mapping_warnings.map((warning, index) => (
+                        <div
+                          key={`${warning.code}-${warning.source_tissue_id}-${warning.target_tissue_id}-${index}`}
+                          className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800"
+                        >
+                          <p className="font-medium">{warning.message}</p>
+                          <p className="mt-0.5 text-[10px] text-amber-700">
+                            Suggested companion tissue: {tissueNameById.get(warning.target_tissue_id) ?? `#${warning.target_tissue_id}`}
+                          </p>
+                          {warning.suggested_mapping && (
+                            <p className="mt-0.5 text-[10px] text-amber-700">
+                              Quick-add defaults: {warning.suggested_mapping.role}, load {warning.suggested_mapping.loading_factor.toFixed(2)}, laterality {titleCase(warning.suggested_mapping.laterality_mode)}
+                            </p>
+                          )}
+                          {warning.code === 'missing-related-tissue' && warning.suggested_mapping && (
+                            <button
+                              type="button"
+                              onClick={() => handleApplyWarning(ex.id, warning)}
+                              disabled={applyingWarningKey === `${ex.id}-${warning.code}-${warning.source_tissue_id}-${warning.target_tissue_id}`}
+                              className="mt-2 rounded border border-amber-300 bg-white px-2 py-1 text-[10px] font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                            >
+                              {applyingWarningKey === `${ex.id}-${warning.code}-${warning.source_tissue_id}-${warning.target_tissue_id}`
+                                ? 'Adding...'
+                                : 'Add suggested mapping'}
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
-            <ExerciseMetadataEditor exercise={ex} onSave={onSave} />
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
+                  {/* Tissue mappings */}
+                  {ex.tissues.length > 0 ? (
+                    <div className="flex flex-wrap gap-x-4 gap-y-1">
+                      {ex.tissues.map((t) => (
+                        <span key={t.tissue_id} className="inline-flex items-center gap-1 text-[11px]">
+                          <span className="text-gray-600">{t.tissue_display_name}</span>
+                          <span className="text-[10px] font-mono text-gray-400">({t.tissue_name})</span>
+                          <span className={`text-[10px] px-1.5 py-px rounded font-medium ${TYPE_BADGE[t.tissue_type] ?? 'bg-gray-100 text-gray-600'}`}>
+                            {t.tissue_type}
+                          </span>
+                          <span className={`px-1 py-px rounded text-[9px] font-medium ${ROLE_COLORS[t.role] ?? ROLE_COLORS.stabilizer}`}>
+                            {t.role}
+                          </span>
+                          <span className="text-[10px] font-mono text-gray-400">
+                            r{t.routing_factor.toFixed(2)}
+                          </span>
+                          <LoadingEditor
+                            value={t.loading_factor}
+                            role={t.role}
+                            exerciseId={ex.id}
+                            tissueId={t.tissue_id}
+                            exercise={ex}
+                            onSave={onSave}
+                          />
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-gray-400 italic">No tissue mappings</p>
+                  )}
 
-function RegionView({ regions }: { regions: RegionInfo[] }) {
-  return (
-    <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-      {regions.map((region) => (
-        <section key={region.region} className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-semibold text-gray-800">{region.label}</h2>
-              <p className="text-[11px] text-gray-500">
-                {region.tissues.length} linked {region.tissues.length === 1 ? 'tissue' : 'tissues'}
-              </p>
-            </div>
-            <span className="rounded-full border border-gray-200 bg-gray-50 px-2 py-1 text-[10px] font-medium text-gray-500">
-              {region.region}
-            </span>
-          </div>
-
-          {region.tissues.length === 0 ? (
-            <p className="mt-3 text-xs text-gray-400 italic">No tissues linked yet.</p>
-          ) : (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {region.tissues.map((tissue) => (
-                <div
-                  key={`${region.region}-${tissue.id}`}
-                  className="min-w-[220px] flex-1 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2"
-                >
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-medium text-gray-800">{tissue.display_name}</span>
-                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${TYPE_BADGE[tissue.type] ?? 'bg-gray-100 text-gray-600'}`}>
-                      {tissue.type}
-                    </span>
-                    {!tissue.is_primary && (
-                      <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-medium text-sky-700">
-                        overlap
-                      </span>
-                    )}
-                  </div>
-                  <p className="mt-1 text-[11px] text-gray-500">{tissue.name}</p>
+                  <ExerciseMetadataEditor exercise={ex} onSave={onSave} />
                 </div>
-              ))}
+              )}
             </div>
-          )}
-        </section>
-      ))}
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -2026,14 +2315,6 @@ export default function TissueAdminPage() {
             Tissues ({tissues.length})
           </button>
           <button
-            onClick={() => setView('regions')}
-            className={`text-xs px-3 py-1.5 rounded-md transition-colors font-medium ${
-              view === 'regions' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            Regions ({regions.length})
-          </button>
-          <button
             onClick={() => setView('exercises')}
             className={`text-xs px-3 py-1.5 rounded-md transition-colors font-medium ${
               view === 'exercises' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'
@@ -2073,24 +2354,15 @@ export default function TissueAdminPage() {
         </div>
       )}
 
-      {view === 'regions' && (
-        <div className="space-y-4">
-          <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
-            Overlap is intentional here. A tissue can belong to multiple recovery regions, and unmapped tissues are surfaced explicitly so the canonical associations stay visible.
-          </div>
-          <RegionView regions={regions} />
-        </div>
-      )}
-
       {view === 'exercises' && (
         <div className="space-y-4">
-          {modelSummary && (
-            <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-              <ExerciseStatusCard exercises={modelSummary.exercises} />
-              <ExerciseProgressCard exercises={exercises} />
-            </div>
-          )}
-          <ExerciseView exercises={exercises} tissues={tissues} onSave={load} />
+          <ExerciseView
+            exercises={exercises}
+            tissues={tissues}
+            exerciseInsights={modelSummary?.exercises ?? []}
+            regions={regions}
+            onSave={load}
+          />
         </div>
       )}
     </div>
