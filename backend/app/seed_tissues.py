@@ -19,6 +19,7 @@ from app.reference_exercises import (
     normalize_reference_name,
 )
 from app.tissue_regions import (
+    canonicalize_region,
     primary_region_for_tissue,
     regions_for_tissue,
 )
@@ -277,7 +278,8 @@ def seed_tissue_region_links(session: Session) -> None:
             current_region=tissue.region,
         )
         if not expected_regions:
-            expected_regions = (tissue.region,)
+            fallback_region = canonicalize_region(tissue.region)
+            expected_regions = (fallback_region,) if fallback_region else ()
 
         for index, region in enumerate(expected_regions):
             key = (tissue.id, region)

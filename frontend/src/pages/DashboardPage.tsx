@@ -832,7 +832,7 @@ function RecentSessionsCard({
 const REGION_COLORS: Record<string, string> = {
   chest: '#f97316', shoulders: '#fb923c', triceps: '#fcd34d',
   upper_back: '#1d4ed8', biceps: '#3b82f6', forearms: '#93c5fd',
-  quads: '#15803d', hamstrings: '#22c55e', glutes: '#4ade80', calves: '#86efac', tibs: '#d1fae5',
+  quads: '#15803d', hamstrings: '#22c55e', glutes: '#4ade80', calves: '#86efac', shins: '#d1fae5',
   core: '#7c3aed', lower_back: '#a855f7', hips: '#d8b4fe',
   neck: '#6b7280', other: '#9ca3af',
 }

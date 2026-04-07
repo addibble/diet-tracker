@@ -385,8 +385,16 @@ def test_get_regions_returns_primary_and_overlap_associations(client, session: S
         region="other",
         tracking_mode="paired",
     )
+    unmapped = Tissue(
+        name="mystery_structure",
+        display_name="Mystery Structure",
+        type="muscle",
+        region="other",
+        tracking_mode="paired",
+    )
     session.add(glute)
     session.add(wrist)
+    session.add(unmapped)
     session.commit()
 
     seed_tissue_regions(session)
@@ -401,8 +409,10 @@ def test_get_regions_returns_primary_and_overlap_associations(client, session: S
     outer_leg = {item["name"]: item for item in payload["outer_leg_abductor"]["tissues"]}
     forearms = {item["name"]: item for item in payload["forearms"]["tissues"]}
     hands = {item["name"]: item for item in payload["hands"]["tissues"]}
+    unmapped_group = {item["name"]: item for item in payload["unmapped"]["tissues"]}
 
     assert glutes["gluteus_medius"]["is_primary"] is True
     assert outer_leg["gluteus_medius"]["is_primary"] is False
     assert forearms["wrist_joint"]["is_primary"] is True
     assert hands["wrist_joint"]["is_primary"] is False
+    assert unmapped_group["mystery_structure"]["regions"] == []

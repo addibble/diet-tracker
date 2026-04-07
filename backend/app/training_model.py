@@ -27,7 +27,6 @@ from app.models import (
     Tissue,
     TissueCondition,
     TissueModelConfig,
-    TissueRegionLink,
     TrackedTissue,
     TrainingExclusionWindow,
     TrainingProgram,
@@ -35,7 +34,7 @@ from app.models import (
     WorkoutSession,
     WorkoutSet,
 )
-from app.tissue_regions import canonicalize_region
+from app.tissue_regions import canonicalize_region, load_tissue_regions
 
 _DEFAULT_WINDOW_DAYS = 90
 
@@ -550,25 +549,12 @@ def _load_recovery_checkins(
     if not legacy_rows and not soreness_rows:
         return {}
 
-    # Build region -> [tissue] mapping from actual tissue objects
+    # Build region -> [tissue] mapping from canonical recovery-region associations.
     region_tissues: dict[str, list[Tissue]] = defaultdict(list)
-    links = session.exec(
-        select(TissueRegionLink).where(
-            col(TissueRegionLink.tissue_id).in_([tissue.id for tissue in tissues])
-        )
-    ).all()
-    tissue_by_id = {tissue.id: tissue for tissue in tissues}
-    linked_tissue_ids: set[int] = set()
-    for link in links:
-        tissue = tissue_by_id.get(link.tissue_id)
-        if tissue is None:
-            continue
-        region_tissues[link.region].append(tissue)
-        linked_tissue_ids.add(tissue.id)
+    regions_by_tissue = load_tissue_regions(session, tissues=tissues)
     for tissue in tissues:
-        if tissue.id in linked_tissue_ids:
-            continue
-        region_tissues[tissue.region].append(tissue)
+        for region in regions_by_tissue.get(tissue.id, ()):
+            region_tissues[region].append(tissue)
     tracked_to_tissue = {
         tracked.id: tracked.tissue_id
         for tracked in session.exec(select(TrackedTissue)).all()

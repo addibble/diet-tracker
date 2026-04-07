@@ -969,7 +969,7 @@ export interface RegionInfo {
     name: string;
     display_name: string;
     type: string;
-    primary_region: string;
+    regions: string[];
     is_primary: boolean;
   }[];
 }

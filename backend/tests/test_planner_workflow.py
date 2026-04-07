@@ -198,7 +198,7 @@ def test_workflow_groups_rank_exercises_by_category_and_status(session):
     adductor = _add_tissue(session, name="adductor_longus", display_name="Adductor Longus", region="hips")
     hamstring = _add_tissue(session, name="biceps_femoris", display_name="Biceps Femoris", region="hamstrings")
     erector = _add_tissue(session, name="erector_spinae", display_name="Erector Spinae", region="lower_back")
-    tib = _add_tissue(session, name="tibialis_anterior", display_name="Tibialis Anterior", region="tibs")
+    tib = _add_tissue(session, name="tibialis_anterior", display_name="Tibialis Anterior", region="shins")
     calf = _add_tissue(session, name="soleus", display_name="Soleus", region="calves")
 
     leg_press = _add_exercise(

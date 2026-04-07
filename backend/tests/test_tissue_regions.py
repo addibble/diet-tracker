@@ -31,6 +31,11 @@ def test_seed_and_production_tissues_all_map_to_canonical_regions():
 
 
 def test_normalized_production_display_names_reuse_canonical_mapping():
+    assert regions_for_tissue("brachioradialis_tendon") == ("forearms",)
     assert regions_for_tissue("Lumbar Spine") == ("lower_back",)
     assert regions_for_tissue("Thoracic Spine") == ("upper_back",)
-    assert regions_for_tissue("extensor_hallucis_longus") == ("tibs", "feet")
+    assert regions_for_tissue("extensor_hallucis_longus") == ("shins", "feet")
+    assert regions_for_tissue("obturator_internus") == ("glutes",)
+    assert regions_for_tissue("psoas_major") == ("lower_back", "core")
+    assert regions_for_tissue("adductor") == ("inner_leg_adductor",)
+    assert regions_for_tissue("abductor") == ("outer_leg_abductor",)

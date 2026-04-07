@@ -28,7 +28,8 @@ def test_list_tissues_preserves_existing_shape_and_exposes_tracking_fields(clien
     row = next(item for item in payload if item["id"] == tissue.id)
     assert row["name"] == "lateral_deltoid"
     assert row["tracking_mode"] == "paired"
-    assert row["region"] == tissue.region
+    assert row["region"] == "shoulders"
+    assert row["regions"] == ["shoulders"]
     assert {tracked["side"] for tracked in row["tracked_tissues"]} == {"left", "right"}
 
 

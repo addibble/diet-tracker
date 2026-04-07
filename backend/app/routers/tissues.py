@@ -18,6 +18,7 @@ from app.models import (
     TrackedTissue,
 )
 from app.rehab_protocols import get_rehab_protocol, list_rehab_protocols
+from app.tissue_regions import load_tissue_regions, primary_region_from_regions
 from app.tracked_tissues import (
     get_active_rehab_plans_by_tracked_tissue,
     get_all_current_tracked_conditions,
@@ -110,6 +111,8 @@ def list_tissues(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
+    tissues = list(get_current_tissues(session))
+    regions_by_tissue = load_tissue_regions(session, tissues=tissues)
     return [
         _serialize_tissue(
             t,
@@ -119,8 +122,9 @@ def list_tissues(
                 .where(TrackedTissue.tissue_id == t.id)
                 .order_by(TrackedTissue.side)
             ).all(),
+            regions=regions_by_tissue.get(t.id, ()),
         )
-        for t in get_current_tissues(session)
+        for t in tissues
     ]
 
 
@@ -226,6 +230,8 @@ def get_tracked(
     _user: str = Depends(get_current_user),
 ):
     tracked_rows = list_tracked_tissues(session, include_inactive=include_inactive)
+    tissue_ids = {tracked.tissue_id for tracked in tracked_rows}
+    regions_by_tissue = load_tissue_regions(session, tissue_ids=tissue_ids)
     tracked_conditions = get_all_current_tracked_conditions(session)
     active_plans = get_active_rehab_plans_by_tracked_tissue(session)
     results = []
@@ -243,6 +249,7 @@ def get_tracked(
                 tissue,
                 tracked_conditions.get(tracked.id),
                 active_plans.get(tracked.id),
+                regions=regions_by_tissue.get(tissue.id, ()),
             )
         )
     return results
@@ -262,7 +269,14 @@ def get_tracked_tissue(
         raise HTTPException(status_code=404, detail="Canonical tissue not found")
     condition = get_current_tracked_tissue_condition(session, tracked_tissue_id)
     plan = get_active_rehab_plans_by_tracked_tissue(session).get(tracked_tissue_id)
-    return _serialize_tracked_tissue(tracked, tissue, condition, plan)
+    regions_by_tissue = load_tissue_regions(session, tissue_ids=[tissue.id])
+    return _serialize_tracked_tissue(
+        tracked,
+        tissue,
+        condition,
+        plan,
+        regions=regions_by_tissue.get(tissue.id, ()),
+    )
 
 
 @router.get("/tracked/{tracked_tissue_id:int}/conditions/history")
@@ -458,8 +472,14 @@ def get_tissue(
         .where(TrackedTissue.tissue_id == tissue_id)
         .order_by(TrackedTissue.side)
     ).all()
+    regions_by_tissue = load_tissue_regions(session, tissue_ids=[tissue.id])
     return {
-        **_serialize_tissue(tissue, model_config, tracked_rows=tracked_rows),
+        **_serialize_tissue(
+            tissue,
+            model_config,
+            tracked_rows=tracked_rows,
+            regions=regions_by_tissue.get(tissue.id, ()),
+        ),
         "condition": _serialize_condition(condition),
     }
 
@@ -482,12 +502,14 @@ def create_tissue(
     session.commit()
     session.refresh(tissue)
     seed_tracked_tissues(session)
+    regions_by_tissue = load_tissue_regions(session, tissue_ids=[tissue.id])
     return _serialize_tissue(
         tissue,
         session.get(TissueModelConfig, tissue.id),
         tracked_rows=session.exec(
             select(TrackedTissue).where(TrackedTissue.tissue_id == tissue.id)
         ).all(),
+        regions=regions_by_tissue.get(tissue.id, ()),
     )
 
 
@@ -532,7 +554,13 @@ def update_tissue(
         .where(TrackedTissue.tissue_id == tissue.id)
         .order_by(TrackedTissue.side)
     ).all()
-    return _serialize_tissue(tissue, config, tracked_rows=tracked_rows)
+    regions_by_tissue = load_tissue_regions(session, tissue_ids=[tissue.id])
+    return _serialize_tissue(
+        tissue,
+        config,
+        tracked_rows=tracked_rows,
+        regions=regions_by_tissue.get(tissue.id, ()),
+    )
 
 
 def _resolve_condition_target(
@@ -572,6 +600,7 @@ def _serialize_tissue(
     model_config: TissueModelConfig | None,
     *,
     tracked_rows: list[TrackedTissue],
+    regions: tuple[str, ...],
 ) -> dict:
     return {
         "id": tissue.id,
@@ -579,7 +608,8 @@ def _serialize_tissue(
         "display_name": tissue.display_name,
         "type": tissue.type,
         "tracking_mode": tissue.tracking_mode,
-        "region": tissue.region,
+        "region": primary_region_from_regions(regions),
+        "regions": list(regions),
         "recovery_hours": tissue.recovery_hours,
         "notes": tissue.notes,
         "model_config": _serialize_model_config(model_config),
@@ -642,6 +672,8 @@ def _serialize_tracked_tissue(
     tissue: Tissue,
     condition: TissueCondition | None,
     rehab_plan: RehabPlan | None,
+    *,
+    regions: tuple[str, ...],
 ) -> dict:
     return {
         "id": tracked.id,
@@ -649,7 +681,8 @@ def _serialize_tracked_tissue(
         "tissue_name": tissue.name,
         "tissue_display_name": tissue.display_name,
         "tissue_type": tissue.type,
-        "region": tissue.region,
+        "region": primary_region_from_regions(regions),
+        "regions": list(regions),
         "side": tracked.side,
         "display_name": tracked.display_name,
         "active": tracked.active,

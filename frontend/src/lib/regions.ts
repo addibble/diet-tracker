@@ -1,6 +1,6 @@
 const REGION_LABELS: Record<string, string> = {
   calves: 'Calves',
-  tibs: 'Tibs',
+  shins: 'Shins',
   hamstrings: 'Hamstrings',
   quads: 'Quads',
   inner_leg_adductor: 'Inner Leg (Adductor)',
@@ -17,6 +17,7 @@ const REGION_LABELS: Record<string, string> = {
   neck: 'Neck',
   hands: 'Hands',
   feet: 'Feet',
+  unmapped: 'Unmapped',
 }
 
 export function regionLabel(value: string | null | undefined): string {

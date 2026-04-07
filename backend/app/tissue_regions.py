@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from sqlmodel import Session, col, select
+
+from app.models import Tissue, TissueRegionLink
 from app.reference_exercises import normalize_reference_name
 
 CANONICAL_REGION_ORDER: tuple[str, ...] = (
     "calves",
-    "tibs",
+    "shins",
     "hamstrings",
     "quads",
     "inner_leg_adductor",
@@ -25,9 +28,11 @@ CANONICAL_REGION_ORDER: tuple[str, ...] = (
     "feet",
 )
 
+UNMAPPED_REGION = "unmapped"
+
 CANONICAL_REGION_LABELS: dict[str, str] = {
     "calves": "Calves",
-    "tibs": "Tibs",
+    "shins": "Shins",
     "hamstrings": "Hamstrings",
     "quads": "Quads",
     "inner_leg_adductor": "Inner Leg (Adductor)",
@@ -44,6 +49,7 @@ CANONICAL_REGION_LABELS: dict[str, str] = {
     "neck": "Neck",
     "hands": "Hands",
     "feet": "Feet",
+    UNMAPPED_REGION: "Unmapped",
 }
 
 
@@ -149,9 +155,9 @@ TISSUE_REGION_ASSOCIATIONS: dict[str, tuple[str, ...]] = {
         "transverse_abdominis",
         "diaphragm",
         "pelvic_floor",
-        "psoas_major",
         "iliacus",
     ),
+    "psoas_major": _multi("lower_back", "core"),
     **_single(
         "glutes",
         "gluteus_maximus",
@@ -160,10 +166,11 @@ TISSUE_REGION_ASSOCIATIONS: dict[str, tuple[str, ...]] = {
     "gluteus_medius": _multi("glutes", "outer_leg_abductor"),
     "gluteus_minimus": _multi("glutes", "outer_leg_abductor"),
     "hip_joint": _multi("glutes", "inner_leg_adductor", "outer_leg_abductor"),
-    "obturator_internus": _multi("glutes", "outer_leg_abductor"),
-    "obturator_externus": _multi("glutes", "inner_leg_adductor"),
+    "obturator_internus": _multi("glutes"),
+    "obturator_externus": _multi("glutes"),
     **_single(
         "inner_leg_adductor",
+        "adductor",
         "adductors",
         "adductor_magnus",
         "adductor_longus",
@@ -173,6 +180,9 @@ TISSUE_REGION_ASSOCIATIONS: dict[str, tuple[str, ...]] = {
     ),
     **_single(
         "outer_leg_abductor",
+        "abductor",
+        "abductors",
+        "hip_abductor",
         "hip_abductors",
         "tensor_fasciae_latae",
     ),
@@ -206,16 +216,16 @@ TISSUE_REGION_ASSOCIATIONS: dict[str, tuple[str, ...]] = {
     "achilles_tendon": _multi("calves", "feet"),
     "ankle_joint": _multi("calves", "feet"),
     **_single(
-        "tibs",
+        "shins",
         "tibialis_anterior",
         "fibularis_longus",
         "fibularis_brevis",
         "peroneus_longus",
         "peroneus_brevis",
     ),
-    "tibialis_posterior": _multi("tibs", "feet"),
-    "extensor_digitorum_longus": _multi("tibs", "feet"),
-    "extensor_hallucis_longus": _multi("tibs", "feet"),
+    "tibialis_posterior": _multi("shins", "feet"),
+    "extensor_digitorum_longus": _multi("shins", "feet"),
+    "extensor_hallucis_longus": _multi("shins", "feet"),
     **_single(
         "neck",
         "sternocleidomastoid",
@@ -226,7 +236,9 @@ TISSUE_REGION_ASSOCIATIONS: dict[str, tuple[str, ...]] = {
 
 _LEGACY_REGION_ALIASES: dict[str, tuple[str, ...]] = {
     "calves": ("calves",),
-    "tibs": ("tibs",),
+    "shins": ("shins",),
+    "tibs": ("shins",),
+    "shin": ("shins",),
     "hamstrings": ("hamstrings",),
     "quads": ("quads",),
     "inner_leg_adductor": ("inner_leg_adductor",),
@@ -276,7 +288,7 @@ def canonical_region_sort_key(region: str) -> tuple[int, str]:
 
 
 def is_canonical_region(region: str) -> bool:
-    return region in CANONICAL_REGION_LABELS
+    return region in CANONICAL_REGION_ORDER
 
 
 def _dedupe(regions: Iterable[str]) -> tuple[str, ...]:
@@ -342,4 +354,69 @@ def primary_region_for_tissue(
     fallback = normalize_tissue_name(fallback_region)
     if fallback and is_canonical_region(fallback):
         return fallback
+    if fallback:
+        return fallback
     return "core"
+
+
+def primary_region_from_regions(regions: Iterable[str]) -> str | None:
+    for region in regions:
+        return region
+    return None
+
+
+def load_tissue_regions(
+    session: Session,
+    *,
+    tissues: Iterable[Tissue] | None = None,
+    tissue_ids: Iterable[int] | None = None,
+) -> dict[int, tuple[str, ...]]:
+    tissue_list = list(tissues) if tissues is not None else None
+    if tissue_list is not None:
+        ordered_ids = [tissue.id for tissue in tissue_list if tissue.id is not None]
+        tissue_by_id = {tissue.id: tissue for tissue in tissue_list if tissue.id is not None}
+    else:
+        ordered_ids = list(dict.fromkeys(int(tissue_id) for tissue_id in tissue_ids or []))
+        if ordered_ids:
+            tissue_rows = session.exec(
+                select(Tissue).where(col(Tissue.id).in_(ordered_ids))
+            ).all()
+        else:
+            tissue_rows = session.exec(select(Tissue)).all()
+            ordered_ids = [tissue.id for tissue in tissue_rows if tissue.id is not None]
+        tissue_by_id = {tissue.id: tissue for tissue in tissue_rows if tissue.id is not None}
+
+    if not ordered_ids:
+        return {}
+
+    links = session.exec(
+        select(TissueRegionLink)
+        .where(col(TissueRegionLink.tissue_id).in_(ordered_ids))
+        .order_by(
+            col(TissueRegionLink.tissue_id),
+            col(TissueRegionLink.is_primary).desc(),
+            col(TissueRegionLink.region),
+        )
+    ).all()
+
+    regions_by_tissue: dict[int, list[str]] = {tissue_id: [] for tissue_id in ordered_ids}
+    for link in links:
+        regions = regions_by_tissue.setdefault(link.tissue_id, [])
+        if link.region not in regions:
+            regions.append(link.region)
+
+    result: dict[int, tuple[str, ...]] = {}
+    for tissue_id in ordered_ids:
+        tissue = tissue_by_id.get(tissue_id)
+        if tissue is None:
+            result[tissue_id] = ()
+            continue
+        resolved = tuple(regions_by_tissue.get(tissue_id, []))
+        if not resolved:
+            resolved = regions_for_tissue(
+                tissue.name,
+                display_name=tissue.display_name,
+                fallback_region=getattr(tissue, "region", None),
+            )
+        result[tissue_id] = resolved
+    return result

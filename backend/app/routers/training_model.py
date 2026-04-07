@@ -19,7 +19,6 @@ from app.models import (
     RehabPlan,
     Tissue,
     TissueCondition,
-    TissueRegionLink,
     TrackedTissue,
     TrainingExclusionWindow,
     WeightLog,
@@ -32,11 +31,14 @@ from app.recovery_check_ins import (
 )
 from app.rehab_protocols import get_rehab_protocol
 from app.tissue_regions import (
+    UNMAPPED_REGION,
     canonical_region_label,
     canonical_region_names,
     canonical_region_sort_key,
     canonicalize_region,
     is_canonical_region,
+    load_tissue_regions,
+    primary_region_from_regions,
 )
 from app.tracked_tissues import (
     get_active_rehab_plans_by_tracked_tissue,
@@ -212,50 +214,28 @@ def _region_label(region: str) -> str:
     return canonical_region_label(canonicalize_region(region) or region)
 
 
-def _tissue_region_links(
-    session: Session,
-    *,
-    tissue_ids: set[int] | None = None,
-) -> dict[int, list[str]]:
-    if tissue_ids is not None and not tissue_ids:
-        return {}
-    stmt = select(TissueRegionLink).order_by(
-        col(TissueRegionLink.tissue_id),
-        col(TissueRegionLink.is_primary).desc(),
-        col(TissueRegionLink.region),
-    )
-    if tissue_ids is not None:
-        stmt = stmt.where(col(TissueRegionLink.tissue_id).in_(tissue_ids))
-    links = session.exec(stmt).all()
-    mapping: dict[int, list[str]] = defaultdict(list)
-    for link in links:
-        regions = mapping[link.tissue_id]
-        if link.region not in regions:
-            regions.append(link.region)
-    return mapping
-
-
 def _tracked_tissue_payload_map(
     session: Session,
     *,
     include_inactive: bool,
 ) -> dict[int, dict]:
-    tissues = {
-        tissue.id: tissue
-        for tissue in session.exec(select(Tissue)).all()
-    }
+    tissue_rows = session.exec(select(Tissue)).all()
+    tissues = {tissue.id: tissue for tissue in tissue_rows}
+    regions_by_tissue = load_tissue_regions(session, tissues=tissue_rows)
     result: dict[int, dict] = {}
     for tracked in list_tracked_tissues(session, include_inactive=include_inactive):
         tissue = tissues.get(tracked.tissue_id)
         if tissue is None:
             continue
+        regions = regions_by_tissue.get(tissue.id, ())
         result[tracked.id] = {
             "id": tracked.id,
             "tissue_id": tracked.tissue_id,
             "tissue_name": tissue.name,
             "tissue_display_name": tissue.display_name,
             "tissue_type": tissue.type,
-            "region": tissue.region,
+            "region": primary_region_from_regions(regions) or UNMAPPED_REGION,
+            "regions": list(regions),
             "side": tracked.side,
             "display_name": tracked.display_name,
             "tracking_mode": tissue.tracking_mode,
@@ -397,9 +377,11 @@ def _resolve_tracked_tissue_check_in_target(
     tissue = session.get(Tissue, tracked.tissue_id)
     if tissue is None:
         raise HTTPException(status_code=404, detail="Tracked tissue tissue not found")
-    if cleaned_region and cleaned_region != tissue.region:
+    regions_by_tissue = load_tissue_regions(session, tissue_ids=[tissue.id])
+    region = primary_region_from_regions(regions_by_tissue.get(tissue.id, ())) or UNMAPPED_REGION
+    if cleaned_region and cleaned_region != region:
         raise HTTPException(status_code=400, detail="Tracked tissue region does not match request region")
-    return tissue.region, tracked.id
+    return region, tracked.id
 
 
 def _resolve_region_soreness_target(
@@ -440,21 +422,19 @@ def _last_workout_major_regions(session: Session) -> list[str]:
             select(
                 ExerciseTissue.exercise_id,
                 ExerciseTissue.tissue_id,
-                Tissue.region,
                 ExerciseTissue.role,
                 ExerciseTissue.routing_factor,
                 ExerciseTissue.loading_factor,
             )
-            .join(Tissue, Tissue.id == ExerciseTissue.tissue_id)
             .where(col(ExerciseTissue.exercise_id).in_(exercise_ids))
         ).all()
-        links_by_tissue = _tissue_region_links(
+        regions_by_tissue = load_tissue_regions(
             session,
-            tissue_ids={tissue_id for _, tissue_id, _, _, _, _ in mappings},
+            tissue_ids={tissue_id for _, tissue_id, _, _, _ in mappings},
         )
         mappings_by_exercise: dict[int, list[tuple[str, str, float]]] = defaultdict(list)
-        for exercise_id, tissue_id, primary_region, role, routing, loading in mappings:
-            regions = links_by_tissue.get(tissue_id) or [primary_region]
+        for exercise_id, tissue_id, role, routing, loading in mappings:
+            regions = regions_by_tissue.get(tissue_id, ())
             if not regions:
                 continue
             per_region_routing = (routing or loading or 1.0) / len(regions)
@@ -915,46 +895,39 @@ def get_regions(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    tissues = {
-        tissue.id: tissue
-        for tissue in session.exec(select(Tissue).order_by(Tissue.display_name, Tissue.name)).all()
+    tissue_rows = session.exec(select(Tissue).order_by(Tissue.display_name, Tissue.name)).all()
+    tissues = {tissue.id: tissue for tissue in tissue_rows}
+    regions_by_tissue = load_tissue_regions(session, tissues=tissue_rows)
+    regions: dict[str, list[dict]] = {
+        region: []
+        for region in [*canonical_region_names(), UNMAPPED_REGION]
     }
-    links = session.exec(
-        select(TissueRegionLink).order_by(
-            col(TissueRegionLink.is_primary).desc(),
-            col(TissueRegionLink.region),
-            col(TissueRegionLink.tissue_id),
-        )
-    ).all()
-    regions: dict[str, list[dict]] = {region: [] for region in canonical_region_names()}
-    for link in links:
-        tissue = tissues.get(link.tissue_id)
-        if tissue is None:
-            continue
-        regions.setdefault(link.region, []).append(
-            {
-                "id": tissue.id,
-                "name": tissue.name,
-                "display_name": tissue.display_name,
-                "type": tissue.type,
-                "primary_region": tissue.region,
-                "is_primary": bool(link.is_primary),
-            }
-        )
-    linked_tissue_ids = {link.tissue_id for link in links}
     for tissue in tissues.values():
-        if tissue.id in linked_tissue_ids:
+        tissue_regions = regions_by_tissue.get(tissue.id, ())
+        if not tissue_regions:
+            regions[UNMAPPED_REGION].append(
+                {
+                    "id": tissue.id,
+                    "name": tissue.name,
+                    "display_name": tissue.display_name,
+                    "type": tissue.type,
+                    "regions": [],
+                    "is_primary": True,
+                }
+            )
             continue
-        regions.setdefault(tissue.region, []).append(
-            {
-                "id": tissue.id,
-                "name": tissue.name,
-                "display_name": tissue.display_name,
-                "type": tissue.type,
-                "primary_region": tissue.region,
-                "is_primary": True,
-            }
-        )
+        primary_region = primary_region_from_regions(tissue_regions)
+        for region in tissue_regions:
+            regions.setdefault(region, []).append(
+                {
+                    "id": tissue.id,
+                    "name": tissue.name,
+                    "display_name": tissue.display_name,
+                    "type": tissue.type,
+                    "regions": list(tissue_regions),
+                    "is_primary": region == primary_region,
+                }
+            )
     payload = []
     for region in sorted(regions, key=canonical_region_sort_key):
         tissues_list = sorted(
@@ -1004,21 +977,19 @@ def get_volume_by_region(
         select(
             ExerciseTissue.exercise_id,
             ExerciseTissue.tissue_id,
-            Tissue.region,
             ExerciseTissue.routing_factor,
             ExerciseTissue.loading_factor,
         )
-        .join(Tissue, Tissue.id == ExerciseTissue.tissue_id)
         .where(col(ExerciseTissue.role).in_(["primary", "secondary"]))
     ).all()
 
     exercise_regions: dict = defaultdict(list)
-    links_by_tissue = _tissue_region_links(
+    regions_by_tissue = load_tissue_regions(
         session,
-        tissue_ids={tissue_id for _, tissue_id, _, _, _ in region_rows},
+        tissue_ids={tissue_id for _, tissue_id, _, _ in region_rows},
     )
-    for ex_id, tissue_id, primary_region, routing, loading in region_rows:
-        regions = links_by_tissue.get(tissue_id) or [primary_region]
+    for ex_id, tissue_id, routing, loading in region_rows:
+        regions = regions_by_tissue.get(tissue_id, ())
         if not regions:
             continue
         per_region_routing = (routing or loading or 1.0) / len(regions)

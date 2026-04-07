@@ -767,11 +767,11 @@ def _group_label(regions: list[str]) -> str:
         return "Upper Push"
     if len(region_set & {"upper_back", "biceps", "forearms"}) >= 2:
         return "Upper Pull"
-    if region_set & {"quads", "glutes", "hips"} and "hamstrings" not in region_set:
+    if region_set & {"quads", "glutes"} and "hamstrings" not in region_set:
         return "Leg Push"
-    if region_set & {"hamstrings", "tibs", "calves", "lower_back"}:
+    if region_set & {"hamstrings", "shins", "calves", "lower_back"}:
         return "Leg Pull"
-    if region_set & {"core", "lower_back", "hips"}:
+    if region_set & {"core", "lower_back", "glutes"}:
         return "Core / Posterior"
     if not regions:
         return "General Training"

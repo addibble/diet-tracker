@@ -26,7 +26,6 @@ import {
   type WkExercise,
   type WkTissueReadiness,
 } from '../api'
-import { regionLabel } from '../lib/regions'
 import {
   CapacityCard,
   ExerciseProgressCard,
@@ -1450,9 +1449,6 @@ function RegionView({ regions }: { regions: RegionInfo[] }) {
                     )}
                   </div>
                   <p className="mt-1 text-[11px] text-gray-500">{tissue.name}</p>
-                  <p className="mt-1 text-[11px] text-gray-500">
-                    Primary region: {regionLabel(tissue.primary_region)}
-                  </p>
                 </div>
               ))}
             </div>
@@ -1621,7 +1617,7 @@ export default function TissueAdminPage() {
       {view === 'regions' && (
         <div className="space-y-4">
           <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
-            Overlap is intentional here. A tissue can belong to multiple recovery regions, while its primary region still powers the main tissue metadata.
+            Overlap is intentional here. A tissue can belong to multiple recovery regions, and unmapped tissues are surfaced explicitly so the canonical associations stay visible.
           </div>
           <RegionView regions={regions} />
         </div>

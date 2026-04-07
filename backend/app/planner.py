@@ -1,8 +1,8 @@
 """Auto-generating workout planner.
 
 Selects which muscle groups to train today based on tissue readiness,
-recovery check-ins, and injury status. Matches exercises to regions by
-querying ExerciseTissue → Tissue → region. Supports saving plans to DB
+recovery check-ins, and injury status. Matches exercises to recovery
+regions through tissue-region associations. Supports saving plans to DB
 and tracking progress through a workout.
 """
 
@@ -43,7 +43,6 @@ from app.models import (
     ProgramDayExercise,
     RecoveryCheckIn,
     RegionSorenessCheckIn,
-    Tissue,
     TrainingProgram,
     WeightLog,
     WorkoutSession,
@@ -52,6 +51,7 @@ from app.models import (
 )
 from app.planner_groups import significant_mapping_load
 from app.recovery_check_ins import aggregate_recovery_checkins_for_day
+from app.tissue_regions import load_tissue_regions
 from app.tracked_tissues import (
     default_performed_side,
     get_active_rehab_plans_by_tracked_tissue,
@@ -66,8 +66,8 @@ from app.training_model import build_exercise_strength
 TISSUE_CLUSTERS: list[dict] = [
     {"label": "Push", "regions": ["chest", "shoulders", "triceps"]},
     {"label": "Pull", "regions": ["upper_back", "biceps", "forearms"]},
-    {"label": "Legs", "regions": ["quads", "hamstrings", "glutes", "calves", "tibs"]},
-    {"label": "Core & Posterior", "regions": ["core", "lower_back", "hips"]},
+    {"label": "Legs", "regions": ["quads", "hamstrings", "glutes", "calves", "shins"]},
+    {"label": "Core & Posterior", "regions": ["core", "lower_back", "glutes"]},
 ]
 
 REST_DAY_THRESHOLD = 0.35
@@ -642,20 +642,24 @@ def _build_exercise_region_map(session: Session) -> dict[int, list[dict]]:
     rows = session.exec(
         select(
             ExerciseTissue.exercise_id,
-            Tissue.region,
+            ExerciseTissue.tissue_id,
             ExerciseTissue.role,
             ExerciseTissue.routing_factor,
         )
-        .join(Tissue, Tissue.id == ExerciseTissue.tissue_id)
     ).all()
+    regions_by_tissue = load_tissue_regions(
+        session,
+        tissue_ids={tissue_id for _, tissue_id, _, _ in rows},
+    )
 
     result: dict[int, list[dict]] = defaultdict(list)
-    for exercise_id, region, role, routing in rows:
-        result[exercise_id].append({
-            "region": region,
-            "role": role,
-            "routing": routing,
-        })
+    for exercise_id, tissue_id, role, routing in rows:
+        for region in regions_by_tissue.get(tissue_id, ()):
+            result[exercise_id].append({
+                "region": region,
+                "role": role,
+                "routing": routing,
+            })
     return result
 
 

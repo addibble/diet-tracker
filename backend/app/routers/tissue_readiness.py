@@ -19,6 +19,7 @@ from app.models import (
     WorkoutSet,
 )
 from app.rehab_protocols import get_rehab_protocol
+from app.tissue_regions import load_tissue_regions, primary_region_from_regions
 from app.tracked_tissues import (
     get_active_rehab_plans_by_tracked_tissue,
     get_all_current_tracked_conditions,
@@ -180,6 +181,7 @@ def get_tracked_tissue_readiness(
         tissue.id: tissue
         for tissue in session.exec(select(Tissue)).all()
     }
+    regions_by_tissue = load_tissue_regions(session, tissues=tissues.values())
     tracked_conditions = get_all_current_tracked_conditions(session)
     active_rehab_plans = get_active_rehab_plans_by_tracked_tissue(session)
     latest_check_ins = _latest_rehab_check_ins_by_tracked_tissue(session)
@@ -273,7 +275,8 @@ def get_tracked_tissue_readiness(
                 "tissue_name": tissue.name,
                 "tissue_display_name": tissue.display_name,
                 "tissue_type": tissue.type,
-                "region": tissue.region,
+                "region": primary_region_from_regions(regions_by_tissue.get(tissue.id, ())),
+                "regions": list(regions_by_tissue.get(tissue.id, ())),
                 "side": tracked.side,
                 "display_name": tracked.display_name,
                 "tracking_mode": tissue.tracking_mode,
