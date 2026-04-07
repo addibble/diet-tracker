@@ -890,21 +890,35 @@ export interface TrainingModelTissueHistory {
 
 // ── Recovery Check-in Types ──
 
-export interface RecoveryCheckIn {
+export interface TissuePainCheckIn {
   id: number;
   date: string;
   region: string;
   tracked_tissue_id: number | null;
+  check_in_kind: 'pain';
   target_kind: 'tracked_tissue' | 'region';
   target_key: string;
   target_label: string;
   tracked_tissue: RecoveryCheckInTrackedTissue | null;
-  soreness_0_10: number;
   pain_0_10: number;
-  stiffness_0_10: number;
-  readiness_0_10: number;
   notes: string | null;
 }
+
+export interface RegionSorenessCheckIn {
+  id: number;
+  date: string;
+  region: string;
+  tracked_tissue_id: null;
+  check_in_kind: 'soreness';
+  target_kind: 'region';
+  target_key: string;
+  target_label: string;
+  tracked_tissue: null;
+  soreness_0_10: number;
+  notes: string | null;
+}
+
+export type RecoveryCheckIn = TissuePainCheckIn | RegionSorenessCheckIn;
 
 export interface RecoveryCheckInTrackedTissue {
   id: number;
@@ -921,6 +935,7 @@ export interface RecoveryCheckInTrackedTissue {
 
 export interface RecoveryCheckInTarget {
   target_key: string;
+  check_in_kind: 'pain' | 'soreness';
   target_kind: 'tracked_tissue' | 'region';
   region: string;
   tracked_tissue_id: number | null;
@@ -933,16 +948,30 @@ export interface RecoveryCheckInTarget {
 export interface RecoveryCheckInTargetsResponse {
   date: string;
   targets: RecoveryCheckInTarget[];
+  pain_targets: RecoveryCheckInTarget[];
+  soreness_targets: RecoveryCheckInTarget[];
   today_check_ins: RecoveryCheckIn[];
+  today_pain_check_ins: TissuePainCheckIn[];
+  today_soreness_check_ins: RegionSorenessCheckIn[];
   other_options: {
     regions: RecoveryCheckInTarget[];
     tracked_tissues: RecoveryCheckInTarget[];
+    soreness_regions: RecoveryCheckInTarget[];
+    pain_tracked_tissues: RecoveryCheckInTarget[];
   };
 }
 
 export interface RegionInfo {
   region: string;
-  tissues: { id: number; name: string; display_name: string }[];
+  label: string;
+  tissues: {
+    id: number;
+    name: string;
+    display_name: string;
+    type: string;
+    primary_region: string;
+    is_primary: boolean;
+  }[];
 }
 
 // ── Exercise Strength Types ──
@@ -1277,8 +1306,6 @@ export const createRecoveryCheckIn = (data: {
   tracked_tissue_id?: number;
   soreness_0_10?: number;
   pain_0_10?: number;
-  stiffness_0_10?: number;
-  readiness_0_10?: number;
   notes?: string;
 }) =>
   request<RecoveryCheckIn>('/training-model/check-in', {
@@ -1360,6 +1387,7 @@ export interface VolumeByRegion {
   regions: string[];
   daily: Record<string, Record<string, number>>;
   totals: Record<string, number>;
+  region_labels: Record<string, string>;
 }
 
 export const getVolumeByRegion = (days = 7, asOf?: string) =>

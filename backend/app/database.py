@@ -52,6 +52,8 @@ RUNTIME_REQUIRED_TABLES = {
     "tracked_tissues",
     "rehab_plans",
     "rehab_check_ins",
+    "region_soreness_check_ins",
+    "tissue_region_links",
     "tissue_relationships",
     "workout_set_tissue_feedback",
 }
@@ -237,7 +239,7 @@ def _migrate_add_columns():
         _ensure_columns(
             "tissues",
             {
-                "region": "ALTER TABLE tissues ADD COLUMN region TEXT DEFAULT 'other'",
+                "region": "ALTER TABLE tissues ADD COLUMN region TEXT DEFAULT 'core'",
                 "tracking_mode": "ALTER TABLE tissues ADD COLUMN tracking_mode TEXT DEFAULT 'paired'",
             },
             insp,
@@ -361,6 +363,7 @@ def _seed_data():
         seed_reference_exercises,
         seed_tissue_model_configs,
         seed_tissue_recovery_hours,
+        seed_tissue_region_links,
         seed_tissue_regions,
         seed_tissue_relationship_defaults,
         seed_tissues,
@@ -370,6 +373,7 @@ def _seed_data():
     with Session(engine) as session:
         seed_tissues(session)
         seed_tissue_regions(session)
+        seed_tissue_region_links(session)
         seed_tissue_recovery_hours(session)
         seed_hip_machine_tissues(session)
         seed_reference_exercises(session)

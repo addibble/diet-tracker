@@ -54,7 +54,7 @@ _NEUTRAL_GRIP_STYLES = {"neutral"}
 _PROVOCATIVE_GRIP_STYLES = {"mixed", "pronated", "supinated"}
 _SYMPTOM_DIRECT_CEILINGS = {
     "none": 1.0,
-    "mild": 0.30,
+    "mild": 0.50,
     "moderate": 0.10,
     "severe": 0.00,
 }

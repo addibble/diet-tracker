@@ -5,6 +5,7 @@ from sqlmodel import select
 from app.models import (
     Exercise,
     RecoveryCheckIn,
+    RegionSorenessCheckIn,
     RehabCheckIn,
     RehabPlan,
     Tissue,
@@ -253,24 +254,21 @@ def test_select_exercises_does_not_penalise_distant_stabilisers():
     )
 
 
-def test_soft_blocked_regions_include_moderate_soreness():
+def test_soft_blocked_regions_include_severe_soreness():
     blocked = _soft_blocked_regions({
-        "chest": {"pain_0_10": 0, "soreness_0_10": 5, "stiffness_0_10": 0, "readiness_0_10": 4},
-        "shoulders": {"pain_0_10": 0, "soreness_0_10": 2, "stiffness_0_10": 0, "readiness_0_10": 7},
+        "chest": {"soreness_0_10": 8},
+        "shoulders": {"soreness_0_10": 5},
     })
     assert "chest" in blocked
     assert "shoulders" not in blocked
 
 
-def test_select_exercises_skips_direct_primary_region_when_same_day_soreness_is_moderate(session):
+def test_select_exercises_skips_direct_primary_region_when_same_day_soreness_is_severe(session):
     session.add(
-        RecoveryCheckIn(
+        RegionSorenessCheckIn(
             date=date(2026, 4, 2),
             region="chest",
-            soreness_0_10=5,
-            pain_0_10=0,
-            stiffness_0_10=0,
-            readiness_0_10=4,
+            soreness_0_10=8,
         )
     )
     session.commit()
@@ -306,7 +304,7 @@ def test_select_exercises_skips_direct_primary_region_when_same_day_soreness_is_
         "current_condition": None,
     }
     region_state = _build_region_state([row], checkins)
-    assert region_state["chest"]["readiness"] <= 0.45
+    assert region_state["chest"]["readiness"] <= 0.55
 
     exercise_region_map = {
         40: [{"region": "chest", "role": "primary", "routing": 1.0}],
@@ -325,7 +323,7 @@ def test_select_exercises_skips_direct_primary_region_when_same_day_soreness_is_
     assert "Landmine Press" not in names
 
 
-def test_load_todays_checkins_aggregates_region_and_tracked_rows_by_region(session):
+def test_load_todays_checkins_aggregates_region_and_tracked_soreness_by_region(session):
     tissue = Tissue(
         name="pectoralis_major",
         display_name="Pectoralis Major",
@@ -346,13 +344,10 @@ def test_load_todays_checkins_aggregates_region_and_tracked_rows_by_region(sessi
     session.refresh(tracked)
 
     session.add(
-        RecoveryCheckIn(
+        RegionSorenessCheckIn(
             date=date(2026, 4, 2),
             region="chest",
             soreness_0_10=2,
-            pain_0_10=0,
-            stiffness_0_10=1,
-            readiness_0_10=7,
         )
     )
     session.add(
@@ -361,9 +356,8 @@ def test_load_todays_checkins_aggregates_region_and_tracked_rows_by_region(sessi
             region="chest",
             tracked_tissue_id=tracked.id,
             soreness_0_10=5,
-            pain_0_10=3,
-            stiffness_0_10=0,
-            readiness_0_10=4,
+            pain_0_10=0,
+            readiness_0_10=10,
         )
     )
     session.commit()
@@ -372,9 +366,6 @@ def test_load_todays_checkins_aggregates_region_and_tracked_rows_by_region(sessi
 
     assert checkins["chest"] == {
         "soreness_0_10": 5,
-        "pain_0_10": 3,
-        "stiffness_0_10": 1,
-        "readiness_0_10": 4,
     }
 
 

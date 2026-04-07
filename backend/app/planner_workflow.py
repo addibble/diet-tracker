@@ -23,9 +23,11 @@ from app.planner_groups import (
 )
 from app.recovery_check_ins import recovery_checkin_has_symptoms
 from app.tracked_tissues import (
+    default_performed_side,
     get_active_rehab_plans_by_tracked_tissue,
     get_all_current_tracked_conditions,
     get_tracked_tissue_lookup,
+    tracked_tissue_side_weights,
 )
 from app.training_model import build_training_model_summary
 
@@ -36,6 +38,7 @@ _DAY_TARGET_SELECTED_EXERCISES = 8
 _DAY_MAX_SELECTED_EXERCISES = 10
 _DAY_MAX_CANDIDATE_EXERCISES = 12
 _TODAY_BLOCKED_LOAD = 0.3
+_MILD_CHECKIN_ALLOWED_LOAD = 0.5
 
 
 def suggest_today_workflow(session: Session, *, as_of: date | None = None) -> dict:
@@ -77,7 +80,6 @@ def suggest_today_workflow(session: Session, *, as_of: date | None = None) -> di
         tracked_conditions=tracked_conditions,
         active_rehab_plans=active_rehab_plans,
     )
-    blocked_tissue_ids = {row["tissue_id"] for row in filtered_tissues}
     tissue_last_trained = _tissue_last_trained(session, today)
 
     category_pool = _build_category_pool(
@@ -100,7 +102,6 @@ def suggest_today_workflow(session: Session, *, as_of: date | None = None) -> di
         session=session,
         exercises=category_pool,
         exercise_region_map=exercise_region_map,
-        blocked_tissue_ids=blocked_tissue_ids,
         tissue_last_trained=tissue_last_trained,
         tissue_rows_by_id=tissue_rows_by_id,
         filtered_tissues=filtered_tissues,
@@ -155,26 +156,29 @@ def _filtered_tissues_from_checkins(
         filtered.append({
             "tracked_tissue_id": tracked_tissue_id,
             "tissue_id": getattr(tracked, "tissue_id"),
+            "tracked_side": getattr(tracked, "side", None),
             "target_label": getattr(tracked, "display_name", str(tracked_tissue_id)),
             "status": status,
             "reason": _checkin_reason_label(row),
+            "max_loading_factor": _checkin_allowed_loading_factor(row),
         })
         seen_tracked_ids.add(tracked_tissue_id)
     return filtered
 
 
 def _checkin_blocks_general_loading(row: RecoveryCheckIn) -> bool:
-    return recovery_checkin_has_symptoms(row) or row.readiness_0_10 <= 7
+    return recovery_checkin_has_symptoms(row)
+
+
+def _checkin_allowed_loading_factor(row: RecoveryCheckIn) -> float:
+    symptom_peak = int(row.pain_0_10 or 0)
+    if 0 < symptom_peak <= 2:
+        return _MILD_CHECKIN_ALLOWED_LOAD
+    return _TODAY_BLOCKED_LOAD
 
 
 def _checkin_reason_label(row: RecoveryCheckIn) -> str:
-    if row.pain_0_10 > 0:
-        return f"pain {row.pain_0_10}/10"
-    if row.soreness_0_10 > 0:
-        return f"soreness {row.soreness_0_10}/10"
-    if row.stiffness_0_10 > 0:
-        return f"stiffness {row.stiffness_0_10}/10"
-    return f"readiness {row.readiness_0_10}/10"
+    return f"pain {row.pain_0_10}/10"
 
 
 def _tissue_last_trained(session: Session, today: date) -> dict[int, int]:
@@ -330,18 +334,21 @@ def _planner_status_rank(status: str) -> int:
 def _exercise_planner_state(
     *,
     exercise: dict,
-    blocked_tissue_ids: set[int],
-    filtered_tissues_by_id: dict[int, dict],
+    filtered_tissues: list[dict],
     protection_eval: dict,
     rehab_priority: dict | None,
 ) -> tuple[str, str, bool]:
-    blocked_hits = sorted(_significant_tissue_ids(exercise) & blocked_tissue_ids)
-    if blocked_hits:
-        blocked_labels = [
-            str(filtered_tissues_by_id[tissue_id]["target_label"])
-            for tissue_id in blocked_hits
-            if tissue_id in filtered_tissues_by_id
-        ]
+    checkin_eval = _checkin_blocking_eval(
+        exercise=exercise,
+        filtered_tissues=filtered_tissues,
+        preferred_side=(
+            str(rehab_priority.get("preferred_side"))
+            if rehab_priority and rehab_priority.get("preferred_side")
+            else None
+        ),
+    )
+    if checkin_eval["blocked"]:
+        blocked_labels = [str(label) for label in checkin_eval["blocked_labels"]]
         summary = ", ".join(blocked_labels[:2]) if blocked_labels else "today's check-in"
         return (
             "blocked",
@@ -487,7 +494,6 @@ def _build_ranked_group_catalog(
     session: Session,
     exercises: list[dict],
     exercise_region_map: dict[int, list[dict]],
-    blocked_tissue_ids: set[int],
     tissue_last_trained: dict[int, int],
     tissue_rows_by_id: dict[int, dict],
     filtered_tissues: list[dict],
@@ -496,7 +502,6 @@ def _build_ranked_group_catalog(
     tissues_data: list[dict],
     plan_date: date,
 ) -> list[dict]:
-    filtered_tissues_by_id = {row["tissue_id"]: row for row in filtered_tissues}
     candidates: list[dict] = []
     for exercise in exercises:
         exercise_id = int(exercise.get("exercise_id") or exercise.get("id") or 0)
@@ -509,6 +514,11 @@ def _build_ranked_group_catalog(
             exercise,
             exercise,
             protection_profiles,
+            preferred_side=preferred_side,
+        )
+        checkin_eval = _checkin_blocking_eval(
+            exercise=exercise,
+            filtered_tissues=filtered_tissues,
             preferred_side=preferred_side,
         )
         group_regions = _exercise_group_regions(exercise, exercise_region_map)
@@ -526,8 +536,7 @@ def _build_ranked_group_catalog(
         )
         planner_status, planner_reason, selectable = _exercise_planner_state(
             exercise=exercise,
-            blocked_tissue_ids=blocked_tissue_ids,
-            filtered_tissues_by_id=filtered_tissues_by_id,
+            filtered_tissues=filtered_tissues,
             protection_eval=protection_eval,
             rehab_priority=rehab_priority,
         )
@@ -546,7 +555,11 @@ def _build_ranked_group_catalog(
             **exercise,
             "exercise_id": exercise_id,
             "exercise_name": exercise.get("exercise_name") or exercise.get("name"),
-            "performed_side": preferred_side if preferred_side in {"left", "right", "center", "bilateral"} else exercise.get("performed_side"),
+            "performed_side": (
+                preferred_side
+                if preferred_side in {"left", "right", "center", "bilateral"}
+                else checkin_eval.get("preferred_side") or exercise.get("performed_side")
+            ),
             "workflow_role": "rehab" if rehab_priority else "group",
             "group_label": group_label,
             "_group_regions": group_regions,
@@ -1101,6 +1114,112 @@ def _build_rehab_only_plan(
         }),
         "rationale": rationale,
     }
+
+
+def _checkin_blocking_eval(
+    *,
+    exercise: dict,
+    filtered_tissues: list[dict],
+    preferred_side: str | None = None,
+) -> dict[str, object]:
+    if not filtered_tissues:
+        return {"blocked": False, "blocked_labels": [], "preferred_side": preferred_side}
+
+    explicit_side = preferred_side
+    if explicit_side is None:
+        explicit_side = default_performed_side(
+            exercise_name=str(exercise.get("exercise_name") or exercise.get("name") or ""),
+            exercise_laterality=str(exercise.get("laterality") or "bilateral"),
+            provided_side=None,
+        )
+    exercise_laterality = str(exercise.get("laterality") or "bilateral")
+    candidate_sides = [explicit_side] if explicit_side in {"left", "right", "center", "bilateral"} else [None]
+    if (
+        preferred_side is None
+        and exercise_laterality in {"unilateral", "either"}
+        and explicit_side not in {"left", "right"}
+    ):
+        candidate_sides = ["left", "right"]
+
+    evaluations = [
+        {
+            "preferred_side": candidate_side,
+            "blocked_labels": _candidate_checkin_blocking_labels(
+                exercise=exercise,
+                filtered_tissues=filtered_tissues,
+                performed_side=candidate_side,
+            ),
+        }
+        for candidate_side in candidate_sides
+    ]
+    best = min(
+        evaluations,
+        key=lambda item: (
+            1 if item["blocked_labels"] else 0,
+            len(item["blocked_labels"]),
+            str(item["preferred_side"] or ""),
+        ),
+    )
+    return {
+        "blocked": bool(best["blocked_labels"]),
+        "blocked_labels": list(best["blocked_labels"]),
+        "preferred_side": best["preferred_side"],
+    }
+
+
+def _candidate_checkin_blocking_labels(
+    *,
+    exercise: dict,
+    filtered_tissues: list[dict],
+    performed_side: str | None,
+) -> list[str]:
+    blocked_labels: list[str] = []
+    for filtered in filtered_tissues:
+        allowed_load = float(filtered.get("max_loading_factor") or _TODAY_BLOCKED_LOAD)
+        direct_loading = _direct_loading_for_filtered_tissue(
+            exercise=exercise,
+            filtered_tissue=filtered,
+            performed_side=performed_side,
+        )
+        if direct_loading > allowed_load + 1e-6:
+            blocked_labels.append(str(filtered["target_label"]))
+    return blocked_labels
+
+
+def _direct_loading_for_filtered_tissue(
+    *,
+    exercise: dict,
+    filtered_tissue: dict,
+    performed_side: str | None,
+) -> float:
+    tissue_id = int(filtered_tissue.get("tissue_id") or 0)
+    if tissue_id <= 0:
+        return 0.0
+    tracked_side = str(filtered_tissue.get("tracked_side") or "center")
+    tissue_tracking_mode = "center" if tracked_side == "center" else "paired"
+    exercise_laterality = str(exercise.get("laterality") or "bilateral")
+    direct_loading = 0.0
+    for mapping in exercise.get("tissues", []):
+        if int(mapping.get("tissue_id") or 0) != tissue_id:
+            continue
+        load_weights, _cross_weights = tracked_tissue_side_weights(
+            exercise_laterality=exercise_laterality,
+            laterality_mode=str(mapping.get("laterality_mode") or "bilateral_equal"),
+            performed_side=performed_side,
+            tissue_tracking_mode=tissue_tracking_mode,
+        )
+        direct_weight = float(load_weights.get(tracked_side, 0.0))
+        if direct_weight <= 0:
+            continue
+        mapping_load = max(
+            float(mapping.get("loading_factor") or 0.0),
+            float(mapping.get("routing_factor") or 0.0),
+            float(mapping.get("fatigue_factor") or 0.0),
+            float(mapping.get("joint_strain_factor") or 0.0),
+            float(mapping.get("tendon_strain_factor") or 0.0),
+        )
+        direct_loading = max(direct_loading, mapping_load * direct_weight)
+    return direct_loading
 
 
 def _significant_tissue_ids(exercise: dict) -> set[int]:

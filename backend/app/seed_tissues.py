@@ -9,6 +9,7 @@ from app.models import (
     ExerciseTissue,
     Tissue,
     TissueModelConfig,
+    TissueRegionLink,
     TissueRelationship,
     TrainingExclusionWindow,
 )
@@ -16,6 +17,10 @@ from app.reference_exercises import (
     REFERENCE_EXERCISE_FIXUPS,
     TISSUE_RECOVERY_HOURS_FIXUPS,
     normalize_reference_name,
+)
+from app.tissue_regions import (
+    primary_region_for_tissue,
+    regions_for_tissue,
 )
 from app.tracked_tissues import (
     default_mapping_laterality_mode,
@@ -157,142 +162,32 @@ TISSUES: list[dict] = [
 ]
 
 
-# Region mapping: tissue name -> body region
-TISSUE_REGION_MAP: dict[str, str] = {
-    # shoulders
-    "anterior_deltoid": "shoulders",
-    "lateral_deltoid": "shoulders",
-    "posterior_deltoid": "shoulders",
-    "deltoid_anterior": "shoulders",
-    "deltoid_lateral": "shoulders",
-    "deltoid_posterior": "shoulders",
-    "rotator_cuff": "shoulders",
-    "supraspinatus": "shoulders",
-    "infraspinatus": "shoulders",
-    "teres_minor": "shoulders",
-    "subscapularis": "shoulders",
-    "supraspinatus_tendon": "shoulders",
-    "shoulder_joint": "shoulders",
-    # upper_back
-    "upper_trapezius": "upper_back",
-    "mid_trapezius": "upper_back",
-    "middle_trapezius": "upper_back",
-    "lower_trapezius": "upper_back",
-    "rhomboids": "upper_back",
-    "rhomboid_major": "upper_back",
-    "rhomboid_minor": "upper_back",
-    "latissimus_dorsi": "upper_back",
-    "teres_major": "upper_back",
-    "levator_scapulae": "upper_back",
-    "thoracic_spine": "upper_back",
-    # lower_back
-    "erector_spinae": "lower_back",
-    "iliocostalis": "lower_back",
-    "longissimus": "lower_back",
-    "spinalis": "lower_back",
-    "lumbar_spine": "lower_back",
-    "multifidus": "lower_back",
-    "quadratus_lumborum": "lower_back",
-    # chest
-    "pectoralis_major": "chest",
-    "pec_sternal_head": "chest",
-    "pec_clavicular_head": "chest",
-    "pectoralis_minor": "chest",
-    "serratus_anterior": "chest",
-    # biceps
-    "biceps_brachii": "biceps",
-    "biceps_long_head": "biceps",
-    "biceps_short_head": "biceps",
-    "biceps_long_head_tendon": "biceps",
-    "brachialis": "biceps",
-    # triceps
-    "triceps_brachii": "triceps",
-    "triceps_long_head": "triceps",
-    "triceps_lateral_head": "triceps",
-    "triceps_medial_head": "triceps",
-    "elbow_joint": "triceps",
-    # forearms
-    "brachioradialis": "forearms",
-    "wrist_flexors": "forearms",
-    "wrist_extensors": "forearms",
-    "flexor_carpi_radialis": "forearms",
-    "flexor_carpi_ulnaris": "forearms",
-    "palmaris_longus": "forearms",
-    "flexor_digitorum_superficialis": "forearms",
-    "flexor_digitorum_profundus": "forearms",
-    "extensor_carpi_radialis_longus": "forearms",
-    "extensor_carpi_radialis_brevis": "forearms",
-    "extensor_carpi_ulnaris": "forearms",
-    "extensor_digitorum": "forearms",
-    "pronator_teres": "forearms",
-    "supinator": "forearms",
-    "common_extensor_tendon": "forearms",
-    "common_flexor_tendon": "forearms",
-    "wrist_joint": "forearms",
-    # core
-    "rectus_abdominis": "core",
-    "external_oblique": "core",
-    "internal_oblique": "core",
-    "transverse_abdominis": "core",
-    "diaphragm": "core",
-    "pelvic_floor": "core",
-    # glutes
-    "gluteus_maximus": "glutes",
-    "gluteus_medius": "glutes",
-    "gluteus_minimus": "glutes",
-    "piriformis": "glutes",
-    # hips
-    "hip_flexors": "hips",
-    "psoas_major": "hips",
-    "iliacus": "hips",
-    "sartorius": "hips",
-    "hip_joint": "hips",
-    "adductors": "hips",
-    "adductor_magnus": "hips",
-    "adductor_longus": "hips",
-    "adductor_brevis": "hips",
-    "gracilis": "hips",
-    "pectineus": "hips",
-    "tensor_fasciae_latae": "hips",
-    # quads
-    "rectus_femoris": "quads",
-    "vastus_lateralis": "quads",
-    "vastus_medialis": "quads",
-    "vastus_intermedius": "quads",
-    "knee_joint": "quads",
-    "patellar_tendon": "quads",
-    # hamstrings
-    "biceps_femoris": "hamstrings",
-    "biceps_femoris_long_head": "hamstrings",
-    "biceps_femoris_short_head": "hamstrings",
-    "semitendinosus": "hamstrings",
-    "semimembranosus": "hamstrings",
-    "hamstring_tendons": "hamstrings",
-    # calves
-    "gastrocnemius": "calves",
-    "gastrocnemius_medial_head": "calves",
-    "gastrocnemius_lateral_head": "calves",
-    "soleus": "calves",
-    "achilles_tendon": "calves",
-    "popliteus": "calves",
-    "ankle_joint": "calves",
-    # tibs
-    "tibialis_anterior": "tibs",
-    "tibialis_posterior": "tibs",
-    "fibularis_longus": "tibs",
-    "fibularis_brevis": "tibs",
-    "peroneus_longus": "tibs",
-    "peroneus_brevis": "tibs",
-    # neck
-    "sternocleidomastoid": "neck",
-    "cervical_spine": "neck",
-    "scalenes": "neck",
-}
+def tissue_region(
+    name: str,
+    *,
+    display_name: str | None = None,
+    current_region: str | None = None,
+) -> str:
+    """Return the primary canonical region for a tissue."""
+    return primary_region_for_tissue(
+        name,
+        display_name=display_name,
+        fallback_region=current_region,
+    )
 
 
-def tissue_region(name: str) -> str:
-    """Return the body region for a tissue name, defaulting to 'other'."""
-    return TISSUE_REGION_MAP.get(name, "other")
+def tissue_regions(
+    name: str,
+    *,
+    display_name: str | None = None,
+    current_region: str | None = None,
+) -> tuple[str, ...]:
+    """Return all canonical region associations for a tissue."""
+    return regions_for_tissue(
+        name,
+        display_name=display_name,
+        fallback_region=current_region,
+    )
 
 
 def _name_to_display(name: str) -> str:
@@ -310,7 +205,10 @@ def seed_tissues(session: Session) -> None:
             name=info["name"],
             display_name=info.get("display_name", _name_to_display(info["name"])),
             type=info["type"],
-            region=tissue_region(info["name"]),
+            region=tissue_region(
+                info["name"],
+                display_name=info.get("display_name"),
+            ),
             tracking_mode=tissue_tracking_mode(info["name"]),
             recovery_hours=info.get("recovery_hours", 48),
             notes=info.get("notes"),
@@ -343,14 +241,72 @@ _HIP_MACHINE_MAPPINGS: dict[str, list[dict]] = {
 
 
 def seed_tissue_regions(session: Session) -> None:
-    """Backfill region field for existing tissues that still have 'other'."""
+    """Backfill the primary region field for existing tissues."""
     tissues = session.exec(select(Tissue)).all()
+    changed = False
     for t in tissues:
-        expected = tissue_region(t.name)
-        if t.region != expected:
-            t.region = expected
-            session.add(t)
-    session.commit()
+        expected = tissue_region(
+            t.name,
+            display_name=t.display_name,
+            current_region=t.region,
+        )
+        if t.region == expected:
+            continue
+        t.region = expected
+        session.add(t)
+        changed = True
+    if changed:
+        session.commit()
+
+
+def seed_tissue_region_links(session: Session) -> None:
+    """Backfill the many-to-many canonical region associations for each tissue."""
+    tissues = session.exec(select(Tissue)).all()
+    existing_links = session.exec(select(TissueRegionLink)).all()
+    links_by_key = {
+        (link.tissue_id, link.region): link
+        for link in existing_links
+    }
+    expected_keys: set[tuple[int, str]] = set()
+    changed = False
+
+    for tissue in tissues:
+        expected_regions = tissue_regions(
+            tissue.name,
+            display_name=tissue.display_name,
+            current_region=tissue.region,
+        )
+        if not expected_regions:
+            expected_regions = (tissue.region,)
+
+        for index, region in enumerate(expected_regions):
+            key = (tissue.id, region)
+            expected_keys.add(key)
+            link = links_by_key.get(key)
+            is_primary = index == 0
+            if link is None:
+                session.add(
+                    TissueRegionLink(
+                        tissue_id=tissue.id,
+                        region=region,
+                        is_primary=is_primary,
+                    )
+                )
+                changed = True
+                continue
+            if link.is_primary != is_primary:
+                link.is_primary = is_primary
+                session.add(link)
+                changed = True
+
+    for link in existing_links:
+        if (link.tissue_id, link.region) in expected_keys:
+            continue
+        session.delete(link)
+        changed = True
+
+    if changed:
+        session.commit()
 
 
 def seed_tissue_recovery_hours(session: Session) -> None:

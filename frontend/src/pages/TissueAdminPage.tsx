@@ -10,6 +10,7 @@ import {
   createRehabPlan,
   createTissueCondition,
   getTrainingModelSummary,
+  getRegions,
   getTissues,
   getExercises,
   getRehabProtocols,
@@ -18,12 +19,14 @@ import {
   updateRehabPlan,
   updateExercise,
   type RehabProtocol,
+  type RegionInfo,
   type TrainingModelSummary,
   type TrackedTissueReadiness,
   type WkTissue,
   type WkExercise,
   type WkTissueReadiness,
 } from '../api'
+import { regionLabel } from '../lib/regions'
 import {
   CapacityCard,
   ExerciseProgressCard,
@@ -33,7 +36,7 @@ import {
 
 // ── Types ──
 
-type View = 'tissues' | 'exercises'
+type View = 'tissues' | 'regions' | 'exercises'
 
 interface TissueWithExercises extends WkTissue {
   exercises: {
@@ -1409,10 +1412,62 @@ function ExerciseView({
   )
 }
 
+function RegionView({ regions }: { regions: RegionInfo[] }) {
+  return (
+    <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+      {regions.map((region) => (
+        <section key={region.region} className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold text-gray-800">{region.label}</h2>
+              <p className="text-[11px] text-gray-500">
+                {region.tissues.length} linked {region.tissues.length === 1 ? 'tissue' : 'tissues'}
+              </p>
+            </div>
+            <span className="rounded-full border border-gray-200 bg-gray-50 px-2 py-1 text-[10px] font-medium text-gray-500">
+              {region.region}
+            </span>
+          </div>
+
+          {region.tissues.length === 0 ? (
+            <p className="mt-3 text-xs text-gray-400 italic">No tissues linked yet.</p>
+          ) : (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {region.tissues.map((tissue) => (
+                <div
+                  key={`${region.region}-${tissue.id}`}
+                  className="min-w-[220px] flex-1 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-medium text-gray-800">{tissue.display_name}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${TYPE_BADGE[tissue.type] ?? 'bg-gray-100 text-gray-600'}`}>
+                      {tissue.type}
+                    </span>
+                    {!tissue.is_primary && (
+                      <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-medium text-sky-700">
+                        overlap
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-1 text-[11px] text-gray-500">{tissue.name}</p>
+                  <p className="mt-1 text-[11px] text-gray-500">
+                    Primary region: {regionLabel(tissue.primary_region)}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      ))}
+    </div>
+  )
+}
+
 // ── Main Page ──
 
 export default function TissueAdminPage() {
   const [tissues, setTissues] = useState<WkTissue[]>([])
+  const [regions, setRegions] = useState<RegionInfo[]>([])
   const [exercises, setExercises] = useState<WkExercise[]>([])
   const [readiness, setReadiness] = useState<WkTissueReadiness[]>([])
   const [trackedReadiness, setTrackedReadiness] = useState<TrackedTissueReadiness[]>([])
@@ -1423,8 +1478,9 @@ export default function TissueAdminPage() {
 
   const load = async () => {
     try {
-      const [t, e, r, tr, protocols, summary] = await Promise.all([
+      const [t, regionData, e, r, tr, protocols, summary] = await Promise.all([
         getTissues(),
+        getRegions(),
         getExercises(),
         getTissueReadiness(),
         getTrackedTissueReadiness(),
@@ -1432,6 +1488,7 @@ export default function TissueAdminPage() {
         getTrainingModelSummary(undefined, true).catch(() => null),
       ])
       setTissues(t)
+      setRegions(regionData)
       setExercises(e)
       setReadiness(r)
       setTrackedReadiness(tr)
@@ -1510,6 +1567,14 @@ export default function TissueAdminPage() {
             Tissues ({tissues.length})
           </button>
           <button
+            onClick={() => setView('regions')}
+            className={`text-xs px-3 py-1.5 rounded-md transition-colors font-medium ${
+              view === 'regions' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            Regions ({regions.length})
+          </button>
+          <button
             onClick={() => setView('exercises')}
             className={`text-xs px-3 py-1.5 rounded-md transition-colors font-medium ${
               view === 'exercises' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'
@@ -1550,6 +1615,15 @@ export default function TissueAdminPage() {
             rehabProtocols={rehabProtocols}
             onSave={load}
           />
+        </div>
+      )}
+
+      {view === 'regions' && (
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
+            Overlap is intentional here. A tissue can belong to multiple recovery regions, while its primary region still powers the main tissue metadata.
+          </div>
+          <RegionView regions={regions} />
         </div>
       )}
 

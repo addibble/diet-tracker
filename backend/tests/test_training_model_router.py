@@ -9,6 +9,7 @@ from app.models import (
     ProgramDay,
     ProgramDayExercise,
     RecoveryCheckIn,
+    RegionSorenessCheckIn,
     RehabPlan,
     Tissue,
     TissueCondition,
@@ -17,9 +18,10 @@ from app.models import (
     WorkoutSession,
     WorkoutSet,
 )
+from app.seed_tissues import seed_tissue_region_links, seed_tissue_regions
 
 
-def test_recovery_checkin_targets_include_rehab_last_workout_and_yesterday_symptoms(client, session: Session):
+def test_recovery_checkin_targets_split_pain_and_soreness_workflows(client, session: Session):
     forearm = Tissue(
         name="common_extensor_tendon",
         display_name="Common Extensor Tendon",
@@ -108,15 +110,13 @@ def test_recovery_checkin_targets_include_rehab_last_workout_and_yesterday_sympt
             region="forearms",
             tracked_tissue_id=tracked.id,
             pain_0_10=4,
-            readiness_0_10=5,
         )
     )
     session.add(
-        RecoveryCheckIn(
+        RegionSorenessCheckIn(
             date=date(2026, 4, 2),
             region="shoulders",
             soreness_0_10=5,
-            readiness_0_10=4,
         )
     )
     session.commit()
@@ -125,21 +125,24 @@ def test_recovery_checkin_targets_include_rehab_last_workout_and_yesterday_sympt
 
     assert response.status_code == 200
     payload = response.json()
-    targets = {item["target_key"]: item for item in payload["targets"]}
+    pain_targets = {item["target_key"]: item for item in payload["pain_targets"]}
+    soreness_targets = {item["target_key"]: item for item in payload["soreness_targets"]}
 
-    tracked_target = targets[f"tracked_tissue:{tracked.id}"]
+    tracked_target = pain_targets[f"tracked_tissue:{tracked.id}"]
+    assert tracked_target["check_in_kind"] == "pain"
     tracked_reasons = [reason["code"] for reason in tracked_target["reasons"]]
     assert tracked_reasons == ["active_rehab", "symptomatic_yesterday"]
     assert tracked_target["target_label"] == "Right Common Extensor Tendon"
 
-    chest_target = targets["region:chest"]
+    chest_target = soreness_targets["region:chest"]
+    assert chest_target["check_in_kind"] == "soreness"
     assert [reason["code"] for reason in chest_target["reasons"]] == ["worked_last_workout"]
 
-    shoulder_target = targets["region:shoulders"]
+    shoulder_target = soreness_targets["region:shoulders"]
     assert [reason["code"] for reason in shoulder_target["reasons"]] == ["symptomatic_yesterday"]
 
 
-def test_create_recovery_checkin_upserts_by_target_and_keeps_region_entry(client, session: Session):
+def test_create_recovery_checkin_upserts_pain_and_soreness_entries(client, session: Session):
     tissue = Tissue(
         name="common_extensor_tendon",
         display_name="Common Extensor Tendon",
@@ -165,33 +168,29 @@ def test_create_recovery_checkin_upserts_by_target_and_keeps_region_entry(client
         json={
             "date": "2026-04-03",
             "tracked_tissue_id": tracked.id,
-            "soreness_0_10": 2,
             "pain_0_10": 1,
-            "stiffness_0_10": 0,
-            "readiness_0_10": 7,
         },
     )
     assert first.status_code == 201
     first_payload = first.json()
     assert first_payload["region"] == "forearms"
     assert first_payload["target_kind"] == "tracked_tissue"
+    assert first_payload["check_in_kind"] == "pain"
     assert first_payload["tracked_tissue_id"] == tracked.id
+    assert first_payload["pain_0_10"] == 1
 
     second = client.post(
         "/api/training-model/check-in",
         json={
             "date": "2026-04-03",
             "tracked_tissue_id": tracked.id,
-            "soreness_0_10": 5,
             "pain_0_10": 3,
-            "stiffness_0_10": 2,
-            "readiness_0_10": 4,
         },
     )
     assert second.status_code == 201
     second_payload = second.json()
     assert second_payload["id"] == first_payload["id"]
-    assert second_payload["soreness_0_10"] == 5
+    assert second_payload["pain_0_10"] == 3
 
     region_row = client.post(
         "/api/training-model/check-in",
@@ -199,21 +198,20 @@ def test_create_recovery_checkin_upserts_by_target_and_keeps_region_entry(client
             "date": "2026-04-03",
             "region": "forearms",
             "soreness_0_10": 1,
-            "pain_0_10": 0,
-            "stiffness_0_10": 1,
-            "readiness_0_10": 8,
         },
     )
     assert region_row.status_code == 201
     region_payload = region_row.json()
+    assert region_payload["check_in_kind"] == "soreness"
     assert region_payload["target_kind"] == "region"
+    assert region_payload["soreness_0_10"] == 1
 
     listing = client.get("/api/training-model/check-ins?date=2026-04-03")
     assert listing.status_code == 200
     rows = listing.json()
     assert len(rows) == 2
-    target_kinds = {row["target_kind"] for row in rows}
-    assert target_kinds == {"region", "tracked_tissue"}
+    check_in_kinds = {row["check_in_kind"] for row in rows}
+    assert check_in_kinds == {"pain", "soreness"}
 
 
 def test_recovery_checkin_targets_skip_neural_sarcopenia_style_rehab_plans(client, session: Session):
@@ -263,7 +261,7 @@ def test_recovery_checkin_targets_skip_neural_sarcopenia_style_rehab_plans(clien
     assert f"tracked_tissue:{tracked.id}" not in target_keys
 
 
-def test_recovery_checkin_targets_include_required_tendon_companion_for_symptomatic_chain(client, session: Session):
+def test_recovery_checkin_targets_do_not_include_required_tendon_companion_for_symptomatic_chain(client, session: Session):
     muscle = Tissue(
         name="brachioradialis",
         display_name="Brachioradialis",
@@ -300,16 +298,6 @@ def test_recovery_checkin_targets_include_required_tendon_companion_for_symptoma
     session.refresh(muscle_tracked)
     session.refresh(tendon_tracked)
 
-    from app.models import TissueRelationship
-
-    session.add(
-        TissueRelationship(
-            source_tissue_id=muscle.id,
-            target_tissue_id=tendon.id,
-            relationship_type="muscle_to_tendon",
-            required_for_mapping_warning=True,
-        )
-    )
     session.add(
         TissueCondition(
             tissue_id=muscle.id,
@@ -325,11 +313,7 @@ def test_recovery_checkin_targets_include_required_tendon_companion_for_symptoma
     assert response.status_code == 200
     targets = {item["target_key"]: item for item in response.json()["targets"]}
     assert f"tracked_tissue:{muscle_tracked.id}" in targets
-    assert f"tracked_tissue:{tendon_tracked.id}" in targets
-    assert any(
-        reason["code"] == "active_condition"
-        for reason in targets[f"tracked_tissue:{tendon_tracked.id}"]["reasons"]
-    )
+    assert f"tracked_tissue:{tendon_tracked.id}" not in targets
 
 
 def test_create_recovery_checkin_invalidates_unstarted_same_day_plan(client, session: Session):
@@ -376,9 +360,6 @@ def test_create_recovery_checkin_invalidates_unstarted_same_day_plan(client, ses
             "date": "2026-04-03",
             "region": "chest",
             "soreness_0_10": 5,
-            "pain_0_10": 0,
-            "stiffness_0_10": 0,
-            "readiness_0_10": 4,
         },
     )
 
@@ -387,3 +368,41 @@ def test_create_recovery_checkin_invalidates_unstarted_same_day_plan(client, ses
         select(PlannedSession).where(PlannedSession.date == date(2026, 4, 3))
     ).first()
     assert remaining_plan is None
+
+
+def test_get_regions_returns_primary_and_overlap_associations(client, session: Session):
+    glute = Tissue(
+        name="gluteus_medius",
+        display_name="Gluteus Medius",
+        type="muscle",
+        region="other",
+        tracking_mode="paired",
+    )
+    wrist = Tissue(
+        name="wrist_joint",
+        display_name="Wrist Joint",
+        type="joint",
+        region="other",
+        tracking_mode="paired",
+    )
+    session.add(glute)
+    session.add(wrist)
+    session.commit()
+
+    seed_tissue_regions(session)
+    seed_tissue_region_links(session)
+
+    response = client.get("/api/training-model/regions")
+
+    assert response.status_code == 200
+    payload = {item["region"]: item for item in response.json()}
+
+    glutes = {item["name"]: item for item in payload["glutes"]["tissues"]}
+    outer_leg = {item["name"]: item for item in payload["outer_leg_abductor"]["tissues"]}
+    forearms = {item["name"]: item for item in payload["forearms"]["tissues"]}
+    hands = {item["name"]: item for item in payload["hands"]["tissues"]}
+
+    assert glutes["gluteus_medius"]["is_primary"] is True
+    assert outer_leg["gluteus_medius"]["is_primary"] is False
+    assert forearms["wrist_joint"]["is_primary"] is True
+    assert hands["wrist_joint"]["is_primary"] is False

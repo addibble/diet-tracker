@@ -29,6 +29,7 @@ import {
   repSchemeColor,
   repSchemeLabel,
 } from '../lib/workoutSchemes'
+import { regionLabel } from '../lib/regions'
 
 function today() {
   const now = new Date()
@@ -37,8 +38,6 @@ function today() {
   const day = String(now.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
 }
-
-const regionLabel = (value: string) => value.replace(/_/g, ' ').replace(/\b\w/g, char => char.toUpperCase())
 
 function pluralize(count: number, singular: string, plural = `${singular}s`) {
   return count === 1 ? singular : plural
@@ -69,17 +68,15 @@ function CheckInCard({
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [otherKey, setOtherKey] = useState('')
   const [showOther, setShowOther] = useState(false)
-  const [soreness, setSoreness] = useState<SymptomSeverityLevel>(0)
-  const [pain, setPain] = useState<SymptomSeverityLevel>(0)
-  const [stiffness, setStiffness] = useState<SymptomSeverityLevel>(0)
+  const [severity, setSeverity] = useState<SymptomSeverityLevel>(0)
   const [saving, setSaving] = useState(false)
   const [expanded, setExpanded] = useState(true)
 
   const allTargets = useMemo(() => {
     const byKey = new Map<string, RecoveryCheckInTarget>()
     for (const target of checkInData.targets) byKey.set(target.target_key, target)
-    for (const target of checkInData.other_options.tracked_tissues) byKey.set(target.target_key, target)
-    for (const target of checkInData.other_options.regions) byKey.set(target.target_key, target)
+    for (const target of checkInData.other_options.pain_tracked_tissues) byKey.set(target.target_key, target)
+    for (const target of checkInData.other_options.soreness_regions) byKey.set(target.target_key, target)
     return byKey
   }, [checkInData])
 
@@ -93,12 +90,11 @@ function CheckInCard({
     () => new Set(checkInData.today_check_ins.map(checkIn => checkIn.target_key)),
     [checkInData.today_check_ins],
   )
+  const painWorkflowTargets = checkInData.pain_targets
+  const sorenessWorkflowTargets = checkInData.soreness_targets
   const workflowTargets = useMemo(
-    () => checkInData.targets.filter(target =>
-      target.target_kind === 'tracked_tissue'
-      || target.reasons?.some(reason => reason.code === 'active_condition' || reason.code === 'active_rehab'),
-    ),
-    [checkInData.targets],
+    () => [...checkInData.pain_targets, ...checkInData.soreness_targets],
+    [checkInData.pain_targets, checkInData.soreness_targets],
   )
   const workflowDoneCount = useMemo(
     () => workflowTargets.filter(target => savedKeys.has(target.target_key)).length,
@@ -106,7 +102,11 @@ function CheckInCard({
   )
   const workflowComplete = workflowTargets.length > 0 && workflowDoneCount >= workflowTargets.length
   const collapsedSummary = useMemo(
-    () => checkInData.today_check_ins.slice(0, 3).map(checkIn => checkIn.target_label),
+    () => checkInData.today_check_ins.slice(0, 3).map(checkIn =>
+      `${checkIn.target_label} (${checkIn.check_in_kind === 'pain'
+        ? `pain ${checkIn.pain_0_10}/10`
+        : `soreness ${checkIn.soreness_0_10}/10`})`,
+    ),
     [checkInData.today_check_ins],
   )
   const prevWorkflowComplete = useRef(workflowComplete)
@@ -120,59 +120,54 @@ function CheckInCard({
 
   useEffect(() => {
     if (!selectedTarget) {
-      setSoreness(0)
-      setPain(0)
-      setStiffness(0)
+      setSeverity(0)
       return
     }
     const checkIn = checkInByTarget[selectedTarget.target_key] ?? selectedTarget.existing_check_in ?? null
     if (checkIn) {
-      setSoreness(symptomDbToSeverity(checkIn.soreness_0_10))
-      setPain(symptomDbToSeverity(checkIn.pain_0_10))
-      setStiffness(symptomDbToSeverity(checkIn.stiffness_0_10))
+      setSeverity(symptomDbToSeverity(
+        checkIn.check_in_kind === 'pain' ? checkIn.pain_0_10 : checkIn.soreness_0_10,
+      ))
       return
     }
-    setSoreness(0)
-    setPain(0)
-    setStiffness(0)
+    setSeverity(0)
   }, [checkInByTarget, selectedTarget])
-
-  const readiness = Math.max(0, 10
-    - (soreness > 0 ? soreness + 1 : 0)
-    - (pain > 0 ? pain + 1 : 0)
-    - (stiffness > 0 ? stiffness : 0)
-  )
 
   const submit = async () => {
     if (!selectedTarget) return
     setSaving(true)
     try {
-      await createRecoveryCheckIn({
-        date: today(),
-        region: selectedTarget.target_kind === 'region' ? selectedTarget.region : undefined,
-        tracked_tissue_id: selectedTarget.target_kind === 'tracked_tissue'
-          ? selectedTarget.tracked_tissue_id ?? undefined
-          : undefined,
-        soreness_0_10: symptomSeverityToDb(soreness),
-        pain_0_10: symptomSeverityToDb(pain),
-        stiffness_0_10: symptomSeverityToDb(stiffness),
-        readiness_0_10: readiness,
-      })
+      if (selectedTarget.check_in_kind === 'pain') {
+        await createRecoveryCheckIn({
+          date: today(),
+          tracked_tissue_id: selectedTarget.tracked_tissue_id ?? undefined,
+          pain_0_10: symptomSeverityToDb(severity),
+        })
+      } else {
+        await createRecoveryCheckIn({
+          date: today(),
+          region: selectedTarget.region,
+          soreness_0_10: symptomSeverityToDb(severity),
+        })
+      }
       setSelectedKey(null)
       setOtherKey('')
       setShowOther(false)
-      setSoreness(0)
-      setPain(0)
-      setStiffness(0)
+      setSeverity(0)
       onSubmit()
     } finally {
       setSaving(false)
     }
   }
 
+  const checkInSummary = (checkIn: RecoveryCheckIn) =>
+    checkIn.check_in_kind === 'pain'
+      ? `Pain ${checkIn.pain_0_10}/10`
+      : `Soreness ${checkIn.soreness_0_10}/10`
+
   const renderCheckInEditor = (target: RecoveryCheckInTarget, currentCheckIn: RecoveryCheckIn | null) => (
     <div className="mt-3 space-y-3 rounded-xl border border-gray-200 bg-white/80 p-4 shadow-sm">
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-xs font-medium text-gray-700">{target.target_label}</p>
           <p className="mt-0.5 text-[11px] text-gray-500">
@@ -180,13 +175,18 @@ function CheckInCard({
               ? `${regionLabel(target.region)} - specific tissue`
               : `${regionLabel(target.region)} - region`}
           </p>
+          <p className="mt-2 text-[11px] text-gray-500">
+            {target.check_in_kind === 'pain'
+              ? 'Rate pain only. This directly protects today\'s exercise choices for the tracked tissue.'
+              : 'Rate soreness only. This feeds recovery learning and ranking without directly hard-blocking exercises.'}
+          </p>
         </div>
-        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-          readiness >= 8 ? 'bg-emerald-100 text-emerald-700'
-            : readiness >= 5 ? 'bg-yellow-100 text-yellow-700'
-              : 'bg-red-100 text-red-700'
+        <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+          target.check_in_kind === 'pain'
+            ? 'bg-rose-100 text-rose-700'
+            : 'bg-sky-100 text-sky-700'
         }`}>
-          Readiness: {readiness}/10
+          {target.check_in_kind === 'pain' ? 'Pain check-in' : 'Soreness check-in'}
         </span>
       </div>
 
@@ -201,12 +201,17 @@ function CheckInCard({
       )}
 
       {currentCheckIn && (
-        <p className="text-[11px] text-gray-500">Already checked in today. Update it if anything changed.</p>
+        <p className="text-[11px] text-gray-500">
+          Already checked in today ({checkInSummary(currentCheckIn)}). Update it if anything changed.
+        </p>
       )}
 
-      <SymptomSeverityRow label="Soreness" value={soreness} onChange={setSoreness} showDescription={false} />
-      <SymptomSeverityRow label="Pain" value={pain} onChange={setPain} showDescription={false} />
-      <SymptomSeverityRow label="Stiffness" value={stiffness} onChange={setStiffness} showDescription={false} />
+      <SymptomSeverityRow
+        label={target.check_in_kind === 'pain' ? 'Pain' : 'Soreness'}
+        value={severity}
+        onChange={setSeverity}
+        showDescription={false}
+      />
 
       <div className="flex gap-2">
         <button
@@ -231,6 +236,111 @@ function CheckInCard({
     </div>
   )
 
+  const renderTargetList = (
+    title: string,
+    description: string,
+    targets: RecoveryCheckInTarget[],
+    emptyMessage: string,
+  ) => (
+    <div className="space-y-2">
+      <div className="px-1">
+        <div className="flex items-center gap-2">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-700">{title}</h4>
+          <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-600">
+            {targets.filter(target => savedKeys.has(target.target_key)).length}/{targets.length || 0}
+          </span>
+        </div>
+        <p className="mt-1 text-[11px] text-gray-500">{description}</p>
+      </div>
+
+      {targets.length > 0 ? (
+        targets.map(target => {
+          const done = savedKeys.has(target.target_key)
+          const active = selectedTarget?.target_key === target.target_key
+          const currentCheckIn = checkInByTarget[target.target_key] ?? target.existing_check_in ?? null
+          return (
+            <div
+              key={target.target_key}
+              className={`rounded-xl border p-3 transition-all ${
+                active
+                  ? 'border-gray-900 bg-gray-900 text-white shadow-sm'
+                  : done
+                    ? 'border-emerald-200 bg-emerald-50 text-gray-900'
+                    : 'border-gray-200 bg-white text-gray-900'
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  setOtherKey('')
+                  setSelectedKey(active ? null : target.target_key)
+                }}
+                className="w-full text-left"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="truncate text-sm font-medium">{target.target_label}</p>
+                      <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                        active
+                          ? 'bg-white/15 text-white'
+                          : target.check_in_kind === 'pain'
+                            ? 'bg-rose-100 text-rose-700'
+                            : 'bg-sky-100 text-sky-700'
+                      }`}>
+                        {target.check_in_kind === 'pain' ? 'pain' : 'soreness'}
+                      </span>
+                    </div>
+                    <p className={`mt-0.5 text-[11px] ${active ? 'text-gray-300' : 'text-gray-500'}`}>
+                      {target.target_kind === 'tracked_tissue'
+                        ? `${regionLabel(target.region)} - specific tissue`
+                        : `${regionLabel(target.region)} - region`}
+                    </p>
+                  </div>
+                  {done && (
+                    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                      active ? 'bg-white/15 text-white' : 'bg-emerald-100 text-emerald-700'
+                    }`}>
+                      Checked in
+                    </span>
+                  )}
+                </div>
+
+                {target.reasons && target.reasons.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {target.reasons.map(reason => (
+                      <span
+                        key={reason.code}
+                        className={`rounded-full border px-1.5 py-0.5 text-[10px] ${
+                          active
+                            ? 'border-white/20 bg-white/10 text-white'
+                            : 'border-gray-200 bg-gray-50 text-gray-600'
+                        }`}
+                      >
+                        {reason.label}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {currentCheckIn && (
+                  <p className={`mt-2 text-[11px] ${active ? 'text-gray-200' : 'text-gray-500'}`}>
+                    {checkInSummary(currentCheckIn)}
+                  </p>
+                )}
+              </button>
+              {active && renderCheckInEditor(target, currentCheckIn)}
+            </div>
+          )
+        })
+      ) : (
+        <div className="rounded-xl border border-gray-100 bg-gray-50/70 px-3 py-2 text-xs text-gray-500">
+          {emptyMessage}
+        </div>
+      )}
+    </div>
+  )
+
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-5">
       <div className="mb-3 flex items-start justify-between gap-3">
@@ -245,10 +355,10 @@ function CheckInCard({
           </div>
           <p className="mt-0.5 text-xs text-gray-500">
             {expanded
-              ? 'Start with the injured or rehabbing tissues that should shape today\'s workout.'
+              ? 'Start with pain-only check-ins for injured or rehabbing tissues, then log soreness for regions that were worked recently or stayed sore.'
               : workflowComplete
-                ? 'All queued tissues are checked in for today.'
-                : 'Re-open to review or adjust today\'s tissue notes.'}
+                ? 'All queued pain and soreness check-ins are logged for today.'
+                : 'Re-open to review or adjust today\'s training check-ins.'}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -276,87 +386,31 @@ function CheckInCard({
       {expanded && (
         <>
           {workflowTargets.length > 0 ? (
-            <div className="mb-4 space-y-2">
-              {workflowTargets.map(target => {
-                const done = savedKeys.has(target.target_key)
-                const active = selectedTarget?.target_key === target.target_key
-                const currentCheckIn = checkInByTarget[target.target_key] ?? target.existing_check_in ?? null
-                return (
-                  <div
-                    key={target.target_key}
-                    className={`rounded-xl border p-3 transition-all ${
-                      active
-                        ? 'border-gray-900 bg-gray-900 text-white shadow-sm'
-                        : done
-                          ? 'border-emerald-200 bg-emerald-50 text-gray-900'
-                          : 'border-gray-200 bg-white text-gray-900'
-                    }`}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setOtherKey('')
-                        setSelectedKey(active ? null : target.target_key)
-                      }}
-                      className="w-full text-left"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-medium">{target.target_label}</p>
-                          <p className={`mt-0.5 text-[11px] ${active ? 'text-gray-300' : 'text-gray-500'}`}>
-                            {target.target_kind === 'tracked_tissue'
-                              ? `${regionLabel(target.region)} - specific tissue`
-                              : `${regionLabel(target.region)} - region`}
-                          </p>
-                        </div>
-                        {done && (
-                          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                            active ? 'bg-white/15 text-white' : 'bg-emerald-100 text-emerald-700'
-                          }`}>
-                            Checked in
-                          </span>
-                        )}
-                      </div>
-
-                      {target.reasons && target.reasons.length > 0 && (
-                        <div className="mt-2 flex flex-wrap gap-1">
-                          {target.reasons.map(reason => (
-                            <span
-                              key={reason.code}
-                              className={`rounded-full border px-1.5 py-0.5 text-[10px] ${
-                                active
-                                  ? 'border-white/20 bg-white/10 text-white'
-                                  : 'border-gray-200 bg-gray-50 text-gray-600'
-                              }`}
-                            >
-                              {reason.label}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-
-                      {currentCheckIn && (
-                        <p className={`mt-2 text-[11px] ${active ? 'text-gray-200' : 'text-gray-500'}`}>
-                          Sore {currentCheckIn.soreness_0_10}/10 - Pain {currentCheckIn.pain_0_10}/10 - Stiff {currentCheckIn.stiffness_0_10}/10 - Readiness {currentCheckIn.readiness_0_10}/10
-                        </p>
-                      )}
-                    </button>
-                    {active && renderCheckInEditor(target, currentCheckIn)}
-                  </div>
-                )
-              })}
+            <div className="mb-4 space-y-4">
+              {renderTargetList(
+                'Protected tissues',
+                'These pain-only check-ins control protection and planner gating for injured or rehabbing tissues.',
+                painWorkflowTargets,
+                'No injured or rehabbing tissues need a dedicated pain check-in right now.',
+              )}
+              {renderTargetList(
+                'Recovery regions',
+                'These soreness-only check-ins help the model learn how recent load translated into recovery time.',
+                sorenessWorkflowTargets,
+                'No recent muscle groups need a soreness check-in right now.',
+              )}
             </div>
           ) : (
             <div className="mb-4 rounded-xl border border-gray-100 bg-gray-50/70 px-3 py-2 text-xs text-gray-500">
-              No injured or rehabbing tissues need a dedicated check-in right now. Use <span className="font-medium text-gray-700">Other</span> if something still feels off.
+              Nothing is queued for today. Use <span className="font-medium text-gray-700">Other</span> if something still feels off or deserves recovery tracking.
             </div>
           )}
 
           <div className="rounded-xl border border-gray-100 bg-gray-50/70 p-3">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <p className="text-xs font-medium text-gray-700">Something else bothering you?</p>
-                <p className="mt-0.5 text-[11px] text-gray-500">Add another tracked tissue or muscle group without checking in on everything.</p>
+                <p className="text-xs font-medium text-gray-700">Something else worth tracking?</p>
+                <p className="mt-0.5 text-[11px] text-gray-500">Add another tracked tissue pain check-in or another recovery region without checking in on everything.</p>
               </div>
               <button
                 type="button"
@@ -373,7 +427,7 @@ function CheckInCard({
 
             {showOther && (
               <div className="mt-3">
-                {checkInData.other_options.tracked_tissues.length > 0 || checkInData.other_options.regions.length > 0 ? (
+                {checkInData.other_options.pain_tracked_tissues.length > 0 || checkInData.other_options.soreness_regions.length > 0 ? (
                   <select
                     className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700"
                     value={otherKey}
@@ -384,18 +438,18 @@ function CheckInCard({
                     }}
                   >
                     <option value="">Select another area...</option>
-                    {checkInData.other_options.tracked_tissues.length > 0 && (
-                      <optgroup label="Tracked tissues">
-                        {checkInData.other_options.tracked_tissues.map(target => (
+                    {checkInData.other_options.pain_tracked_tissues.length > 0 && (
+                      <optgroup label="Pain check-ins">
+                        {checkInData.other_options.pain_tracked_tissues.map(target => (
                           <option key={target.target_key} value={target.target_key}>
                             {target.target_label}
                           </option>
                         ))}
                       </optgroup>
                     )}
-                    {checkInData.other_options.regions.length > 0 && (
-                      <optgroup label="Regions">
-                        {checkInData.other_options.regions.map(target => (
+                    {checkInData.other_options.soreness_regions.length > 0 && (
+                      <optgroup label="Soreness regions">
+                        {checkInData.other_options.soreness_regions.map(target => (
                           <option key={target.target_key} value={target.target_key}>
                             {target.target_label}
                           </option>

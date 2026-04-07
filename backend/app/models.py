@@ -120,11 +120,23 @@ class Tissue(SQLModel, table=True):
     name: str = Field(unique=True, index=True)
     display_name: str
     type: str = "muscle"  # "muscle", "tendon", "joint"
-    region: str = "other"  # shoulders, upper_back, lower_back, chest, hips, knees, quads, hamstrings, calves, arms, core, neck, ankles, other
+    region: str = "core"  # primary canonical region; overlaps live in tissue_region_links
     tracking_mode: str = "paired"  # "paired", "center"
     recovery_hours: float = 48.0
     notes: str | None = None
     updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class TissueRegionLink(SQLModel, table=True):
+    __tablename__ = "tissue_region_links"
+    __table_args__ = (
+        UniqueConstraint("tissue_id", "region"),
+    )
+    id: int | None = Field(default=None, primary_key=True)
+    tissue_id: int = Field(foreign_key="tissues.id", index=True)
+    region: str = Field(index=True)
+    is_primary: bool = False
+    created_at: datetime = Field(default_factory=_utcnow)
 
 
 class TrackedTissue(SQLModel, table=True):
@@ -266,6 +278,16 @@ class RecoveryCheckIn(SQLModel, table=True):
     pain_0_10: int = 0
     stiffness_0_10: int = 0
     readiness_0_10: int = 5
+    notes: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class RegionSorenessCheckIn(SQLModel, table=True):
+    __tablename__ = "region_soreness_check_ins"
+    id: int | None = Field(default=None, primary_key=True)
+    date: dt.date = Field(index=True)
+    region: str = Field(index=True)
+    soreness_0_10: int = 0
     notes: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
 

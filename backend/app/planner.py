@@ -42,6 +42,7 @@ from app.models import (
     ProgramDay,
     ProgramDayExercise,
     RecoveryCheckIn,
+    RegionSorenessCheckIn,
     Tissue,
     TrainingProgram,
     WeightLog,
@@ -555,7 +556,10 @@ def _load_todays_checkins(session: Session, today: date) -> dict[str, dict]:
     rows = session.exec(
         select(RecoveryCheckIn).where(RecoveryCheckIn.date == today)
     ).all()
-    return aggregate_recovery_checkins_for_day(rows, today)
+    soreness_rows = session.exec(
+        select(RegionSorenessCheckIn).where(RegionSorenessCheckIn.date == today)
+    ).all()
+    return aggregate_recovery_checkins_for_day([*rows, *soreness_rows], today)
 
 
 def _build_region_state(
@@ -589,36 +593,15 @@ def _build_region_state(
     for region, ci in checkins.items():
         if region not in region_recovery:
             continue
-        pain = ci["pain_0_10"]
         sore = ci["soreness_0_10"]
-        stiffness = ci["stiffness_0_10"]
-        readiness = ci.get("readiness_0_10", 5)
-        if pain >= 7:
-            region_recovery[region] = [min(v, 0.15) for v in region_recovery[region]]
-            region_risk[region] = [max(v, 80) for v in region_risk[region]]
-        elif pain >= 4:
-            region_recovery[region] = [min(v, 0.4) for v in region_recovery[region]]
-            region_risk[region] = [max(v, 60) for v in region_risk[region]]
         if sore >= 7:
-            region_recovery[region] = [min(v, 0.35) for v in region_recovery[region]]
-            region_risk[region] = [max(v, 65) for v in region_risk[region]]
+            region_recovery[region] = [min(v * 0.6, 0.5) for v in region_recovery[region]]
+            region_risk[region] = [max(v, 60) for v in region_risk[region]]
         elif sore >= 4:
-            region_recovery[region] = [min(v * 0.55, 0.45) for v in region_recovery[region]]
-            region_risk[region] = [max(v, 55) for v in region_risk[region]]
-        if stiffness >= 7:
-            region_recovery[region] = [min(v, 0.45) for v in region_recovery[region]]
-            region_risk[region] = [max(v, 70) for v in region_risk[region]]
-        elif stiffness >= 4:
-            region_recovery[region] = [v * 0.8 for v in region_recovery[region]]
-            region_risk[region] = [max(v, 50) for v in region_risk[region]]
-        if readiness <= 2:
-            region_recovery[region] = [min(v, 0.25) for v in region_recovery[region]]
-            region_risk[region] = [max(v, 75) for v in region_risk[region]]
-        elif readiness <= 4:
-            region_recovery[region] = [min(v, 0.55) for v in region_recovery[region]]
-            region_risk[region] = [max(v, 55) for v in region_risk[region]]
-        elif readiness >= 8:
-            region_recovery[region] = [min(1.0, v * 1.05) for v in region_recovery[region]]
+            region_recovery[region] = [min(v * 0.8, 0.72) for v in region_recovery[region]]
+            region_risk[region] = [max(v, 45) for v in region_risk[region]]
+        elif sore >= 2:
+            region_recovery[region] = [min(v * 0.92, 0.9) for v in region_recovery[region]]
 
     result = {}
     for region in region_recovery:
@@ -640,20 +623,13 @@ def _blocked_regions(
     for region, state in region_state.items():
         if state["readiness"] <= 0.15:  # injured or severe pain
             blocked.add(region)
-    for region, ci in checkins.items():
-        if (
-            ci["pain_0_10"] >= 7
-            or ci["soreness_0_10"] >= 7
-            or ci.get("readiness_0_10", 5) <= 2
-        ):
-            blocked.add(region)
     return blocked
 
 
 def _soft_blocked_regions(checkins: dict[str, dict]) -> set[str]:
     blocked = set()
     for region, ci in checkins.items():
-        if ci["pain_0_10"] >= 4 or ci["soreness_0_10"] >= 4 or ci["stiffness_0_10"] >= 7:
+        if ci["soreness_0_10"] >= 7:
             blocked.add(region)
     return blocked
 

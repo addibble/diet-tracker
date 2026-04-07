@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 
+from app.exercise_protection import build_tracked_protection_profiles, evaluate_exercise_protection
 from app.models import (
     Exercise,
     ExerciseTissue,
@@ -13,7 +14,7 @@ from app.models import (
 )
 from app.planner import _prescribe_all, suggest_today
 from app.planner_groups import build_similarity_groups
-from app.planner_workflow import _exercise_ready_tomorrow
+from app.planner_workflow import _checkin_blocking_eval, _exercise_ready_tomorrow
 
 
 def _add_tissue(session, *, name: str, display_name: str, region: str) -> Tissue:
@@ -261,10 +262,7 @@ def test_workflow_groups_rank_exercises_by_category_and_status(session):
             date=today,
             region="hips",
             tracked_tissue_id=tracked_adductor.id,
-            soreness_0_10=5,
             pain_0_10=1,
-            stiffness_0_10=1,
-            readiness_0_10=4,
         )
     )
     session.commit()
@@ -345,3 +343,182 @@ def test_ready_tomorrow_requires_overworked_improvement():
         today_metrics={"score": 0.5},
         tomorrow_metrics={"score": 0.7},
     )
+
+
+def test_checkin_blocking_eval_allows_contralateral_unilateral_work():
+    exercise = {
+        "exercise_name": "Single-Arm Cable Lateral Raise",
+        "laterality": "either",
+        "tissues": [
+            {
+                "tissue_id": 36,
+                "loading_factor": 0.3,
+                "routing_factor": 0.195,
+                "tendon_strain_factor": 0.2242,
+                "laterality_mode": "selected_side_only",
+            }
+        ],
+    }
+    filtered_tissues = [
+        {
+            "tracked_tissue_id": 165,
+            "tissue_id": 36,
+            "tracked_side": "right",
+            "target_label": "Right Supraspinatus Tendon",
+            "max_loading_factor": 0.5,
+        }
+    ]
+
+    result = _checkin_blocking_eval(
+        exercise=exercise,
+        filtered_tissues=filtered_tissues,
+    )
+
+    assert result["blocked"] is False
+    assert result["preferred_side"] == "left"
+
+
+def test_checkin_blocking_eval_uses_point_five_ceiling_for_mild_symptoms():
+    filtered_tissues = [
+        {
+            "tracked_tissue_id": 165,
+            "tissue_id": 36,
+            "tracked_side": "right",
+            "target_label": "Right Supraspinatus Tendon",
+            "max_loading_factor": 0.5,
+        }
+    ]
+
+    allowed = _checkin_blocking_eval(
+        exercise={
+            "exercise_name": "Shoulder Press",
+            "laterality": "bilateral",
+            "tissues": [
+                {
+                    "tissue_id": 36,
+                    "loading_factor": 0.5,
+                    "routing_factor": 0.175,
+                    "tendon_strain_factor": 0.2012,
+                    "laterality_mode": "bilateral_equal",
+                }
+            ],
+        },
+        filtered_tissues=filtered_tissues,
+    )
+    blocked = _checkin_blocking_eval(
+        exercise={
+            "exercise_name": "Press Behind Neck",
+            "laterality": "bilateral",
+            "tissues": [
+                {
+                    "tissue_id": 36,
+                    "loading_factor": 0.6,
+                    "routing_factor": 0.21,
+                    "tendon_strain_factor": 0.24,
+                    "laterality_mode": "bilateral_equal",
+                }
+            ],
+        },
+        filtered_tissues=filtered_tissues,
+    )
+
+    assert allowed["blocked"] is False
+    assert blocked["blocked"] is True
+    assert blocked["blocked_labels"] == ["Right Supraspinatus Tendon"]
+
+
+def test_mild_protection_profile_allows_loading_up_to_point_five(session):
+    tendon = Tissue(
+        name="supraspinatus_tendon",
+        display_name="Supraspinatus Tendon",
+        type="tendon",
+        region="shoulders",
+        tracking_mode="paired",
+    )
+    session.add(tendon)
+    session.commit()
+    session.refresh(tendon)
+    session.add(TissueModelConfig(tissue_id=tendon.id, capacity_prior=1000.0))
+    tracked = TrackedTissue(
+        tissue_id=tendon.id,
+        side="right",
+        display_name="Right Supraspinatus Tendon",
+    )
+    session.add(tracked)
+    session.commit()
+    session.refresh(tracked)
+    session.add(
+        TissueCondition(
+            tissue_id=tendon.id,
+            tracked_tissue_id=tracked.id,
+            status="tender",
+            severity=1,
+        )
+    )
+    session.commit()
+
+    profiles = build_tracked_protection_profiles(session, as_of=date(2026, 4, 6))
+    assert profiles[tendon.id][0].symptom_band == "mild"
+    assert profiles[tendon.id][0].direct_loading_ceiling == 0.5
+
+    allowed = evaluate_exercise_protection(
+        {
+            "name": "Shoulder Press",
+            "laterality": "bilateral",
+            "tissues": [
+                {
+                    "tissue_id": tendon.id,
+                    "loading_factor": 0.5,
+                    "routing_factor": 0.2,
+                    "tendon_strain_factor": 0.5,
+                    "laterality_mode": "bilateral_equal",
+                }
+            ],
+        },
+        {
+            "name": "Shoulder Press",
+            "laterality": "bilateral",
+            "tissues": [
+                {
+                    "tissue_id": tendon.id,
+                    "loading_factor": 0.5,
+                    "routing_factor": 0.2,
+                    "tendon_strain_factor": 0.5,
+                    "laterality_mode": "bilateral_equal",
+                }
+            ],
+        },
+        profiles,
+    )
+    blocked = evaluate_exercise_protection(
+        {
+            "name": "Press Behind Neck",
+            "laterality": "bilateral",
+            "tissues": [
+                {
+                    "tissue_id": tendon.id,
+                    "loading_factor": 0.6,
+                    "routing_factor": 0.24,
+                    "tendon_strain_factor": 0.6,
+                    "laterality_mode": "bilateral_equal",
+                }
+            ],
+        },
+        {
+            "name": "Press Behind Neck",
+            "laterality": "bilateral",
+            "tissues": [
+                {
+                    "tissue_id": tendon.id,
+                    "loading_factor": 0.6,
+                    "routing_factor": 0.24,
+                    "tendon_strain_factor": 0.6,
+                    "laterality_mode": "bilateral_equal",
+                }
+            ],
+        },
+        profiles,
+    )
+
+    assert allowed["blocked"] is False
+    assert blocked["blocked"] is True

@@ -23,16 +23,19 @@ from app.models import (
     ProgramDay,
     ProgramDayExercise,
     RecoveryCheckIn,
+    RegionSorenessCheckIn,
     Tissue,
     TissueCondition,
     TissueModelConfig,
+    TissueRegionLink,
+    TrackedTissue,
     TrainingExclusionWindow,
     TrainingProgram,
     WeightLog,
     WorkoutSession,
     WorkoutSet,
 )
-from app.recovery_check_ins import aggregate_recovery_checkins
+from app.tissue_regions import canonicalize_region
 
 _DEFAULT_WINDOW_DAYS = 90
 
@@ -534,32 +537,54 @@ def _load_recovery_checkins(
     exposures_by_tissue: dict[int, dict[date, ExposureRecord]],
     as_of: date | None,
 ) -> dict[int, dict[date, dict]]:
-    """Load check-ins and distribute to tissues by region.
-
-    Returns: tissue_id -> date -> {soreness, pain, stiffness, readiness}
-    """
-    from app.seed_tissues import tissue_region
-
+    """Load soreness observations and distribute regional signals across tissues."""
     stmt = select(RecoveryCheckIn).order_by(col(RecoveryCheckIn.date).asc())
     if as_of is not None:
         stmt = stmt.where(col(RecoveryCheckIn.date) <= as_of)
-    rows = list(session.exec(stmt).all())
+    legacy_rows = list(session.exec(stmt).all())
+    soreness_stmt = select(RegionSorenessCheckIn).order_by(col(RegionSorenessCheckIn.date).asc())
+    if as_of is not None:
+        soreness_stmt = soreness_stmt.where(col(RegionSorenessCheckIn.date) <= as_of)
+    soreness_rows = list(session.exec(soreness_stmt).all())
 
-    if not rows:
+    if not legacy_rows and not soreness_rows:
         return {}
 
     # Build region -> [tissue] mapping from actual tissue objects
     region_tissues: dict[str, list[Tissue]] = defaultdict(list)
+    links = session.exec(
+        select(TissueRegionLink).where(
+            col(TissueRegionLink.tissue_id).in_([tissue.id for tissue in tissues])
+        )
+    ).all()
+    tissue_by_id = {tissue.id: tissue for tissue in tissues}
+    linked_tissue_ids: set[int] = set()
+    for link in links:
+        tissue = tissue_by_id.get(link.tissue_id)
+        if tissue is None:
+            continue
+        region_tissues[link.region].append(tissue)
+        linked_tissue_ids.add(tissue.id)
     for tissue in tissues:
-        region = tissue.region if tissue.region != "other" else tissue_region(tissue.name)
-        region_tissues[region].append(tissue)
+        if tissue.id in linked_tissue_ids:
+            continue
+        region_tissues[tissue.region].append(tissue)
+    tracked_to_tissue = {
+        tracked.id: tracked.tissue_id
+        for tracked in session.exec(select(TrackedTissue)).all()
+    }
 
     result: dict[int, dict[date, dict]] = defaultdict(dict)
 
-    for (checkin_date, region), checkin_data in aggregate_recovery_checkins(rows).items():
+    def set_soreness_signal(*, tissue_id: int, checkin_date: date, soreness: int) -> None:
+        current = result[tissue_id].get(checkin_date)
+        if current is None or soreness > current["soreness"]:
+            result[tissue_id][checkin_date] = {"soreness": soreness}
+
+    def distribute_region_signal(*, checkin_date: date, region: str, soreness: int) -> None:
         target_tissues = region_tissues.get(region, [])
         if not target_tissues:
-            continue
+            return
 
         # Weight by recent exercise exposure (last 7 days)
         tissue_weights: dict[int, float] = {}
@@ -577,30 +602,55 @@ def _load_recovery_checkins(
         if total_weight <= 0:
             # Equal distribution when no recent exposure
             for tissue in target_tissues:
-                result[tissue.id][checkin_date] = {
-                    "soreness": checkin_data["soreness_0_10"],
-                    "pain": checkin_data["pain_0_10"],
-                    "stiffness": checkin_data["stiffness_0_10"],
-                    "readiness": checkin_data["readiness_0_10"],
-                }
-        else:
-            # Weighted distribution: tissues with more recent load get more signal
-            for tissue in target_tissues:
-                weight_fraction = tissue_weights[tissue.id] / total_weight
-                if weight_fraction > 0:
-                    result[tissue.id][checkin_date] = {
-                        "soreness": round(checkin_data["soreness_0_10"] * weight_fraction * len(target_tissues)),
-                        "pain": round(checkin_data["pain_0_10"] * weight_fraction * len(target_tissues)),
-                        "stiffness": round(checkin_data["stiffness_0_10"] * weight_fraction * len(target_tissues)),
-                        "readiness": checkin_data["readiness_0_10"],
-                    }
-                else:
-                    result[tissue.id][checkin_date] = {
-                        "soreness": 0,
-                        "pain": 0,
-                        "stiffness": 0,
-                        "readiness": checkin_data["readiness_0_10"],
-                    }
+                set_soreness_signal(
+                    tissue_id=tissue.id,
+                    checkin_date=checkin_date,
+                    soreness=soreness,
+                )
+            return
+
+        # Weighted distribution: tissues with more recent load get more signal
+        for tissue in target_tissues:
+            weight_fraction = tissue_weights[tissue.id] / total_weight
+            weighted_soreness = (
+                round(soreness * weight_fraction * len(target_tissues))
+                if weight_fraction > 0
+                else 0
+            )
+            set_soreness_signal(
+                tissue_id=tissue.id,
+                checkin_date=checkin_date,
+                soreness=weighted_soreness,
+            )
+
+    for row in soreness_rows:
+        region = canonicalize_region(row.region) or row.region
+        distribute_region_signal(
+            checkin_date=row.date,
+            region=region,
+            soreness=row.soreness_0_10,
+        )
+
+    for row in legacy_rows:
+        uses_legacy_soreness_signal = row.soreness_0_10 > 0 or row.readiness_0_10 != 5
+        if not uses_legacy_soreness_signal:
+            continue
+        if row.tracked_tissue_id is not None:
+            tissue_id = tracked_to_tissue.get(row.tracked_tissue_id)
+            if tissue_id is None:
+                continue
+            set_soreness_signal(
+                tissue_id=tissue_id,
+                checkin_date=row.date,
+                soreness=row.soreness_0_10,
+            )
+            continue
+        region = canonicalize_region(row.region) or row.region
+        distribute_region_signal(
+            checkin_date=row.date,
+            region=region,
+            soreness=row.soreness_0_10,
+        )
 
     return dict(result)
 
@@ -941,17 +991,11 @@ def _compute_tissue_states(
             next_condition_index += 1
         record = exposure_by_date.get(current_date, ExposureRecord(current_date))
         current_soreness = 0
-        current_pain = 0
-        current_stiffness = 0
-        current_readiness = 5
         if checkin_data:
             for day_offset in range(7):
                 ci = checkin_data.get(current_date - timedelta(days=day_offset))
                 if ci:
                     current_soreness = ci["soreness"]
-                    current_pain = ci["pain"]
-                    current_stiffness = ci["stiffness"]
-                    current_readiness = ci["readiness"]
                     break
         raw_load = _record_load(record, prefer_strain=prefer_strain)
         normalized_load = raw_load / max(current_capacity, 1.0)
@@ -966,14 +1010,9 @@ def _compute_tissue_states(
         chronic_load = _decay(chronic_load, chronic_tau) + normalized_load
         recovery_state = 1.0 / (1.0 + acute_fatigue)
         recovery_state *= _clamp(
-            1.0 - (min(current_stiffness, 10) * 0.035),
-            0.65,
-            1.0,
-        )
-        recovery_state *= _clamp(
-            1.0 + ((current_readiness - 5.0) * 0.05),
+            1.0 - (min(current_soreness, 10) * 0.04),
             0.75,
-            1.15,
+            1.0,
         )
         recovery_state = _clamp(recovery_state, 0.0, 1.0)
         if current_date not in excluded_days:
@@ -1004,9 +1043,6 @@ def _compute_tissue_states(
             prior_event_signal=prior_event_signal,
             learned_coefficients=event_coeffs_7,
             current_soreness=current_soreness,
-            current_pain=current_pain,
-            current_stiffness=current_stiffness,
-            current_readiness=current_readiness,
             ramp_sensitivity=config.ramp_sensitivity,
             risk_sensitivity=config.risk_sensitivity,
         )
@@ -1019,9 +1055,6 @@ def _compute_tissue_states(
             prior_event_signal=prior_event_signal,
             learned_coefficients=event_coeffs_14,
             current_soreness=current_soreness,
-            current_pain=current_pain,
-            current_stiffness=current_stiffness,
-            current_readiness=current_readiness,
             ramp_sensitivity=config.ramp_sensitivity,
             risk_sensitivity=config.risk_sensitivity,
         )
@@ -1204,13 +1237,20 @@ def _learn_recovery_days(
         midpoint = rebound_days[len(rebound_days) // 2]
         volume_rebound = round((seed + midpoint) / 2.0, 3)
 
-    # Blend with subjective recovery from check-in data when available
+    # Blend with soreness-calibrated recovery from check-in data when available
     if checkin_data:
         subjective_days = _subjective_recovery_days(
-            all_dates, exposure_by_date, excluded_days, checkin_data,
+            all_dates,
+            exposure_by_date,
+            excluded_days,
+            checkin_data,
+            baseline_days=volume_rebound,
         )
         if subjective_days is not None:
-            return round(0.6 * subjective_days + 0.4 * volume_rebound, 3)
+            return round(
+                max(volume_rebound * 0.85, 0.7 * volume_rebound + 0.3 * subjective_days),
+                3,
+            )
 
     return volume_rebound
 
@@ -1220,19 +1260,23 @@ def _subjective_recovery_days(
     exposure_by_date: dict[date, ExposureRecord],
     excluded_days: set[date],
     checkin_data: dict[date, dict],
+    *,
+    baseline_days: float,
 ) -> float | None:
-    """Find subjective recovery duration from check-in soreness data.
+    """Estimate recovery duration using soreness as a calibration signal.
 
-    For each training day, look for the soreness peak (day+1 or +2) then
-    find when soreness returns to <= 2/10.  Return the median duration.
+    Recent load remains the baseline readiness model. Soreness can extend or
+    modestly contract that prediction, but cannot by itself imply instant
+    readiness after a sufficiently heavy training day.
     """
-    recovery_durations: list[int] = []
+    recovery_durations: list[float] = []
     for current_date in all_dates:
         if current_date in excluded_days:
             continue
         record = exposure_by_date.get(current_date)
         if not record or max(record.raw_load, record.strain_load) <= 0:
             continue
+        expected = max(1.0, baseline_days)
         # Look for soreness peak in days +1 to +3
         peak_soreness = 0
         peak_day = None
@@ -1243,14 +1287,23 @@ def _subjective_recovery_days(
                 peak_soreness = ci["soreness"]
                 peak_day = check
         if peak_soreness <= 2 or peak_day is None:
+            recovery_durations.append(expected)
             continue
         # Find when soreness returns to <= 2
+        resolved_days: float | None = None
         for offset in range(1, 15):
             check = peak_day + timedelta(days=offset)
             ci = checkin_data.get(check)
             if ci and ci["soreness"] <= 2:
-                recovery_durations.append((check - current_date).days)
+                resolved_days = float((check - current_date).days)
                 break
+        if resolved_days is None:
+            resolved_days = max(expected, float((peak_day - current_date).days) + 1.5)
+        if peak_soreness >= 7:
+            resolved_days += 1.0
+        elif peak_soreness >= 4:
+            resolved_days += 0.5
+        recovery_durations.append(max(expected * 0.85, resolved_days))
     if not recovery_durations:
         return None
     recovery_durations.sort()
@@ -1360,9 +1413,6 @@ def _score_risk(
     prior_event_signal: float,
     learned_coefficients: dict[str, float],
     current_soreness: int = 0,
-    current_pain: int = 0,
-    current_stiffness: int = 0,
-    current_readiness: int = 5,
     ramp_sensitivity: float = 1.0,
     risk_sensitivity: float = 1.0,
 ) -> tuple[int, list[str]]:
@@ -1374,21 +1424,15 @@ def _score_risk(
         "prior": prior_event_signal,
         "failures": min(failures, 2) / 2.0,
         "soreness": min(current_soreness, 10) / 10.0,
-        "pain": min(current_pain, 10) / 10.0,
-        "stiffness": min(current_stiffness, 10) / 10.0,
-        "readiness": max(0.0, 5.0 - min(current_readiness, 10)) / 5.0,
     }
     weights = {
-        "normalized_load": 0.28,
-        "acute_ratio": 0.22,
-        "ramp_ratio": 0.19,
+        "normalized_load": 0.31,
+        "acute_ratio": 0.24,
+        "ramp_ratio": 0.20,
         "condition": 0.10,
         "prior": 0.07,
-        "failures": 0.06,
-        "soreness": 0.04,
-        "pain": 0.05,
-        "stiffness": 0.04,
-        "readiness": 0.03,
+        "failures": 0.05,
+        "soreness": 0.07,
     }
     score = 0.0
     contributions = []
@@ -1405,9 +1449,6 @@ def _score_risk(
                 "prior": "historical collapse proximity",
                 "failures": "recent failed reps",
                 "soreness": "reported soreness",
-                "pain": "reported pain",
-                "stiffness": "reported stiffness",
-                "readiness": "low readiness check-in",
             }[name]
             contributions.append((contribution, label))
     score *= max(risk_sensitivity, 0.75)
