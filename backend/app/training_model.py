@@ -668,7 +668,7 @@ def _load_recovery_checkins(
         )
 
     for row in legacy_rows:
-        uses_legacy_soreness_signal = row.soreness_0_10 > 0 or row.readiness_0_10 != 5
+        uses_legacy_soreness_signal = row.soreness_0_10 > 0
         if not uses_legacy_soreness_signal:
             continue
         if row.tracked_tissue_id is not None:
