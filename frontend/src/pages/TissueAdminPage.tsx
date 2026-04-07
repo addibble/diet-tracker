@@ -626,18 +626,6 @@ function ExerciseMetadataEditor({
 
 // ── Tissue View ──
 
-function ModelValue({ label, value, kind, tip }: { label: string; value: string; kind: 'db' | 'derived'; tip: string }) {
-  return (
-    <div className="flex items-baseline gap-1" title={tip}>
-      <span className="font-mono text-gray-500">{label}:</span>
-      <span className="font-semibold text-gray-800">{value}</span>
-      <span className={`text-[9px] px-1 rounded ${kind === 'db' ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-500'}`}>
-        {kind === 'db' ? 'DB' : 'Derived'}
-      </span>
-    </div>
-  )
-}
-
 function TissueView({
   tissues,
   exercises,
@@ -1010,90 +998,166 @@ function TissueView({
               </div>
 
               {/* Expandable model detail panel */}
-              {isExpanded && model && (
-                <div className="mt-2 ml-6 p-3 bg-gray-50 rounded-lg border border-gray-200 text-[11px]">
-                  {/* Recovery & Fatigue */}
-                  <div className="mb-2">
-                    <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Recovery &amp; Fatigue</span>
+              {isExpanded && model && (() => {
+                const cfg = t.model_config
+                const f = model.risk_features_7d
+                const sorenessClamp = Math.max(0.75, Math.min(1.0, 1 - model.current_soreness * 0.04))
+                const recovBase = 1 / (1 + model.acute_fatigue)
+                return (
+                <div className="mt-2 ml-6 p-3 bg-gray-50 rounded-lg border border-gray-200 font-mono text-[10px] leading-relaxed space-y-1.5">
+                  {/* DB Config */}
+                  <div className="text-[9px] text-gray-400 flex flex-wrap gap-x-3">
+                    <span>recovery_hours=<b className="text-blue-600">{t.recovery_hours}h</b></span>
+                    {cfg && <>
+                      <span>capacity_prior=<b className="text-blue-600">{cfg.capacity_prior}</b></span>
+                      <span>recovery_tau=<b className="text-blue-600">{cfg.recovery_tau_days}d</b></span>
+                      <span>fatigue_tau=<b className="text-blue-600">{cfg.fatigue_tau_days}d</b></span>
+                      <span>collapse_drop=<b className="text-blue-600">{cfg.collapse_drop_threshold}</b></span>
+                      <span>ramp_sens=<b className="text-blue-600">{cfg.ramp_sensitivity}</b></span>
+                      <span>risk_sens=<b className="text-blue-600">{cfg.risk_sensitivity}</b></span>
+                    </>}
+                    <span>soreness=<b className="text-blue-600">{model.current_soreness}</b></span>
+                    <span>regions=<b className="text-blue-600">{model.tissue_regions.join(',') || '—'}</b></span>
+                    <span>last_trained=<b className="text-blue-600">{daysSince != null ? `${daysSince}d ago` : '—'}</b></span>
                   </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-1.5">
-                    <ModelValue label="recovery_estimate" value={model.recovery_estimate.toFixed(3)} kind="derived" tip="1/(1+acute_fatigue) × clamp(1 - soreness×0.04, 0.75, 1)" />
-                    <ModelValue label="learned_recovery_days" value={`${model.learned_recovery_days.toFixed(2)}d`} kind="derived" tip="blend(volume_rebound, subjective_days)" />
-                    <ModelValue label="volume_rebound" value={`${model.volume_rebound.toFixed(3)}d`} kind="derived" tip="(seed + median_rebound_days) / 2" />
-                    <ModelValue label="subjective_days" value={model.subjective_days != null ? `${model.subjective_days.toFixed(3)}d` : '—'} kind="derived" tip="Days until soreness ≤ 2 post-workout" />
-                    <ModelValue label="days_since_trained" value={daysSince != null ? `${daysSince}d` : '—'} kind="derived" tip="Days since last non-zero load" />
-                    <ModelValue label="acute_fatigue" value={model.acute_fatigue.toFixed(3)} kind="derived" tip="decay(prior, fatigue_tau) + fatigue_input / capacity" />
-                    <ModelValue label="fatigue_input" value={model.fatigue_input.toFixed(3)} kind="derived" tip="max(fatigue_load, strain_load) for joint/tendon; else fatigue_load" />
-                    <ModelValue label="current_soreness" value={String(model.current_soreness)} kind="db" tip="Inherited from region soreness, weighted by exercise exposure" />
-                    <ModelValue label="overworked" value={model.overworked} kind="derived" tip="'avoid' if risk≥75, 'caution' if risk≥55, else 'good'" />
+
+                  <hr className="border-gray-200" />
+
+                  {/* Recovery */}
+                  <div>
+                    <span className="text-gray-900 font-semibold">recovery_state</span>
+                    <span className="text-gray-400"> = </span>
+                    <span className="text-gray-600">1/(1 + <b className="text-amber-700">{model.acute_fatigue.toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [acute_fatigue]</span>) × clamp(1 − <b className="text-blue-600">{model.current_soreness}</b><span className="text-gray-400 text-[8px]"> [soreness]</span>×0.04, 0.75, 1.0)</span>
+                    <span className="text-gray-400"> = </span>
+                    <span className="text-gray-600">{recovBase.toFixed(3)} × {sorenessClamp.toFixed(3)}</span>
+                    <span className="text-gray-400"> = </span>
+                    <b className="text-gray-900">{model.recovery_estimate.toFixed(3)}</b>
                   </div>
+
+                  <div>
+                    <span className="text-gray-900 font-semibold">acute_fatigue</span>
+                    <span className="text-gray-400"> = </span>
+                    <span className="text-gray-600">decay(prior, <b className="text-blue-600">{cfg?.fatigue_tau_days ?? '?'}d</b><span className="text-gray-400 text-[8px]"> [fatigue_tau]</span>) + <b className="text-amber-700">{model.fatigue_input.toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [fatigue_input]</span> / max(<b className="text-amber-700">{model.current_capacity.toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [capacity]</span>, 1.0)</span>
+                    <span className="text-gray-400"> = </span>
+                    <b className="text-gray-900">{model.acute_fatigue.toFixed(3)}</b>
+                  </div>
+
+                  <div>
+                    <span className="text-gray-900 font-semibold">learned_recovery_days</span>
+                    <span className="text-gray-400"> = </span>
+                    <span className="text-gray-600">max(<b className="text-amber-700">{model.volume_rebound.toFixed(2)}</b><span className="text-gray-400 text-[8px]"> [vol_rebound]</span>×0.85, 0.7×<b className="text-amber-700">{model.volume_rebound.toFixed(2)}</b><span className="text-gray-400 text-[8px]"> [vol_rebound]</span> + 0.3×<b className="text-amber-700">{model.subjective_days != null ? model.subjective_days.toFixed(2) : '—'}</b><span className="text-gray-400 text-[8px]"> [subj_days]</span>)</span>
+                    <span className="text-gray-400"> = </span>
+                    <b className="text-gray-900">{model.learned_recovery_days.toFixed(2)}d</b>
+                  </div>
+
+                  <hr className="border-gray-200" />
 
                   {/* Load & Capacity */}
-                  <div className="mt-3 mb-2">
-                    <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Load &amp; Capacity</span>
-                  </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-1.5">
-                    <ModelValue label="raw_load" value={model.raw_load.toFixed(3)} kind="derived" tip="Sum of fatigue_load from today's exercises" />
-                    <ModelValue label="normalized_load" value={model.normalized_load.toFixed(3)} kind="derived" tip="raw_load / max(current_capacity, 1.0)" />
-                    <ModelValue label="chronic_load" value={model.chronic_load.toFixed(3)} kind="derived" tip="decay(prior, max(7, recovery_days×6)) + normalized_load" />
-                    <ModelValue label="current_capacity" value={model.current_capacity.toFixed(3)} kind="derived" tip="max(baseline×0.55, drift + adaptation - penalty)" />
-                    <ModelValue label="baseline_capacity" value={model.baseline_capacity.toFixed(3)} kind="derived" tip="75th percentile of non-zero training days" />
-                    <ModelValue label="capacity_trend_30d" value={`${model.capacity_trend_30d_pct > 0 ? '+' : ''}${model.capacity_trend_30d_pct.toFixed(2)}%`} kind="derived" tip="(recent_cap - earlier_cap) / earlier_cap × 100" />
-                    <ModelValue label="ramp_ratio" value={model.ramp_ratio.toFixed(3)} kind="derived" tip="7d_avg / max(28d_avg/4, baseline×0.15, 1.0)" />
-                    <ModelValue label="collapse_count" value={String(model.collapse_count)} kind="derived" tip="Total collapse events detected" />
+                  <div>
+                    <span className="text-gray-900 font-semibold">normalized_load</span>
+                    <span className="text-gray-400"> = </span>
+                    <span className="text-gray-600"><b className="text-amber-700">{model.raw_load.toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [raw_load]</span> / max(<b className="text-amber-700">{model.current_capacity.toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [capacity]</span>, 1.0)</span>
+                    <span className="text-gray-400"> = </span>
+                    <b className="text-gray-900">{model.normalized_load.toFixed(3)}</b>
                   </div>
 
+                  <div>
+                    <span className="text-gray-900 font-semibold">chronic_load</span>
+                    <span className="text-gray-400"> = </span>
+                    <span className="text-gray-600">decay(prior, max(7, <b className="text-amber-700">{model.learned_recovery_days.toFixed(1)}</b><span className="text-gray-400 text-[8px]"> [recovery_days]</span>×6)) + <b className="text-amber-700">{model.normalized_load.toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [norm_load]</span></span>
+                    <span className="text-gray-400"> = </span>
+                    <b className="text-gray-900">{model.chronic_load.toFixed(3)}</b>
+                  </div>
+
+                  <div>
+                    <span className="text-gray-900 font-semibold">current_capacity</span>
+                    <span className="text-gray-400"> = </span>
+                    <span className="text-gray-600">max(<b className="text-amber-700">{model.baseline_capacity.toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [baseline]</span>×0.55, drift + adaptation − penalty)</span>
+                    <span className="text-gray-400"> = </span>
+                    <b className="text-gray-900">{model.current_capacity.toFixed(3)}</b>
+                  </div>
+
+                  <div>
+                    <span className="text-gray-900 font-semibold">baseline_capacity</span>
+                    <span className="text-gray-400"> = </span>
+                    <span className="text-gray-600">p75 of non-zero training loads (prior=<b className="text-blue-600">{cfg?.capacity_prior ?? '?'}</b><span className="text-gray-400 text-[8px]"> [capacity_prior]</span>)</span>
+                    <span className="text-gray-400"> = </span>
+                    <b className="text-gray-900">{model.baseline_capacity.toFixed(3)}</b>
+                  </div>
+
+                  <div>
+                    <span className="text-gray-900 font-semibold">ramp_ratio</span>
+                    <span className="text-gray-400"> = </span>
+                    <span className="text-gray-600">7d_avg / max(28d_avg/4, <b className="text-amber-700">{model.baseline_capacity.toFixed(3)}</b><span className="text-gray-400 text-[8px]"> [baseline]</span>×0.15, 1.0)</span>
+                    <span className="text-gray-400"> = </span>
+                    <b className="text-gray-900">{model.ramp_ratio.toFixed(3)}</b>
+                  </div>
+
+                  <div>
+                    <span className="text-gray-900 font-semibold">capacity_trend_30d</span>
+                    <span className="text-gray-400"> = </span>
+                    <b className={`${model.capacity_trend_30d_pct >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
+                      {model.capacity_trend_30d_pct > 0 ? '+' : ''}{model.capacity_trend_30d_pct.toFixed(2)}%
+                    </b>
+                    <span className="text-gray-400 ml-2 text-[9px]">collapses: {model.collapse_count}</span>
+                  </div>
+
+                  <hr className="border-gray-200" />
+
                   {/* Risk */}
-                  <div className="mt-3 mb-2">
-                    <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Risk Scoring (7d)</span>
+                  <div>
+                    <span className="text-gray-900 font-semibold">risk_7d</span>
+                    <span className="text-gray-400"> = </span>
+                    <span className="text-gray-600">sigmoid(Σ w×feat) × <b className="text-blue-600">{cfg?.risk_sensitivity ?? 1}</b><span className="text-gray-400 text-[8px]"> [risk_sens]</span></span>
+                    <span className="text-gray-400"> → </span>
+                    <b className={`${model.risk_7d >= 75 ? 'text-red-600' : model.risk_7d >= 55 ? 'text-amber-600' : model.risk_7d >= 30 ? 'text-yellow-600' : 'text-emerald-600'}`}>
+                      {model.risk_7d}%
+                    </b>
+                    <span className="text-gray-400 ml-2 text-[9px]">
+                      risk_14d=<b>{model.risk_14d}%</b>
+                    </span>
                   </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-1.5">
-                    <ModelValue label="risk_7d" value={`${model.risk_7d}%`} kind="derived" tip="sigmoid(weighted_sum of 7 features) × 100" />
-                    <ModelValue label="risk_14d" value={`${model.risk_14d}%`} kind="derived" tip="Same formula, 14d window, ramp ×0.9" />
-                    <ModelValue label="condition_severity" value={String(model.condition_severity)} kind="derived" tip="0-4 from condition status: injured≥4, tender≥2, rehabbing≥1, healthy=0" />
-                    <ModelValue label="prior_event_signal" value={model.prior_event_signal.toFixed(3)} kind="derived" tip="Similarity of current load to prior collapse loads" />
-                    <ModelValue label="failure_count" value={String(model.failure_count)} kind="db" tip="Failed reps recorded in recent sessions" />
-                  </div>
-                  {model.risk_features_7d && (
-                    <div className="mt-1.5 ml-2 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-x-3 gap-y-1">
-                      {Object.entries(model.risk_features_7d).map(([key, val]) => (
-                        <span key={key} className="text-[10px] text-gray-500">
-                          <span className="text-gray-400">{key}:</span> <b className={val > 0 ? 'text-amber-700' : 'text-gray-400'}>{val.toFixed(4)}</b>
+
+                  {f && (
+                    <div className="ml-4 text-[9px] text-gray-500">
+                      <span className="text-gray-400">features (post-threshold): </span>
+                      {Object.entries(f).map(([key, val]) => (
+                        <span key={key} className="mr-2">
+                          {key}=<b className={val > 0 ? 'text-amber-700' : 'text-gray-400'}>{val.toFixed(4)}</b>
+                          <span className="text-gray-300">
+                            ×{({normalized_load: '.31', acute_ratio: '.24', ramp_ratio: '.20', condition: '.10', prior: '.07', failures: '.05', soreness: '.07'} as Record<string, string>)[key] ?? '?'}
+                          </span>
                         </span>
                       ))}
                     </div>
                   )}
+
+                  <div className="ml-4 text-[9px] text-gray-500">
+                    <span className="text-gray-400">raw inputs: </span>
+                    <b className="text-amber-700">{model.condition_severity}</b><span className="text-gray-400"> [cond_severity] </span>
+                    <b className="text-amber-700">{model.prior_event_signal.toFixed(3)}</b><span className="text-gray-400"> [prior_event] </span>
+                    <b className="text-amber-700">{model.failure_count}</b><span className="text-gray-400"> [failures] </span>
+                    <b className="text-blue-600">{cfg?.ramp_sensitivity ?? 1}</b><span className="text-gray-400"> [ramp_sens]</span>
+                  </div>
+
                   {model.contributors.length > 0 && (
-                    <div className="mt-1.5 text-[10px] text-gray-500">
-                      <span className="font-medium">Top contributors:</span> {model.contributors.join(', ')}
+                    <div className="ml-4 text-[9px] text-gray-500">
+                      <span className="text-gray-400">top contributors: </span>{model.contributors.join(', ')}
                     </div>
                   )}
 
-                  {/* Metadata */}
-                  <div className="mt-3 mb-2">
-                    <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Metadata</span>
+                  <div>
+                    <span className="text-gray-900 font-semibold">overworked</span>
+                    <span className="text-gray-400"> = </span>
+                    <span className="text-gray-600"><b className="text-amber-700">{model.risk_7d}</b><span className="text-gray-400 text-[8px]"> [risk_7d]</span> {model.risk_7d >= 75 ? '≥ 75' : model.risk_7d >= 55 ? '≥ 55' : '< 55'}</span>
+                    <span className="text-gray-400"> → </span>
+                    <b className={`${model.overworked === 'avoid' ? 'text-red-600' : model.overworked === 'caution' ? 'text-amber-600' : 'text-emerald-600'}`}>
+                      {model.overworked}
+                    </b>
                   </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-1.5">
-                    <ModelValue label="regions" value={model.tissue_regions.join(', ') || '—'} kind="db" tip="Region associations from TissueRegionLink" />
-                  </div>
-
-                  {/* Model config (DB values) */}
-                  {t.model_config && (
-                    <div className="mt-2 pt-2 border-t border-gray-200">
-                      <span className="text-[10px] font-semibold text-gray-500">DB Config:</span>
-                      <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
-                        <span className="text-[10px] text-gray-500">recovery_hours: <b>{t.recovery_hours}h</b></span>
-                        <span className="text-[10px] text-gray-500">capacity_prior: <b>{t.model_config.capacity_prior}</b></span>
-                        <span className="text-[10px] text-gray-500">recovery_tau_days: <b>{t.model_config.recovery_tau_days}d</b></span>
-                        <span className="text-[10px] text-gray-500">fatigue_tau_days: <b>{t.model_config.fatigue_tau_days}d</b></span>
-                        <span className="text-[10px] text-gray-500">collapse_drop_threshold: <b>{t.model_config.collapse_drop_threshold}</b></span>
-                        <span className="text-[10px] text-gray-500">ramp_sensitivity: <b>{t.model_config.ramp_sensitivity}</b></span>
-                        <span className="text-[10px] text-gray-500">risk_sensitivity: <b>{t.model_config.risk_sensitivity}</b></span>
-                      </div>
-                    </div>
-                  )}
                 </div>
-              )}
+                )
+              })()}
 
               {visibleExercises.length > 0 ? (
                 <div className="mt-1 ml-6 flex flex-wrap gap-x-3 gap-y-1">
