@@ -59,20 +59,58 @@ class CurveFitResult:
     message: str = ""
 
 
+BODYWEIGHT_MODES = {"bodyweight", "assisted_bodyweight"}
+
+# Exercises to always exclude (bodyweight-only with no meaningful load variation)
+EXCLUDE_EXERCISES = {
+    "Dead Bug", "Flutter Kicks", "Dips", "Hanging Leg Raises",
+    "Hanging Knee Raises", "Incline Push-Up", "Push-ups", "Box Jumps",
+    "Laying Down Crunches", "Reverse Crunch + isometric crunch",
+    "Weighted Plank",
+}
+
+
+def _rpe_confidence(rpe: float) -> float:
+    """Higher confidence for sets closer to failure.
+
+    RPE 10 (0 RIR) = exact failure boundary -> 1.0
+    RPE 9 (1 RIR) = very close -> 0.9
+    RPE 8 (2 RIR) = good signal -> 0.75
+    RPE 7 (3 RIR) = moderate -> 0.55
+    RPE 6 (4 RIR) = rough estimate -> 0.35
+    RPE 5 (5 RIR) = low precision -> 0.2
+    """
+    rir = 10.0 - rpe
+    # Exponential decay: confidence drops as RIR increases
+    return max(0.2, math.exp(-0.25 * rir))
+
+
 def build_observations(
     sets: list[SetRecord],
     bw_history: dict[str, float],
+    rpe_only: bool = True,
+    exclude_bodyweight: bool = True,
+    min_rpe_sets: int = 12,
 ) -> dict[int, list[Observation]]:
-    """Build pseudo-observations from workout sets.
+    """Build observations from workout sets.
 
-    For RPE sets: r_fail = reps + (10 - RPE)
-    For completion-label sets: ordinal evidence only.
+    Default mode: RPE-only sets from non-bodyweight exercises with >=12 RPE sets.
+    Each individual set is its own observation (no per-session aggregation).
+    Confidence is based on RPE proximity to failure.
     """
-    obs_by_exercise: dict[int, list[Observation]] = defaultdict(list)
+    # First pass: collect all RPE observations
+    raw_obs: dict[int, list[Observation]] = defaultdict(list)
 
     for s in sets:
         if s.reps is None or s.reps <= 0:
             continue
+
+        # Filter bodyweight exercises
+        if exclude_bodyweight:
+            if s.load_input_mode in BODYWEIGHT_MODES:
+                continue
+            if s.exercise_name in EXCLUDE_EXERCISES:
+                continue
 
         bw = nearest_bodyweight(bw_history, s.session_date)
         ew = effective_weight(s, bw)
@@ -94,17 +132,13 @@ def build_observations(
                 set_order=s.set_order,
                 session_id=s.session_id,
                 observation_type="rpe",
-                confidence=1.0,
+                confidence=_rpe_confidence(s.rpe),
             )
-            obs_by_exercise[s.exercise_id].append(obs)
-        elif s.rep_completion in ("full", "partial", "failed"):
-            # Ordinal: we don't know exact r_fail, but we know direction
-            # full -> completed target (above boundary)
-            # partial -> near limit
-            # failed -> below limit
-            r_fail_est = s.reps  # rough: they did this many
+            raw_obs[s.exercise_id].append(obs)
+        elif not rpe_only and s.rep_completion in ("full", "partial", "failed"):
+            r_fail_est = s.reps
             if s.rep_completion == "full":
-                r_fail_est = s.reps + 2  # assume ~2 RIR
+                r_fail_est = s.reps + 2
             elif s.rep_completion == "failed":
                 r_fail_est = max(1, s.reps - 1)
             obs = Observation(
@@ -119,9 +153,16 @@ def build_observations(
                 set_order=s.set_order,
                 session_id=s.session_id,
                 observation_type="ordinal",
-                confidence=0.3,  # weak evidence
+                confidence=0.3,
             )
-            obs_by_exercise[s.exercise_id].append(obs)
+            raw_obs[s.exercise_id].append(obs)
+
+    # Filter: require minimum RPE sets per exercise
+    obs_by_exercise: dict[int, list[Observation]] = {}
+    for ex_id, obs_list in raw_obs.items():
+        rpe_count = sum(1 for o in obs_list if o.observation_type == "rpe")
+        if rpe_count >= min_rpe_sets:
+            obs_by_exercise[ex_id] = obs_list
 
     return obs_by_exercise
 
@@ -235,13 +276,12 @@ def fit_single_exercise(
     observations: list[Observation],
     tier: str = "tier1",
     fixed_gamma: float | None = None,
-    recency_half_life: float = 60.0,
+    recency_half_life: float = 30.0,
 ) -> CurveFitResult:
     """Fit the fresh-set strength curve for one exercise.
 
-    tier1: fit M, k, gamma freely
-    tier2: fix gamma, fit M, k
-    tier3: use class priors (not fitted here)
+    Uses ALL individual RPE sets (not just first-per-session).
+    Recency half-life defaults to 30 days to emphasize recent training.
     """
     if not observations:
         return CurveFitResult(
@@ -254,27 +294,23 @@ def fit_single_exercise(
     ex_id = observations[0].exercise_id
     ex_name = observations[0].exercise_name
 
-    # Filter to first set per session for fresh-curve fitting
-    # (later sets have fatigue, which biases the curve)
-    first_set_obs = _get_first_sets_per_session(observations)
-    if len(first_set_obs) < 3:
-        # Fall back to all observations if too few first-sets
-        first_set_obs = observations
+    # Use ALL RPE observations individually (no first-set-per-session filter)
+    fit_obs = observations
 
-    weights_arr = np.array([o.effective_weight for o in first_set_obs])
-    reps_arr = np.array([o.reps_to_failure for o in first_set_obs])
-    conf_arr = np.array([o.confidence for o in first_set_obs])
-    dates = [o.session_date for o in first_set_obs]
+    weights_arr = np.array([o.effective_weight for o in fit_obs])
+    reps_arr = np.array([o.reps_to_failure for o in fit_obs])
+    conf_arr = np.array([o.confidence for o in fit_obs])
+    dates = [o.session_date for o in fit_obs]
     recency = _recency_weights(dates, recency_half_life)
     fit_weights = conf_arr * recency
 
     max_w = float(np.max(weights_arr))
     min_w = float(np.min(weights_arr))
-    rpe_count = sum(1 for o in first_set_obs if o.observation_type == "rpe")
+    rpe_count = sum(1 for o in fit_obs if o.observation_type == "rpe")
 
     # Compute Brzycki bounds and prior M
-    M_lower, M_upper, M_prior = _estimate_M_bounds(first_set_obs)
-    ident = _identifiability_score(first_set_obs)
+    M_lower, M_upper, M_prior = _estimate_M_bounds(fit_obs)
+    ident = _identifiability_score(fit_obs)
 
     # Regularization strength: stronger when data poorly identifies M
     # Base lambda=10, doubled when identifiability is low
@@ -282,12 +318,12 @@ def fit_single_exercise(
 
     if tier == "tier2" and fixed_gamma is not None:
         result = _fit_M_k(weights_arr, reps_arr, fit_weights, fixed_gamma,
-                          max_w, ex_id, ex_name, rpe_count, first_set_obs,
+                          max_w, ex_id, ex_name, rpe_count, fit_obs,
                           M_lower, M_upper, M_prior, lambda_M)
         result.tier = "tier2"
     else:
         result = _fit_full(weights_arr, reps_arr, fit_weights, max_w,
-                           ex_id, ex_name, rpe_count, first_set_obs,
+                           ex_id, ex_name, rpe_count, fit_obs,
                            M_lower, M_upper, M_prior, lambda_M)
 
     result.min_observed_weight = min_w
@@ -496,33 +532,42 @@ def compute_class_priors(results: list[CurveFitResult]) -> dict[str, dict]:
     return priors
 
 
-def run_batch_fitting(db_path=None, tier_assignments=None):
-    """Run curve fitting across all exercises, respecting tier assignments."""
+def run_batch_fitting(db_path=None, tier_assignments=None,
+                      rpe_only=True, exclude_bodyweight=True, min_rpe_sets=12):
+    """Run curve fitting across qualifying exercises.
+
+    Default: RPE-only sets, non-bodyweight, >=12 RPE sets per exercise.
+    All individual sets used (not first-per-session).
+    """
     conn = get_connection(db_path)
     all_sets = load_all_sets(conn)
     bw = load_bodyweight_history(conn)
     conn.close()
 
-    obs_by_ex = build_observations(all_sets, bw)
+    obs_by_ex = build_observations(all_sets, bw, rpe_only=rpe_only,
+                                   exclude_bodyweight=exclude_bodyweight,
+                                   min_rpe_sets=min_rpe_sets)
 
-    # If no tier assignments provided, run the audit to get them
-    if tier_assignments is None:
-        from data_audit import run_data_audit
-        tiers, _ = run_data_audit(db_path)
-        tier_assignments = {}
-        for tier_name, entries in tiers.items():
-            for e in entries:
-                tier_assignments[e["exercise_id"]] = tier_name
+    # With RPE-only filtering, tier assignment is simpler:
+    # >=8 RPE sets AND >=2 distinct weights -> tier1 (full 3-param)
+    # else -> tier2 (fix gamma)
+    def _assign_tier(obs_list):
+        rpe_obs = [o for o in obs_list if o.observation_type == "rpe"]
+        distinct_w = len(set(round(o.effective_weight, 1) for o in rpe_obs))
+        if len(rpe_obs) >= 8 and distinct_w >= 2:
+            return "tier1"
+        return "tier2"
 
     # Phase 1: Fit Tier 1 exercises fully
     tier1_results = []
     print("\n" + "=" * 100)
-    print("PHASE 2: FRESH-SET STRENGTH CURVE FITTING")
+    print("PHASE 2: FRESH-SET STRENGTH CURVE FITTING (RPE-only, all sets)")
     print("=" * 100)
+    print(f"  Qualifying exercises: {len(obs_by_ex)} (>={min_rpe_sets} RPE sets, non-bodyweight)")
 
     print("\n-- Tier 1: Full 3-parameter fit (M, k, gamma) --")
     for ex_id, obs in sorted(obs_by_ex.items(), key=lambda x: len(x[1]), reverse=True):
-        tier = tier_assignments.get(ex_id, "tier3")
+        tier = _assign_tier(obs)
         if tier != "tier1":
             continue
         result = fit_single_exercise(obs, tier="tier1")
@@ -542,7 +587,7 @@ def run_batch_fitting(db_path=None, tier_assignments=None):
     tier2_results = []
     print("\n-- Tier 2: 2-parameter fit (M, k) with gamma fixed --")
     for ex_id, obs in sorted(obs_by_ex.items(), key=lambda x: len(x[1]), reverse=True):
-        tier = tier_assignments.get(ex_id, "tier3")
+        tier = _assign_tier(obs)
         if tier != "tier2":
             continue
         result = fit_single_exercise(obs, tier="tier2", fixed_gamma=global_gamma)

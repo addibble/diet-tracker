@@ -21,11 +21,10 @@ def plot_strength_curve(result, save=True, show_obs=True):
 
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
 
-    # Clip plot range to observed data + 30%, not all the way to M
+    # Show full curve from below min data to M (natural endpoint where reps -> 0)
     min_obs_w = result.min_observed_weight if result.min_observed_weight > 0 else 1
-    max_obs_w = result.max_observed_weight
-    plot_right = min(result.M * 0.95, max_obs_w * 1.3)
     plot_left = min_obs_w * 0.7
+    plot_right = result.M * 0.99
 
     W_range = np.linspace(max(1, plot_left), plot_right, 200)
     r_pred = fresh_curve(W_range, result.M, result.k, result.gamma)
@@ -51,16 +50,8 @@ def plot_strength_curve(result, save=True, show_obs=True):
                 marker="^",
             )
 
-    # Mark M: in-plot line if visible, otherwise off-plot annotation
-    if result.M <= plot_right * 1.05:
-        ax.axvline(x=result.M, color="green", linestyle="--", alpha=0.6, label=f"M={result.M:.1f}")
-    else:
-        # M is off-plot -- annotate with arrow at right edge
-        ax.annotate(
-            f"M={result.M:.0f} ->",
-            xy=(plot_right, 0.5), fontsize=10, color="green", fontweight="bold",
-            ha="right", va="bottom",
-        )
+    # Mark M (1RM ceiling) — always in range since curve extends to M
+    ax.axvline(x=result.M, color="green", linestyle="--", alpha=0.6, label=f"M={result.M:.1f}")
 
     # Show Brzycki estimate if available
     brz = getattr(result, "brzycki_M", 0)
@@ -235,11 +226,9 @@ def plot_curve_gallery(results: list, top_n: int = 20, save=True):
 
     for i, result in enumerate(to_plot):
         ax = axes[i]
-        # Clip to data range + 30%
-        max_obs_w = result.max_observed_weight
+        # Show full curve to M
         min_obs_w = getattr(result, "min_observed_weight", 1) or 1
-        plot_right = min(result.M * 0.95, max_obs_w * 1.3)
-        W_range = np.linspace(max(1, min_obs_w * 0.7), plot_right, 100)
+        W_range = np.linspace(max(1, min_obs_w * 0.7), result.M * 0.95, 100)
         r_pred = fresh_curve(W_range, result.M, result.k, result.gamma)
         ax.plot(W_range, r_pred, "b-", linewidth=1.5)
 

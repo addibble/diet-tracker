@@ -2,7 +2,7 @@
 
 Runs all phases sequentially:
   Phase 1: Data audit
-  Phase 2: Strength curve fitting
+  Phase 2: Strength curve fitting (RPE-only, all individual sets)
   Phase 3: Session fatigue
   Phase 4: M(t) evolution
   Phase 5: Full validation
@@ -26,6 +26,7 @@ def main():
     print("UNIFIED FATIGUE-STRENGTH MODEL -- STANDALONE EXPLORATION")
     print("=" * 100)
     print(f"Starting from phase {start_phase}")
+    print("  Mode: RPE-only, all individual sets, non-bodyweight, >=12 RPE sets")
     print()
 
     t0 = time.time()
@@ -37,21 +38,16 @@ def main():
         print("#" * 100)
         from data_audit import run_data_audit
         tiers, ex_stats = run_data_audit()
-        tier_assignments = {}
-        for tier_name, entries in tiers.items():
-            for e in entries:
-                tier_assignments[e["exercise_id"]] = tier_name
     else:
         tiers = None
-        tier_assignments = None
 
-    # Phase 2: Strength curve fitting
+    # Phase 2: Strength curve fitting (RPE-only, all sets)
     if start_phase <= 2:
         print("\n" + "#" * 100)
-        print("#  PHASE 2: STRENGTH CURVE FITTING")
+        print("#  PHASE 2: STRENGTH CURVE FITTING (RPE-only, all individual sets)")
         print("#" * 100)
         from strength_curve import run_batch_fitting
-        curve_results = run_batch_fitting(tier_assignments=tier_assignments)
+        curve_results = run_batch_fitting()
     else:
         curve_results = None
 
