@@ -10,6 +10,10 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
 
+[tool.ruff.lint.per-file-ignores]
+"app/strength_model.py" = ["N802", "N803", "N806"]
+"tests/test_strength_model.py" = ["N806"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

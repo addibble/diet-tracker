@@ -7,6 +7,7 @@ import {
   type SymptomSeverityLevel,
 } from '../components/symptomSeverity'
 import WorkoutSetEditor from '../components/WorkoutSetEditor'
+import StrengthPlannerCard, { type SelectedExercise } from '../components/StrengthPlannerCard'
 import {
   createRecoveryCheckIn,
   deletePlan,
@@ -1118,6 +1119,48 @@ export default function TrainingPage() {
     }).catch(() => {})
   }, [refreshActivePlan, refreshPlanner])
 
+  const handleStrengthSave = useCallback((selected: SelectedExercise[]) => {
+    const exercises: PlannerExercisePrescription[] = selected.map(ex => {
+      const rx = ex.prescription
+      const sets = rx?.sets
+      let targetSets = 3
+      let targetReps = '8-12'
+      let targetWeight: number | null = null
+
+      if (ex.is_bodyweight && rx?.suggestion) {
+        targetSets = rx.suggestion.sets
+        targetReps = String(rx.suggestion.reps_per_set)
+      } else if (sets && sets.length > 0) {
+        targetSets = sets.length
+        const minReps = Math.min(...sets.map(s => s.acceptable_rep_min))
+        const maxReps = Math.max(...sets.map(s => s.acceptable_rep_max))
+        targetReps = `${minReps}-${maxReps}`
+        targetWeight = sets[0].proposed_weight
+      } else if (rx?.fallback_weight != null) {
+        targetWeight = rx.fallback_weight
+      }
+
+      return {
+        exercise_id: ex.exercise_id,
+        exercise_name: ex.name,
+        equipment: null,
+        target_sets: targetSets,
+        target_reps: targetReps,
+        target_weight: targetWeight,
+        rep_scheme: ex.allow_heavy_loading ? 'heavy' : 'medium',
+        rationale: 'Strength curve prescription',
+        overload_note: null,
+        selected: true,
+        last_performance: null,
+        scheme_history: { heavy: null, medium: null, volume: null },
+      } satisfies PlannerExercisePrescription
+    })
+    savePlan('Strength Session', [], exercises, today()).then(() => {
+      refreshPlanner()
+      refreshActivePlan()
+    }).catch(() => {})
+  }, [refreshActivePlan, refreshPlanner])
+
   return (
     <ScrollablePage>
       <div className="space-y-4 pb-4">
@@ -1152,6 +1195,14 @@ export default function TrainingPage() {
                   setActivePlan(null)
                   refreshPlanner()
                 }}
+              />
+            )}
+
+            {/* Strength curve planner — shown when no active plan */}
+            {!activePlan && (
+              <StrengthPlannerCard
+                onSave={handleStrengthSave}
+                collapseWhenPlanned={Boolean(activePlan)}
               />
             )}
 

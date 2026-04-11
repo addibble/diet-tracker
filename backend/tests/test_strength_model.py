@@ -1,0 +1,522 @@
+"""Tests for strength_model.py -- curve fitting and set prescription."""
+
+from __future__ import annotations
+
+from datetime import date, timedelta
+
+import numpy as np
+import pytest
+from sqlmodel import Session
+
+from app.models import Exercise, WorkoutSession, WorkoutSet
+from app.strength_model import (
+    DEFAULT_GAMMA,
+    CurveFit,
+    _brzycki_1rm,
+    _entered_to_effective,
+    _estimate_M_bounds,
+    _identifiability_score,
+    _rpe_confidence,
+    adjust_prescription,
+    fit_curve,
+    fresh_curve,
+    get_bodyweight_suggestion,
+    get_exercise_freshness,
+    plan_progressive_sets,
+    predict_reps,
+    refit_with_observations,
+    solve_weight,
+)
+
+# ── Unit tests for pure math functions ──
+
+
+class TestFreshCurve:
+    def test_basic_prediction(self):
+        """r_fresh should decrease as weight increases."""
+        M, k, gamma = 200.0, 15.0, 0.5
+        reps_at_100 = fresh_curve(100.0, M, k, gamma)
+        reps_at_150 = fresh_curve(150.0, M, k, gamma)
+        assert reps_at_100 > reps_at_150 > 0
+
+    def test_zero_at_max(self):
+        """r_fresh should be 0 at W = M."""
+        assert fresh_curve(200.0, 200.0, 15.0, 0.5) == 0.0
+
+    def test_zero_above_max(self):
+        """r_fresh should be 0 for W > M."""
+        assert fresh_curve(250.0, 200.0, 15.0, 0.5) == 0.0
+
+    def test_numpy_array(self):
+        """Should work with numpy arrays."""
+        W = np.array([100.0, 150.0, 200.0, 250.0])
+        result = fresh_curve(W, 200.0, 15.0, 0.5)
+        assert result[0] > result[1] > 0
+        assert result[2] == 0.0
+        assert result[3] == 0.0
+
+
+class TestSolveWeight:
+    def test_round_trip(self):
+        """solve_weight should invert predict_reps."""
+        fit = CurveFit(M=200, k=15, gamma=0.5, n_obs=20, rmse=1.0,
+                        max_observed_weight=180, fit_tier="tier1")
+        for target in [5.0, 10.0, 15.0, 20.0]:
+            W = solve_weight(target, fit)
+            predicted = predict_reps(W, fit)
+            assert abs(predicted - target) < 0.01, f"Round-trip failed for target={target}"
+
+    def test_higher_reps_lower_weight(self):
+        """More target reps should produce lower weight."""
+        fit = CurveFit(M=200, k=15, gamma=0.5, n_obs=20, rmse=1.0,
+                        max_observed_weight=180, fit_tier="tier1")
+        w5 = solve_weight(5.0, fit)
+        w15 = solve_weight(15.0, fit)
+        assert w5 > w15
+
+    def test_zero_reps(self):
+        """Zero target reps should return near M."""
+        fit = CurveFit(M=200, k=15, gamma=0.5, n_obs=20, rmse=1.0,
+                        max_observed_weight=180, fit_tier="tier1")
+        w = solve_weight(0, fit)
+        assert w == 200 * 0.95
+
+
+class TestRPEConfidence:
+    def test_rpe_10_highest(self):
+        assert _rpe_confidence(10.0) == pytest.approx(1.0)
+
+    def test_rpe_decreasing(self):
+        c10 = _rpe_confidence(10.0)
+        c8 = _rpe_confidence(8.0)
+        c6 = _rpe_confidence(6.0)
+        assert c10 > c8 > c6
+
+    def test_min_floor(self):
+        assert _rpe_confidence(5.0) >= 0.2
+
+
+class TestBrzycki:
+    def test_known_value(self):
+        # At 1 rep, 1RM = weight
+        assert _brzycki_1rm(100, 1) == pytest.approx(100 * 36 / 36)
+
+    def test_high_reps_cap(self):
+        # At 37+ reps, use rough extrapolation
+        result = _brzycki_1rm(100, 40)
+        assert result == 250.0
+
+
+class TestMBounds:
+    def test_with_data(self):
+        weights = [100.0, 120.0, 140.0]
+        reps = [12.0, 8.0, 5.0]
+        lower, upper, M_prior = _estimate_M_bounds(weights, reps)
+        assert lower > max(weights)
+        assert upper > lower
+        assert M_prior > 0
+
+    def test_no_reps(self):
+        weights = [100.0, 120.0]
+        reps = [0.0, 0.0]  # no valid Brzycki estimates
+        lower, upper, M_prior = _estimate_M_bounds(weights, reps)
+        assert lower == 120.0 * 1.01
+        assert M_prior == 120.0 * 1.3
+
+
+class TestIdentifiability:
+    def test_few_obs_zero(self):
+        assert _identifiability_score([100], [10]) == 0.0
+
+    def test_varied_data_higher(self):
+        # Wide weight range + varied reps = high identifiability
+        s1 = _identifiability_score([50, 100, 150], [20, 10, 5])
+        # Narrow range
+        s2 = _identifiability_score([100, 102, 101], [10, 10, 10])
+        assert s1 > s2
+
+
+# ── Integration tests with DB ──
+
+
+def _make_exercise(session: Session, **kwargs) -> Exercise:
+    defaults = {
+        "name": f"Test Exercise {id(kwargs)}",
+        "allow_heavy_loading": True,
+        "load_input_mode": "external_weight",
+        "bodyweight_fraction": 0.0,
+        "external_load_multiplier": 1.0,
+    }
+    defaults.update(kwargs)
+    ex = Exercise(**defaults)
+    session.add(ex)
+    session.flush()
+    return ex
+
+
+def _make_session_and_sets(
+    session: Session,
+    exercise: Exercise,
+    sets_data: list[dict],
+    session_date: date | None = None,
+) -> WorkoutSession:
+    ws = WorkoutSession(date=session_date or date.today())
+    session.add(ws)
+    session.flush()
+    for i, sd in enumerate(sets_data):
+        wset = WorkoutSet(
+            session_id=ws.id,
+            exercise_id=exercise.id,
+            set_order=i + 1,
+            reps=sd.get("reps"),
+            weight=sd.get("weight"),
+            rpe=sd.get("rpe"),
+        )
+        session.add(wset)
+    session.flush()
+    return ws
+
+
+class TestFitCurve:
+    def test_nonexistent_exercise(self, session):
+        result = fit_curve(99999, session)
+        assert result is None
+
+    def test_bodyweight_exercise_returns_none(self, session):
+        ex = _make_exercise(session, name="BW Test", load_input_mode="bodyweight")
+        result = fit_curve(ex.id, session)
+        assert result is None
+
+    def test_insufficient_data_returns_none(self, session):
+        ex = _make_exercise(session, name="Sparse Test")
+        # Only 2 sets (< MIN_SETS_TIER2=3)
+        _make_session_and_sets(session, ex, [
+            {"reps": 10, "weight": 100, "rpe": 8.0},
+            {"reps": 8, "weight": 120, "rpe": 8.0},
+        ])
+        result = fit_curve(ex.id, session)
+        assert result is None
+
+    def test_sufficient_data_fits(self, session):
+        ex = _make_exercise(session, name="Good Data Test")
+        # 6 sets at varied weights — should qualify for tier1
+        sets_data = [
+            {"reps": 15, "weight": 80, "rpe": 7.0},
+            {"reps": 12, "weight": 100, "rpe": 7.0},
+            {"reps": 10, "weight": 120, "rpe": 8.0},
+            {"reps": 8, "weight": 130, "rpe": 8.0},
+            {"reps": 6, "weight": 150, "rpe": 9.0},
+            {"reps": 4, "weight": 160, "rpe": 9.0},
+        ]
+        _make_session_and_sets(session, ex, sets_data)
+        result = fit_curve(ex.id, session)
+
+        assert result is not None
+        assert result.M > 160  # M should exceed max weight
+        assert result.k > 0
+        assert result.gamma > 0
+        assert result.n_obs == 6
+        assert result.rmse < 10  # reasonable fit
+        assert result.fit_tier == "tier1"
+
+    def test_tier2_with_single_weight(self, session):
+        ex = _make_exercise(session, name="Single Weight Test")
+        # 4 sets at same weight — tier2 (< 2 distinct weights)
+        sets_data = [
+            {"reps": 10, "weight": 100, "rpe": 7.0},
+            {"reps": 9, "weight": 100, "rpe": 8.0},
+            {"reps": 8, "weight": 100, "rpe": 8.0},
+            {"reps": 7, "weight": 100, "rpe": 9.0},
+        ]
+        _make_session_and_sets(session, ex, sets_data)
+        result = fit_curve(ex.id, session)
+
+        assert result is not None
+        assert result.fit_tier == "tier2"
+        assert result.gamma == DEFAULT_GAMMA
+
+    def test_old_data_excluded(self, session):
+        ex = _make_exercise(session, name="Old Data Test")
+        # Sets from 60 days ago — outside 30-day window
+        old_date = date.today() - timedelta(days=60)
+        _make_session_and_sets(session, ex, [
+            {"reps": 10, "weight": 100, "rpe": 8.0},
+            {"reps": 8, "weight": 120, "rpe": 8.0},
+            {"reps": 6, "weight": 140, "rpe": 9.0},
+        ], session_date=old_date)
+        result = fit_curve(ex.id, session)
+        assert result is None  # all data too old
+
+    def test_no_rpe_excluded(self, session):
+        ex = _make_exercise(session, name="No RPE Test")
+        _make_session_and_sets(session, ex, [
+            {"reps": 10, "weight": 100, "rpe": None},
+            {"reps": 8, "weight": 120, "rpe": None},
+            {"reps": 6, "weight": 140, "rpe": None},
+        ])
+        result = fit_curve(ex.id, session)
+        assert result is None  # no RPE = no data
+
+
+class TestPlanProgressiveSets:
+    def _make_fit(self) -> CurveFit:
+        return CurveFit(M=200, k=15, gamma=0.5, n_obs=20, rmse=1.0,
+                         max_observed_weight=180, fit_tier="tier1")
+
+    def test_heavy_scheme_three_sets(self):
+        fit = self._make_fit()
+        ex = Exercise(name="Bench", allow_heavy_loading=True,
+                      load_input_mode="external_weight",
+                      bodyweight_fraction=0.0, external_load_multiplier=1.0)
+        prescriptions = plan_progressive_sets(fit, ex, bodyweight_lb=180)
+        assert len(prescriptions) == 3
+
+        # Weight should increase across sets
+        assert prescriptions[0].effective_weight < prescriptions[1].effective_weight
+        assert prescriptions[1].effective_weight < prescriptions[2].effective_weight
+
+        # RPE should increase
+        assert prescriptions[0].target_rpe < prescriptions[1].target_rpe
+        assert prescriptions[1].target_rpe < prescriptions[2].target_rpe
+
+    def test_light_scheme_three_sets(self):
+        fit = self._make_fit()
+        ex = Exercise(name="Lateral Raise", allow_heavy_loading=False,
+                      load_input_mode="external_weight",
+                      bodyweight_fraction=0.0, external_load_multiplier=1.0)
+        prescriptions = plan_progressive_sets(fit, ex, bodyweight_lb=180)
+        assert len(prescriptions) == 3
+        # Light scheme: higher reps overall
+        assert prescriptions[0].target_reps > prescriptions[2].target_reps
+
+    def test_max_weight_clipping(self):
+        fit = self._make_fit()
+        ex = Exercise(name="Machine Press", allow_heavy_loading=True,
+                      load_input_mode="external_weight",
+                      bodyweight_fraction=0.0, external_load_multiplier=1.0)
+        prescriptions = plan_progressive_sets(fit, ex, bodyweight_lb=180,
+                                              max_entered_weight=150)
+        # The heaviest set shouldn't exceed 150 entered weight
+        for p in prescriptions:
+            if p.entered_weight is not None:
+                assert p.entered_weight <= 150
+
+    def test_entered_weight_is_set(self):
+        fit = self._make_fit()
+        ex = Exercise(name="Cable Fly", allow_heavy_loading=False,
+                      load_input_mode="external_weight",
+                      bodyweight_fraction=0.0, external_load_multiplier=1.0)
+        prescriptions = plan_progressive_sets(fit, ex, bodyweight_lb=180)
+        for p in prescriptions:
+            assert p.entered_weight is not None
+            assert p.entered_weight > 0
+
+
+class TestAdjustPrescription:
+    def test_adjust_recalculates(self):
+        fit = CurveFit(M=200, k=15, gamma=0.5, n_obs=20, rmse=1.0,
+                        max_observed_weight=180, fit_tier="tier1")
+        ex = Exercise(name="Bench", allow_heavy_loading=True,
+                      load_input_mode="external_weight",
+                      bodyweight_fraction=0.0, external_load_multiplier=1.0)
+
+        p = adjust_prescription(fit, ex, actual_entered_weight=130,
+                                bodyweight_lb=180, set_number=1, allow_heavy=True)
+        assert p.set_number == 1
+        assert p.entered_weight == 130
+        assert p.target_reps > 0
+        assert p.target_rpe == 7.0  # set 1 heavy scheme
+
+
+class TestRefitWithObservations:
+    def test_refit_adds_observations(self, session):
+        ex = _make_exercise(session, name="Refit Test")
+        # Start with 4 sets
+        _make_session_and_sets(session, ex, [
+            {"reps": 12, "weight": 100, "rpe": 7.0},
+            {"reps": 10, "weight": 100, "rpe": 8.0},
+            {"reps": 8, "weight": 120, "rpe": 8.0},
+            {"reps": 6, "weight": 140, "rpe": 9.0},
+        ])
+
+        # Fit without new obs
+        fit1 = fit_curve(ex.id, session)
+        assert fit1 is not None
+
+        # Refit with a new strong observation
+        fit2 = refit_with_observations(ex.id, session, [
+            {"weight": 150, "reps": 5, "rpe": 9.0},
+        ])
+        assert fit2 is not None
+        assert fit2.n_obs == 5  # 4 original + 1 new
+
+
+class TestEnteredToEffective:
+    def test_external_weight(self):
+        ex = Exercise(name="T", load_input_mode="external_weight",
+                      external_load_multiplier=1.0, bodyweight_fraction=0.0)
+        assert _entered_to_effective(ex, 100.0, 180.0) == 100.0
+
+    def test_mixed_mode(self):
+        ex = Exercise(name="T", load_input_mode="mixed",
+                      external_load_multiplier=1.0, bodyweight_fraction=0.5)
+        # effective = entered + bw_component
+        assert _entered_to_effective(ex, 50.0, 180.0) == 50.0 + 90.0
+
+    def test_assisted_bodyweight(self):
+        ex = Exercise(name="T", load_input_mode="assisted_bodyweight",
+                      external_load_multiplier=1.0, bodyweight_fraction=0.8)
+        # effective = bw_component - entered
+        assert _entered_to_effective(ex, 30.0, 180.0) == 180 * 0.8 - 30.0
+
+    def test_multiplier(self):
+        ex = Exercise(name="T", load_input_mode="external_weight",
+                      external_load_multiplier=2.0, bodyweight_fraction=0.0)
+        assert _entered_to_effective(ex, 50.0, 180.0) == 100.0
+
+
+class TestGetExerciseFreshness:
+    def test_returns_list(self, session):
+        result = get_exercise_freshness(session)
+        assert isinstance(result, list)
+        if result:
+            item = result[0]
+            assert "exercise_id" in item
+            assert "days_since_trained" in item
+            assert "has_curve_fit" in item
+
+
+class TestGetBodyweightSuggestion:
+    def test_with_no_data(self, session):
+        ex = _make_exercise(session, name="BW Suggest Test",
+                            load_input_mode="bodyweight")
+        result = get_bodyweight_suggestion(ex.id, session)
+        assert result["sets"] == 3
+        assert result["reps_per_set"] == 15  # default
+
+    def test_with_data(self, session):
+        ex = _make_exercise(session, name="BW Data Test",
+                            load_input_mode="bodyweight")
+        _make_session_and_sets(session, ex, [
+            {"reps": 20, "weight": None, "rpe": 7.0},
+            {"reps": 18, "weight": None, "rpe": 8.0},
+            {"reps": 22, "weight": None, "rpe": 7.0},
+        ])
+        result = get_bodyweight_suggestion(ex.id, session)
+        assert result["sets"] == 3
+        assert result["reps_per_set"] == 20  # median of [20, 18, 22]
+
+
+# ── API endpoint tests ──
+
+
+def _seed_exercise_with_sets(session, client_session=None):
+    """Helper: create an exercise with enough RPE data for curve fitting."""
+    ex = Exercise(
+        name="API Test Bench",
+        allow_heavy_loading=True,
+        load_input_mode="external_weight",
+        bodyweight_fraction=0.0,
+        external_load_multiplier=1.0,
+    )
+    session.add(ex)
+    session.flush()
+
+    ws = WorkoutSession(date=date.today())
+    session.add(ws)
+    session.flush()
+
+    for reps, weight, rpe in [
+        (15, 80, 7.0), (12, 100, 7.0), (10, 120, 8.0),
+        (8, 130, 8.0), (6, 150, 9.0), (4, 160, 9.0),
+    ]:
+        session.add(WorkoutSet(
+            session_id=ws.id, exercise_id=ex.id, set_order=1,
+            reps=reps, weight=weight, rpe=rpe,
+        ))
+    session.flush()
+    return ex
+
+
+class TestExerciseMenuEndpoint:
+    def test_returns_list(self, client, session):
+        _seed_exercise_with_sets(session)
+        resp = client.get("/api/planner/exercise-menu")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, list)
+        assert len(data) >= 1
+        item = data[0]
+        assert "exercise_id" in item
+        assert "has_curve_fit" in item
+
+
+class TestPrescribeEndpoint:
+    def test_prescribe_set_1(self, client, session):
+        ex = _seed_exercise_with_sets(session)
+        resp = client.post("/api/planner/prescribe", json={
+            "exercise_id": ex.id,
+            "set_number": 1,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["has_curve"] is True
+        assert data["set"]["set_number"] == 1
+        assert data["set"]["proposed_weight"] > 0
+        assert data["set"]["target_reps"] > 0
+
+    def test_prescribe_with_weight_override(self, client, session):
+        ex = _seed_exercise_with_sets(session)
+        resp = client.post("/api/planner/prescribe", json={
+            "exercise_id": ex.id,
+            "set_number": 1,
+            "actual_weight": 100.0,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["set"]["proposed_weight"] == 100.0
+
+    def test_prescribe_with_prior_sets(self, client, session):
+        ex = _seed_exercise_with_sets(session)
+        resp = client.post("/api/planner/prescribe", json={
+            "exercise_id": ex.id,
+            "set_number": 2,
+            "prior_sets": [{"weight": 90, "reps": 14, "rpe": 7.0}],
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["has_curve"] is True
+
+    def test_prescribe_no_data_exercise(self, client, session):
+        ex = Exercise(name="No Data", load_input_mode="external_weight")
+        session.add(ex)
+        session.flush()
+        resp = client.post("/api/planner/prescribe", json={
+            "exercise_id": ex.id,
+            "set_number": 1,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["has_curve"] is False
+
+    def test_prescribe_nonexistent_exercise(self, client):
+        resp = client.post("/api/planner/prescribe", json={
+            "exercise_id": 99999,
+            "set_number": 1,
+        })
+        assert resp.status_code == 404
+
+
+class TestPrescribeAllEndpoint:
+    def test_prescribe_all(self, client, session):
+        ex = _seed_exercise_with_sets(session)
+        resp = client.post("/api/planner/prescribe-all", json={
+            "exercise_id": ex.id,
+            "set_number": 1,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["has_curve"] is True
+        assert len(data["sets"]) == 3
+        # Weights should ascend
+        assert data["sets"][0]["proposed_weight"] < data["sets"][2]["proposed_weight"]
