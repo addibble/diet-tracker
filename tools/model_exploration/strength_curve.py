@@ -90,11 +90,11 @@ def build_observations(
     bw_history: dict[str, float],
     rpe_only: bool = True,
     exclude_bodyweight: bool = True,
-    min_rpe_sets: int = 12,
+    min_rpe_sets: int = 3,
 ) -> dict[int, list[Observation]]:
     """Build observations from workout sets.
 
-    Default mode: RPE-only sets from non-bodyweight exercises with >=12 RPE sets.
+    Default mode: RPE-only sets from non-bodyweight exercises with >=3 RPE sets.
     Each individual set is its own observation (no per-session aggregation).
     Confidence is based on RPE proximity to failure.
     """
@@ -362,7 +362,7 @@ def _fit_full(
     best_loss = float("inf")
 
     for M_init_factor in [1.1, 1.3, 1.5, 2.0]:
-        for gamma_init in [0.5, 1.0, 1.5]:
+        for gamma_init in [0.15, 0.5, 1.0]:
             M_init = np.clip(max_W * M_init_factor, M_lower, M_upper)
             k_init = float(np.median(r))
 
@@ -375,7 +375,7 @@ def _fit_full(
                     bounds=[
                         (M_lower, M_upper),    # M bounded by Brzycki estimates
                         (0.5, 200.0),           # k > 0
-                        (0.1, 3.0),             # gamma
+                        (0.05, 3.0),            # gamma
                     ],
                 )
                 if res.fun < best_loss:
@@ -533,10 +533,10 @@ def compute_class_priors(results: list[CurveFitResult]) -> dict[str, dict]:
 
 
 def run_batch_fitting(db_path=None, tier_assignments=None,
-                      rpe_only=True, exclude_bodyweight=True, min_rpe_sets=12):
+                      rpe_only=True, exclude_bodyweight=True, min_rpe_sets=3):
     """Run curve fitting across qualifying exercises.
 
-    Default: RPE-only sets, non-bodyweight, >=12 RPE sets per exercise.
+    Default: RPE-only sets, non-bodyweight, >=3 RPE sets per exercise.
     All individual sets used (not first-per-session).
     """
     conn = get_connection(db_path)
@@ -554,7 +554,7 @@ def run_batch_fitting(db_path=None, tier_assignments=None,
     def _assign_tier(obs_list):
         rpe_obs = [o for o in obs_list if o.observation_type == "rpe"]
         distinct_w = len(set(round(o.effective_weight, 1) for o in rpe_obs))
-        if len(rpe_obs) >= 8 and distinct_w >= 2:
+        if len(rpe_obs) >= 5 and distinct_w >= 2:
             return "tier1"
         return "tier2"
 
@@ -583,14 +583,15 @@ def run_batch_fitting(db_path=None, tier_assignments=None,
     global_k = float(np.median([r.k for r in tier1_results if r.success])) if tier1_results else 10.0
     print(f"\n  Class priors from Tier 1: gamma_median={global_gamma:.2f}, k_median={global_k:.1f}")
 
-    # Phase 2: Fit Tier 2 with fixed gamma
+    # Phase 2: Fit Tier 2 with fixed gamma (matching production DEFAULT_GAMMA=0.20)
+    fixed_tier2_gamma = 0.20
     tier2_results = []
-    print("\n-- Tier 2: 2-parameter fit (M, k) with gamma fixed --")
+    print(f"\n-- Tier 2: 2-parameter fit (M, k) with gamma={fixed_tier2_gamma:.2f} (fixed) --")
     for ex_id, obs in sorted(obs_by_ex.items(), key=lambda x: len(x[1]), reverse=True):
         tier = _assign_tier(obs)
         if tier != "tier2":
             continue
-        result = fit_single_exercise(obs, tier="tier2", fixed_gamma=global_gamma)
+        result = fit_single_exercise(obs, tier="tier2", fixed_gamma=fixed_tier2_gamma)
         tier2_results.append(result)
         status = "v" if result.success else "x"
         print(f"  {status} {result.exercise_name:<40} M={result.M:>7.1f}(brz={result.brzycki_M:.0f})  "
