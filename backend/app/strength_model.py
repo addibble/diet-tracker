@@ -25,8 +25,15 @@ from app.models import Exercise, WeightLog, WorkoutSession, WorkoutSet
 
 BODYWEIGHT_MODES = {"bodyweight", "assisted_bodyweight"}
 
-# Default class prior for gamma from Stage A RPE-only fitting
-DEFAULT_GAMMA = 0.20
+# Default class prior for gamma — aligned with Brzycki curve shape (~1.0)
+DEFAULT_GAMMA = 1.0
+
+# Gamma regularization: penalizes deviation from Brzycki-expected shape
+GAMMA_PRIOR = 1.0
+GAMMA_REG_LAMBDA = 3.0  # per-observation strength (scaled by mean fit_weight)
+
+# Session refit: same-day observations get boosted to this share of total weight
+SESSION_TARGET_SHARE = 0.70
 
 # Minimum qualifying sets for curve fitting
 MIN_SETS_TIER1 = 5  # full 3-param (M, k, gamma)
@@ -193,7 +200,7 @@ def _curve_loss(
     M_prior: float,
     lambda_M: float,
 ) -> float:
-    """Weighted least squares loss with log-space Brzycki prior on M."""
+    """Weighted least squares loss with Brzycki prior on M and gamma."""
     if fixed_gamma is not None:
         M, k = params
         gamma = fixed_gamma
@@ -204,11 +211,18 @@ def _curve_loss(
     residuals = r - predicted
     data_loss = float(np.sum(fit_weights * residuals**2))
 
-    reg_term = 0.0
-    if M_prior > 0 and lambda_M > 0:
-        reg_term = lambda_M * math.log(M / M_prior) ** 2
+    # Regularization scaled by average observation weight for consistency
+    avg_fw = float(np.mean(fit_weights)) if len(fit_weights) > 0 else 1.0
 
-    return data_loss + reg_term
+    reg_M = 0.0
+    if M_prior > 0 and lambda_M > 0:
+        reg_M = lambda_M * avg_fw * math.log(M / M_prior) ** 2
+
+    reg_gamma = 0.0
+    if fixed_gamma is None and GAMMA_REG_LAMBDA > 0 and gamma > 0:
+        reg_gamma = GAMMA_REG_LAMBDA * avg_fw * math.log(gamma / GAMMA_PRIOR) ** 2
+
+    return data_loss + reg_M + reg_gamma
 
 
 def _fit_params(
@@ -226,7 +240,7 @@ def _fit_params(
     best_result = None
     best_loss = float("inf")
 
-    gamma_inits = [0.15, 0.5, 1.0] if fixed_gamma is None else [None]
+    gamma_inits = [0.15, 0.5, 1.0, 1.5] if fixed_gamma is None else [None]
     M_factors = [1.1, 1.3, 1.5, 2.0]
 
     for M_factor in M_factors:
@@ -239,7 +253,7 @@ def _fit_params(
                 bounds = [(M_lower, M_upper), (0.5, 200.0)]
             else:
                 x0 = [M_init, k_init, g_init]
-                bounds = [(M_lower, M_upper), (0.5, 200.0), (0.05, 3.0)]
+                bounds = [(M_lower, M_upper), (0.5, 200.0), (0.15, 2.5)]
 
             try:
                 res = minimize(
@@ -531,6 +545,19 @@ def refit_with_observations(
     conf = np.array(confidences)
     recency = _recency_weights(ages_days)
     fit_w = conf * recency
+
+    # Session boost: scale same-day weights so they contribute TARGET share
+    n_session = sum(1 for obs in new_obs
+                    if obs.get("rpe") is not None and obs.get("reps") is not None)
+    n_prior = n_obs - n_session
+    if n_session > 0 and n_prior > 0:
+        prior_total = float(np.sum(fit_w[:n_prior]))
+        session_total = float(np.sum(fit_w[n_prior:]))
+        if session_total > 0 and prior_total > 0:
+            target = SESSION_TARGET_SHARE
+            boost = (target * prior_total) / ((1 - target) * session_total)
+            boost = max(1.0, min(boost, 100.0))
+            fit_w[n_prior:] *= boost
 
     distinct_w = len(set(round(w, 1) for w in eff_weights))
     tier = "tier1" if n_obs >= MIN_SETS_TIER1 and distinct_w >= MIN_DISTINCT_WEIGHTS_TIER1 else "tier2"
