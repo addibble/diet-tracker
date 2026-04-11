@@ -11,10 +11,12 @@ import {
   getExercises,
   getTrackedTissueReadiness,
   getWorkoutSession,
+  prescribeAllSets,
   removePlanExercise,
   reorderPlanExercises,
   updateProgramDayExercise,
   updateWorkoutSet,
+  type PrescribedSet,
   type SavedPlanExercise,
   type TrackedTissueReadiness,
   type WkExercise,
@@ -77,6 +79,9 @@ type ExerciseGroup = {
   target_sets?: number
   target_reps?: string
   target_weight?: number | null
+  // Strength curve prescription
+  prescribedSets?: PrescribedSet[]
+  prescriptionLoading?: boolean
 }
 
 type SetSide = 'left' | 'right' | 'center' | 'bilateral' | null
@@ -528,6 +533,11 @@ function LogEditor({
   const [trackedReadiness, setTrackedReadiness] = useState<TrackedTissueReadiness[]>([])
   const [loading, setLoading] = useState(!prefetchedSession)
   const [showAddExercise, setShowAddExercise] = useState(false)
+  const [rxMap, setRxMap] = useState<Map<number, PrescribedSet[]>>(new Map())
+  const rxLoadingRef = useRef<Set<number>>(new Set())
+  const [rxLoadingTick, setRxLoadingTick] = useState(0)
+  // Track which sets have had their completed_at set (for refit triggering)
+  const prevCompletedRef = useRef<Set<number>>(new Set())
 
   // Load session data if not prefetched
   useEffect(() => {
@@ -582,6 +592,89 @@ function LogEditor({
       }
     })
   }, [session, exerciseLookup])
+
+  // Fetch initial prescriptions for each exercise group
+  const fetchedExercisesRef = useRef<Set<number>>(new Set())
+  useEffect(() => {
+    for (const g of groups) {
+      if (fetchedExercisesRef.current.has(g.exercise_id)) continue
+      if (g.load_input_mode === 'bodyweight') continue
+      fetchedExercisesRef.current.add(g.exercise_id)
+
+      const completedSets = g.sets
+        .filter(s => s.completed_at && s.reps != null && s.weight != null && s.rpe != null)
+        .map(s => ({ weight: s.weight!, reps: s.reps!, rpe: s.rpe! }))
+      const setNumber = completedSets.length + 1
+
+      rxLoadingRef.current.add(g.exercise_id)
+      setRxLoadingTick(t => t + 1)
+      prescribeAllSets({
+        exercise_id: g.exercise_id,
+        set_number: setNumber,
+        prior_sets: completedSets.length > 0 ? completedSets : undefined,
+      }).then(result => {
+        if (result.sets) {
+          setRxMap(prev => new Map(prev).set(g.exercise_id, result.sets!))
+        }
+      }).catch(() => {
+        // Prescription unavailable
+      }).finally(() => {
+        rxLoadingRef.current.delete(g.exercise_id)
+        setRxLoadingTick(t => t + 1)
+      })
+    }
+  }, [groups])
+
+  // Detect set completion and trigger refit
+  useEffect(() => {
+    if (!session) return
+    const currentCompleted = new Set(
+      session.sets
+        .filter(s => s.completed_at && s.reps != null && s.weight != null && s.rpe != null)
+        .map(s => s.id)
+    )
+    const prev = prevCompletedRef.current
+    const newlyCompleted = [...currentCompleted].filter(id => !prev.has(id))
+    prevCompletedRef.current = currentCompleted
+
+    if (newlyCompleted.length === 0) return
+
+    // Find which exercises had newly completed sets and refit
+    for (const setId of newlyCompleted) {
+      const completedSet = session.sets.find(s => s.id === setId)
+      if (!completedSet) continue
+      const eid = completedSet.exercise_id
+
+      // Build prior_sets from all completed sets for this exercise
+      const priorSets = session.sets
+        .filter(s => s.exercise_id === eid && s.completed_at && s.reps != null && s.weight != null && s.rpe != null)
+        .map(s => ({ weight: s.weight!, reps: s.reps!, rpe: s.rpe! }))
+
+      const setNumber = priorSets.length + 1
+      if (setNumber > 3) continue // Already done all sets
+
+      prescribeAllSets({
+        exercise_id: eid,
+        set_number: setNumber,
+        prior_sets: priorSets,
+      }).then(result => {
+        if (result.sets) {
+          setRxMap(prev => new Map(prev).set(eid, result.sets!))
+        }
+      }).catch(() => {})
+    }
+  }, [session])
+
+  // Enrich groups with prescriptions
+  const enrichedGroups: ExerciseGroup[] = useMemo(() =>
+    groups.map(g => ({
+      ...g,
+      prescribedSets: rxMap.get(g.exercise_id),
+      prescriptionLoading: rxLoadingRef.current.has(g.exercise_id),
+    })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [groups, rxMap, rxLoadingTick],
+  )
 
   const refreshSession = useCallback(async () => {
     if (!session) return
@@ -721,13 +814,13 @@ function LogEditor({
 
   return (
     <div className={`space-y-2 ${compact ? 'text-xs' : 'text-sm'}`}>
-      {groups.length === 0 && (
+      {enrichedGroups.length === 0 && (
         <p className="text-xs text-gray-400 italic text-center py-1">
           No sets logged yet
         </p>
       )}
 
-      {groups.map((g) => (
+      {enrichedGroups.map((g) => (
         <LogExerciseGroup
           key={g.exercise_id}
           group={g}
@@ -744,7 +837,7 @@ function LogEditor({
       {showAddExercise ? (
         <ExercisePicker
           exercises={exerciseCache}
-          existingIds={new Set(groups.map((g) => g.exercise_id))}
+          existingIds={new Set(enrichedGroups.map((g) => g.exercise_id))}
           onSelect={handleAddExercise}
           onCancel={() => setShowAddExercise(false)}
         />
@@ -821,6 +914,38 @@ function LogExerciseGroup({
       {schemeHistorySummary && (
         <div className="px-2.5 py-1 text-[10px] text-gray-500 border-b border-gray-100">
           Recent: {schemeHistorySummary}
+        </div>
+      )}
+
+      {/* Strength curve prescription banner */}
+      {group.prescriptionLoading && (
+        <div className="px-2.5 py-1.5 border-b border-gray-100 text-[10px] text-gray-400 italic">
+          Loading prescription...
+        </div>
+      )}
+      {group.prescribedSets && group.prescribedSets.length > 0 && !group.prescriptionLoading && (
+        <div className="px-2.5 py-1.5 border-b border-indigo-100 bg-indigo-50/50">
+          <div className="flex flex-wrap gap-2">
+            {group.prescribedSets.map(rx => {
+              const completed = group.sets[rx.set_number - 1]?.completed_at
+              return (
+                <div
+                  key={rx.set_number}
+                  className={`rounded-md px-2 py-0.5 text-[10px] ${
+                    completed
+                      ? 'bg-emerald-100 text-emerald-700 line-through'
+                      : 'bg-indigo-100 text-indigo-700'
+                  }`}
+                >
+                  <span className="font-medium">Set {rx.set_number}:</span>{' '}
+                  {rx.proposed_weight != null
+                    ? `${Math.round(rx.proposed_weight)} lb × ~${rx.target_reps} @ RPE ${rx.target_rpe}`
+                    : `~${rx.target_reps} reps @ RPE ${rx.target_rpe}`}
+                  <span className="ml-1 opacity-60">({rx.acceptable_rep_min}–{rx.acceptable_rep_max})</span>
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
 

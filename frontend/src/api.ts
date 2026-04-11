@@ -1457,6 +1457,82 @@ export interface SavedPlanExercise {
   done: boolean;
 }
 
+// ── Strength-curve prescription ──
+
+export interface ExerciseMenuItem {
+  exercise_id: number;
+  name: string;
+  days_since_trained: number | null;
+  allow_heavy_loading: boolean;
+  load_input_mode: string;
+  is_bodyweight: boolean;
+  recent_rpe_sets: number;
+  has_curve_fit: boolean;
+}
+
+export interface PrescribedSet {
+  set_number: number;
+  proposed_weight: number | null;
+  effective_weight: number;
+  target_reps: number;
+  target_rpe: number;
+  r_fail: number;
+  acceptable_rep_min: number;
+  acceptable_rep_max: number;
+}
+
+export interface PrescribeResponse {
+  has_curve: boolean;
+  fit_tier?: string;
+  fit_quality?: number;
+  n_obs?: number;
+  set?: PrescribedSet;
+  all_sets?: PrescribedSet[];
+  // Fallback when no curve
+  fallback_weight?: number | null;
+  message?: string;
+  // Bodyweight
+  is_bodyweight?: boolean;
+  suggestion?: { sets: number; reps_per_set: number; notes: string };
+}
+
+export interface PrescribeAllResponse {
+  has_curve: boolean;
+  fit_tier?: string;
+  fit_quality?: number;
+  n_obs?: number;
+  sets?: PrescribedSet[];
+  // Fallback
+  fallback_weight?: number | null;
+  message?: string;
+  is_bodyweight?: boolean;
+  suggestion?: { sets: number; reps_per_set: number; notes: string };
+}
+
+export const getExerciseMenu = () =>
+  request<ExerciseMenuItem[]>('/planner/exercise-menu');
+
+export const prescribeSet = (data: {
+  exercise_id: number;
+  set_number: number;
+  actual_weight?: number | null;
+  prior_sets?: { weight: number; reps: number; rpe: number }[];
+}) =>
+  request<PrescribeResponse>('/planner/prescribe', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+
+export const prescribeAllSets = (data: {
+  exercise_id: number;
+  set_number: number;
+  prior_sets?: { weight: number; reps: number; rpe: number }[];
+}) =>
+  request<PrescribeAllResponse>('/planner/prescribe-all', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+
 // Chat-based meal logging
 export interface ChatMessage {
   role: 'user' | 'assistant';
