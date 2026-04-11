@@ -38,6 +38,7 @@ class SetUpdate(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     rpe: float | None = None
+    rir: float | None = None  # converted to rpe = 10 - rir
     rep_completion: str | None = None
     notes: str | None = None
     tissue_feedback: list[SetTissueFeedbackInput] | None = None
@@ -54,6 +55,7 @@ class SetCreate(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     rpe: float | None = None
+    rir: float | None = None  # converted to rpe = 10 - rir
     rep_completion: str | None = None
     notes: str | None = None
     tissue_feedback: list[SetTissueFeedbackInput] | None = None
@@ -79,6 +81,15 @@ class ProgramDayExerciseUpdate(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _rir_to_rpe(updates: dict, rir_field: str = "rir") -> dict:
+    """Convert RIR to RPE (rpe = 10 - rir) if rir provided."""
+    if rir_field in updates and updates[rir_field] is not None:
+        updates["rpe"] = 10.0 - updates.pop(rir_field)
+    else:
+        updates.pop(rir_field, None)
+    return updates
 
 
 def _set_response(s: WorkoutSet, session: Session) -> dict:
@@ -201,6 +212,7 @@ def update_set(
         else None
     )
     updates = data.model_dump(exclude_unset=True, exclude={"tissue_feedback"})
+    _rir_to_rpe(updates)
     if "performed_side" in updates and exercise:
         updates["performed_side"] = default_performed_side(
             exercise_name=exercise.name,
@@ -251,6 +263,19 @@ def add_set(
         ).first()
         set_order = (max_order or 0) + 1
 
+    # Convert RIR → RPE and auto-timestamp
+    rpe_val = data.rpe
+    if data.rir is not None:
+        rpe_val = 10.0 - data.rir
+    completed_at = data.completed_at
+    if completed_at is None and any([
+        data.reps is not None, data.weight is not None,
+        data.duration_secs is not None, data.distance_steps is not None,
+        rpe_val is not None,
+    ]):
+        completed_at = datetime.now(UTC)
+    started_at = data.started_at or completed_at
+
     new_set = WorkoutSet(
         session_id=session_id,
         exercise_id=data.exercise_id,
@@ -264,9 +289,9 @@ def add_set(
         weight=data.weight,
         duration_secs=data.duration_secs,
         distance_steps=data.distance_steps,
-        started_at=data.started_at,
-        completed_at=data.completed_at,
-        rpe=data.rpe,
+        started_at=started_at,
+        completed_at=completed_at,
+        rpe=rpe_val,
         rep_completion=data.rep_completion,
         notes=data.notes,
     )

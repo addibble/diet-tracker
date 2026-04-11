@@ -1148,6 +1148,7 @@ export interface WorkoutSetUpdateInput {
   started_at?: string | null;
   completed_at?: string | null;
   rpe?: number | null;
+  rir?: number | null;
   rep_completion?: string | null;
   notes?: string | null;
   tissue_feedback?: WkSetTissueFeedbackInput[];
@@ -1531,6 +1532,63 @@ export const prescribeAllSets = (data: {
   request<PrescribeAllResponse>('/planner/prescribe-all', {
     method: 'POST',
     body: JSON.stringify(data),
+  });
+
+// ── Prescribe-next (set-by-set guidance) ──
+
+export interface PrescribeNextRequest {
+  exercise_id: number;
+  prior_sets: { weight: number; reps: number; rpe: number }[];
+  actual_weight?: number | null;
+}
+
+export interface PrescribeNextResponse {
+  has_curve: boolean;
+  fit_tier?: string;
+  n_obs?: number;
+  exercise_complete?: boolean;
+  inflection_detected?: boolean | null;
+  estimated_1rm?: number | null;
+  next_set?: {
+    set_number: number;
+    proposed_weight: number | null;
+    effective_weight: number;
+    target_reps: number;
+    target_rpe: number;
+    target_rir: number;
+    r_fail: number;
+    acceptable_rep_min: number;
+    acceptable_rep_max: number;
+  } | null;
+  // Fallback / bodyweight
+  fallback_weight?: number | null;
+  message?: string;
+  is_bodyweight?: boolean;
+  suggestion?: { sets: number; reps_per_set: number; notes: string };
+}
+
+export const prescribeNext = (data: PrescribeNextRequest) =>
+  request<PrescribeNextResponse>('/planner/prescribe-next', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+
+// ── Quick-start (skip plan flow) ──
+
+export interface QuickStartResponse {
+  workout_session_id: number;
+  exercise_ids: number[];
+  exercise_names: string[];
+  date: string;
+}
+
+export const quickStart = (exerciseIds: number[], date?: string) =>
+  request<QuickStartResponse>('/planner/quick-start', {
+    method: 'POST',
+    body: JSON.stringify({
+      exercise_ids: exerciseIds,
+      ...(date ? { date } : {}),
+    }),
   });
 
 // Chat-based meal logging

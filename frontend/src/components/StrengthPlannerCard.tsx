@@ -1,14 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   getExerciseMenu,
-  prescribeAllSets,
   type ExerciseMenuItem,
-  type PrescribeAllResponse,
 } from '../api'
 
 interface StrengthPlannerCardProps {
-  onSave: (exercises: SelectedExercise[]) => void
-  collapseWhenPlanned: boolean
+  onStart: (exerciseIds: number[], exercises: ExerciseMenuItem[]) => void
+  disabled?: boolean
 }
 
 export interface SelectedExercise {
@@ -17,20 +15,17 @@ export interface SelectedExercise {
   allow_heavy_loading: boolean
   is_bodyweight: boolean
   load_input_mode: string
-  prescription?: PrescribeAllResponse
 }
 
 export default function StrengthPlannerCard({
-  onSave,
-  collapseWhenPlanned,
+  onStart,
+  disabled,
 }: StrengthPlannerCardProps) {
   const [menu, setMenu] = useState<ExerciseMenuItem[]>([])
   const [loading, setLoading] = useState(true)
   const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set())
-  const [expanded, setExpanded] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [prescriptions, setPrescriptions] = useState<Map<number, PrescribeAllResponse>>(new Map())
-  const [loadingPrescriptions, setLoadingPrescriptions] = useState<Set<number>>(new Set())
+  const [expanded, setExpanded] = useState(!disabled)
+  const [starting, setStarting] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -44,10 +39,6 @@ export default function StrengthPlannerCard({
     return () => { cancelled = true }
   }, [])
 
-  useEffect(() => {
-    if (collapseWhenPlanned) setExpanded(false)
-  }, [collapseWhenPlanned])
-
   const toggleExercise = (exerciseId: number) => {
     setCheckedIds(prev => {
       const next = new Set(prev)
@@ -55,48 +46,22 @@ export default function StrengthPlannerCard({
         next.delete(exerciseId)
       } else {
         next.add(exerciseId)
-        // Fetch prescription preview when selected
-        if (!prescriptions.has(exerciseId)) {
-          fetchPrescription(exerciseId)
-        }
       }
       return next
     })
   }
 
-  const fetchPrescription = async (exerciseId: number) => {
-    setLoadingPrescriptions(prev => new Set(prev).add(exerciseId))
-    try {
-      const result = await prescribeAllSets({ exercise_id: exerciseId, set_number: 1 })
-      setPrescriptions(prev => new Map(prev).set(exerciseId, result))
-    } catch {
-      // Prescription unavailable — not critical
-    } finally {
-      setLoadingPrescriptions(prev => {
-        const next = new Set(prev)
-        next.delete(exerciseId)
-        return next
-      })
-    }
-  }
-
   const weighted = useMemo(() => menu.filter(e => !e.is_bodyweight), [menu])
   const bodyweight = useMemo(() => menu.filter(e => e.is_bodyweight), [menu])
 
-  const handleSave = async () => {
-    setSaving(true)
-    const selected: SelectedExercise[] = menu
+  const handleStart = async () => {
+    setStarting(true)
+    const selectedIds = menu
       .filter(e => checkedIds.has(e.exercise_id))
-      .map(e => ({
-        exercise_id: e.exercise_id,
-        name: e.name,
-        allow_heavy_loading: e.allow_heavy_loading,
-        is_bodyweight: e.is_bodyweight,
-        load_input_mode: e.load_input_mode,
-        prescription: prescriptions.get(e.exercise_id),
-      }))
-    onSave(selected)
-    setSaving(false)
+      .map(e => e.exercise_id)
+    const selectedExercises = menu.filter(e => checkedIds.has(e.exercise_id))
+    onStart(selectedIds, selectedExercises)
+    setStarting(false)
   }
 
   if (loading) {
@@ -129,14 +94,14 @@ export default function StrengthPlannerCard({
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-sm font-semibold text-gray-900">Strength Planner</h3>
-            {collapseWhenPlanned && (
+            {disabled && (
               <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-700">
-                workout planned
+                workout active
               </span>
             )}
           </div>
           <p className="mt-0.5 text-xs text-gray-500">
-            Select exercises ordered by freshness. The curve model prescribes progressive sets.
+            Select exercises ordered by freshness. Set-by-set guidance during workout.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -155,8 +120,8 @@ export default function StrengthPlannerCard({
 
       {!expanded && (
         <div className="mt-3 text-xs text-gray-500">
-          {collapseWhenPlanned
-            ? 'Workout is planned. Re-open to adjust exercise selection.'
+          {disabled
+            ? 'Workout in progress. Expand to review exercise list.'
             : `${checkedIds.size} exercises selected. Expand to review.`}
         </div>
       )}
@@ -175,8 +140,6 @@ export default function StrengthPlannerCard({
                     item={ex}
                     checked={checkedIds.has(ex.exercise_id)}
                     onToggle={() => toggleExercise(ex.exercise_id)}
-                    prescription={prescriptions.get(ex.exercise_id)}
-                    loadingPrescription={loadingPrescriptions.has(ex.exercise_id)}
                   />
                 ))}
               </div>
@@ -217,13 +180,13 @@ export default function StrengthPlannerCard({
 
           <button
             type="button"
-            onClick={handleSave}
-            disabled={checkedIds.size === 0 || saving}
-            className="mt-3 w-full rounded-xl bg-gray-900 py-2 text-xs font-medium text-white transition-colors hover:bg-gray-800 disabled:opacity-40"
+            onClick={handleStart}
+            disabled={checkedIds.size === 0 || starting || disabled}
+            className="mt-3 w-full rounded-xl bg-gray-900 py-2.5 text-xs font-medium text-white transition-colors hover:bg-gray-800 disabled:opacity-40"
           >
-            {saving
-              ? 'Saving...'
-              : `Plan Workout (${checkedIds.size} exercise${checkedIds.size !== 1 ? 's' : ''})`}
+            {starting
+              ? 'Starting...'
+              : `Start Workout (${checkedIds.size} exercise${checkedIds.size !== 1 ? 's' : ''})`}
           </button>
         </>
       )}
@@ -235,14 +198,10 @@ function ExerciseMenuRow({
   item,
   checked,
   onToggle,
-  prescription,
-  loadingPrescription,
 }: {
   item: ExerciseMenuItem
   checked: boolean
   onToggle: () => void
-  prescription?: PrescribeAllResponse
-  loadingPrescription?: boolean
 }) {
   const freshnessColor = item.days_since_trained === null
     ? 'text-gray-400'
@@ -312,31 +271,6 @@ function ExerciseMenuRow({
               </span>
             )}
           </div>
-
-          {/* Prescription preview when checked */}
-          {checked && loadingPrescription && (
-            <div className="mt-1.5 text-[10px] text-gray-400 italic">Loading prescription...</div>
-          )}
-          {checked && prescription && !loadingPrescription && prescription.sets && (
-            <div className="mt-1.5 flex flex-wrap gap-2">
-              {prescription.sets.map(s => (
-                <span key={s.set_number} className="rounded-md bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600">
-                  Set {s.set_number}: {s.proposed_weight != null ? `${Math.round(s.proposed_weight)} lb` : '—'} × {s.target_reps} @ RPE {s.target_rpe}
-                </span>
-              ))}
-            </div>
-          )}
-          {checked && prescription && !loadingPrescription && prescription.is_bodyweight && prescription.suggestion && (
-            <div className="mt-1.5 text-[10px] text-gray-600">
-              {prescription.suggestion.sets} × {prescription.suggestion.reps_per_set} reps
-              {prescription.suggestion.notes && ` — ${prescription.suggestion.notes}`}
-            </div>
-          )}
-          {checked && prescription && !loadingPrescription && !prescription.has_curve && !prescription.is_bodyweight && prescription.fallback_weight != null && (
-            <div className="mt-1.5 text-[10px] text-amber-600">
-              No curve — last weight: {prescription.fallback_weight} lb
-            </div>
-          )}
         </div>
       </div>
     </button>

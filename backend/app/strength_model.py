@@ -59,7 +59,7 @@ class CurveFit:
 class SetPrescription:
     """Prescription for a single set in a progressive workout."""
 
-    set_number: int  # 1, 2, or 3
+    set_number: int
     effective_weight: float
     entered_weight: float | None  # what user types (None for bodyweight)
     target_reps: int  # reps to perform (after RIR subtraction)
@@ -67,6 +67,15 @@ class SetPrescription:
     r_fail: float  # predicted reps-to-failure at this weight
     acceptable_rep_min: int
     acceptable_rep_max: int
+
+
+@dataclass
+class InflectionResult:
+    """Result of checking whether the strength curve inflects downward."""
+
+    inflecting: bool  # True if 2nd derivative < 0 at max session weight
+    estimated_1rm: float | None  # M from the refit (if inflecting)
+    suggested_set4: SetPrescription | None  # only if not inflecting + heavy
 
 
 # ── Progressive set schemes ──
@@ -479,6 +488,238 @@ def adjust_prescription(
         acceptable_rep_min=max(1, expected_reps - 3),
         acceptable_rep_max=expected_reps + 3,
     )
+
+
+def detect_inflection(
+    fit: CurveFit,
+    session_sets: list[dict],
+    exercise: Exercise,
+    bodyweight_lb: float,
+    max_entered_weight: float | None = None,
+) -> InflectionResult:
+    """Check if the strength curve inflects downward at the heaviest session weight.
+
+    Requires 3+ session sets at different weights.
+    session_sets: [{"weight": float, "reps": int, "rpe": float}] (entered weights)
+
+    Uses the analytical second derivative of r_fresh(W) = k*(M/W - 1)^gamma:
+      d²r/dW² = k*gamma*M/W³ * (M/W - 1)^(gamma-2) * [(gamma+1)*M/W - (gamma-1)]
+    The sign depends on [(gamma+1)*M/W - (gamma-1)].
+    Inflecting (concave) when (gamma+1)*M/W < (gamma-1), i.e. W > M*(gamma+1)/(gamma-1).
+    For gamma < 1, (gamma-1) < 0 so inflection always present (always concave).
+    For gamma = 1, boundary at W = inf (linear) — never inflects.
+    For gamma > 1, inflection at W = M*(gamma+1)/(gamma-1).
+    """
+    if len(session_sets) < 3:
+        return InflectionResult(inflecting=False, estimated_1rm=None, suggested_set4=None)
+
+    # Find the heaviest effective weight from the session
+    max_ew = 0.0
+    for s in session_sets:
+        ew = _entered_to_effective(exercise, s["weight"], bodyweight_lb)
+        max_ew = max(max_ew, ew)
+
+    if max_ew <= 0:
+        return InflectionResult(inflecting=False, estimated_1rm=None, suggested_set4=None)
+
+    M, gamma = fit.M, fit.gamma
+
+    # Check if curve is concave (inflecting down) at max session weight
+    # For gamma < 1: always concave for W < M — inflecting
+    # For gamma >= 1: check the analytical condition
+    if gamma < 1.0:
+        inflecting = True
+    else:
+        # Inflection boundary at W_inflect = M*(gamma+1)/(gamma-1) for gamma > 1
+        if gamma <= 1.0 + 1e-9:
+            inflecting = False  # gamma ≈ 1 → linear, no inflection
+        else:
+            w_inflect = M * (gamma + 1) / (gamma - 1)
+            inflecting = max_ew > w_inflect * 0.85  # near or past inflection point
+
+    if inflecting:
+        return InflectionResult(
+            inflecting=True,
+            estimated_1rm=round(M, 1),
+            suggested_set4=None,
+        )
+
+    # Not inflecting — suggest set 4 for heavy exercises
+    if not exercise.allow_heavy_loading:
+        return InflectionResult(inflecting=False, estimated_1rm=None, suggested_set4=None)
+
+    # Target: half the reps of set 3, minimum 1 rep, RIR=1
+    last_set = session_sets[-1]
+    set3_reps = last_set["reps"]
+    target_actual = max(1, math.ceil(set3_reps / 2))
+    rir = 1
+    target_rpe = 10.0 - rir
+    target_r_fail = target_actual + rir
+
+    ew = solve_weight(target_r_fail, fit)
+    entered = entered_weight_for_effective_weight(
+        exercise, effective_weight_lb=ew, bodyweight_lb=bodyweight_lb
+    )
+
+    if entered is not None and max_entered_weight is not None:
+        entered = min(entered, max_entered_weight)
+        ew = _entered_to_effective(exercise, entered, bodyweight_lb)
+        target_r_fail = predict_reps(ew, fit)
+        target_actual = max(1, round(target_r_fail - rir))
+
+    return InflectionResult(
+        inflecting=False,
+        estimated_1rm=None,
+        suggested_set4=SetPrescription(
+            set_number=len(session_sets) + 1,
+            effective_weight=round(ew, 1),
+            entered_weight=round(entered, 1) if entered is not None else None,
+            target_reps=target_actual,
+            target_rpe=target_rpe,
+            r_fail=round(target_r_fail, 1),
+            acceptable_rep_min=max(1, target_actual - 2),
+            acceptable_rep_max=target_actual + 2,
+        ),
+    )
+
+
+def prescribe_next_set(
+    exercise_id: int,
+    session: Session,
+    prior_sets: list[dict],
+    bodyweight_lb: float,
+    actual_weight: float | None = None,
+) -> dict:
+    """Prescribe the next set based on completed prior sets.
+
+    prior_sets: [{"weight": float, "reps": int, "rpe": float}]
+    Returns dict with: has_curve, next_set, exercise_complete, inflection_detected, estimated_1rm
+    """
+    exercise = session.get(Exercise, exercise_id)
+    if exercise is None:
+        return {"has_curve": False, "error": "Exercise not found"}
+
+    is_bw = (exercise.load_input_mode or "external_weight") in BODYWEIGHT_MODES
+    if is_bw:
+        suggestion = get_bodyweight_suggestion(exercise_id, session)
+        return {"has_curve": False, "is_bodyweight": True, "suggestion": suggestion}
+
+    # Fit or refit curve
+    if prior_sets:
+        fit = refit_with_observations(exercise_id, session, prior_sets)
+    else:
+        fit = fit_curve(exercise_id, session)
+
+    if fit is None:
+        last_weight = get_max_recent_entered_weight(exercise_id, session)
+        return {
+            "has_curve": False,
+            "fallback_weight": last_weight,
+            "message": "Insufficient RPE data for curve fit.",
+        }
+
+    n_done = len(prior_sets)
+    scheme = HEAVY_SCHEME if exercise.allow_heavy_loading else LIGHT_SCHEME
+    max_weight = get_max_recent_entered_weight(exercise_id, session)
+
+    # After 3+ sets: check inflection
+    if n_done >= 3:
+        inflection = detect_inflection(
+            fit, prior_sets, exercise, bodyweight_lb, max_weight
+        )
+        result = {
+            "has_curve": True,
+            "fit_tier": fit.fit_tier,
+            "n_obs": fit.n_obs,
+            "inflection_detected": inflection.inflecting,
+            "estimated_1rm": inflection.estimated_1rm,
+        }
+        if inflection.inflecting:
+            result["exercise_complete"] = True
+            result["next_set"] = None
+        elif inflection.suggested_set4:
+            result["exercise_complete"] = False
+            result["next_set"] = _set_prescription_dict(inflection.suggested_set4)
+        else:
+            result["exercise_complete"] = True
+            result["next_set"] = None
+        return result
+
+    # Sets 1-3: prescribe from scheme
+    if n_done >= len(scheme):
+        # Non-heavy exercises capped at 3 sets
+        return {
+            "has_curve": True,
+            "exercise_complete": True,
+            "inflection_detected": None,
+            "estimated_1rm": round(fit.M, 1),
+            "next_set": None,
+        }
+
+    set_idx = n_done  # 0-indexed
+    r_fail_target, rir, target_rpe, expected_reps, rep_min, rep_max = scheme[set_idx]
+
+    # If user provided actual weight, adjust for that
+    if actual_weight is not None:
+        prescription = adjust_prescription(
+            fit, exercise, actual_weight, bodyweight_lb,
+            set_idx + 1, exercise.allow_heavy_loading,
+        )
+        return {
+            "has_curve": True,
+            "exercise_complete": False,
+            "inflection_detected": None,
+            "estimated_1rm": None,
+            "next_set": _set_prescription_dict(prescription),
+        }
+
+    # Standard prescription
+    ew = solve_weight(r_fail_target, fit)
+    entered = entered_weight_for_effective_weight(
+        exercise, effective_weight_lb=ew, bodyweight_lb=bodyweight_lb
+    )
+
+    if entered is not None and max_weight is not None:
+        entered = min(entered, max_weight)
+        ew = _entered_to_effective(exercise, entered, bodyweight_lb)
+        r_fail_target = predict_reps(ew, fit)
+        expected_reps = max(1, round(r_fail_target - rir))
+        rep_min = max(1, expected_reps - 3)
+        rep_max = expected_reps + 3
+
+    prescription = SetPrescription(
+        set_number=set_idx + 1,
+        effective_weight=round(ew, 1),
+        entered_weight=round(entered, 1) if entered is not None else None,
+        target_reps=expected_reps,
+        target_rpe=target_rpe,
+        r_fail=round(r_fail_target, 1),
+        acceptable_rep_min=rep_min,
+        acceptable_rep_max=rep_max,
+    )
+
+    return {
+        "has_curve": True,
+        "exercise_complete": False,
+        "inflection_detected": None,
+        "estimated_1rm": None,
+        "next_set": _set_prescription_dict(prescription),
+    }
+
+
+def _set_prescription_dict(p: SetPrescription) -> dict:
+    """Convert SetPrescription to API-friendly dict."""
+    return {
+        "set_number": p.set_number,
+        "proposed_weight": p.entered_weight,
+        "effective_weight": p.effective_weight,
+        "target_reps": p.target_reps,
+        "target_rpe": p.target_rpe,
+        "target_rir": round(10.0 - p.target_rpe),
+        "r_fail": p.r_fail,
+        "acceptable_rep_min": p.acceptable_rep_min,
+        "acceptable_rep_max": p.acceptable_rep_max,
+    }
 
 
 def refit_with_observations(

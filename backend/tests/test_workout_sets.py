@@ -187,7 +187,9 @@ def test_add_set_auto_order(client, exercise, workout_session, workout_set):
         json={"exercise_id": exercise.id, "reps": 6},
     )
     assert resp.status_code == 201
-    assert resp.json()["set_order"] == 2  # workout_set has order=1
+    # New set gets auto-timestamp (completed_at) since reps are provided,
+    # which sorts it before the fixture set (no completed_at) after normalization.
+    assert resp.json()["set_order"] == 1
 
 
 def test_add_set_session_not_found(client, exercise):
@@ -278,8 +280,9 @@ def test_add_set_response_includes_timestamps_and_tissue_feedback(client, sessio
     )
     assert resp.status_code == 201
     data = resp.json()
-    assert data["started_at"] is None
-    assert data["completed_at"] is None
+    # Auto-timestamped because reps are provided
+    assert data["started_at"] is not None
+    assert data["completed_at"] is not None
     assert len(data["tissue_feedback"]) == 1
     assert data["tissue_feedback"][0]["tracked_tissue_id"] == tracked.id
     assert data["tissue_feedback"][0]["pain_0_10"] == 4

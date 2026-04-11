@@ -1,13 +1,22 @@
 import datetime
+import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.auth import get_current_user
 from app.database import get_session
 from app.exercise_loads import bodyweight_by_date, latest_bodyweight
-from app.models import Exercise, WeightLog
+from app.models import (
+    Exercise,
+    PlannedSession,
+    ProgramDay,
+    ProgramDayExercise,
+    TrainingProgram,
+    WeightLog,
+    WorkoutSession,
+)
 from app.planner import (
     add_exercises_to_plan,
     complete_workout,
@@ -26,6 +35,7 @@ from app.strength_model import (
     get_exercise_freshness,
     get_max_recent_entered_weight,
     plan_progressive_sets,
+    prescribe_next_set,
     refit_with_observations,
 )
 
@@ -281,7 +291,6 @@ def prescribe_all_sets(
 
 
 def _get_bw_lookup(session: Session) -> dict:
-    from sqlmodel import select
     weights = session.exec(select(WeightLog).order_by(WeightLog.logged_at)).all()
     return bodyweight_by_date(weights)
 
@@ -310,3 +319,140 @@ def _prescription_response(prescription, fit, all_sets=None) -> dict:
     if all_sets:
         result["all_sets"] = [_prescription_dict(p) for p in all_sets]
     return result
+
+
+# ── New sequential set-by-set prescription ──
+
+
+class PrescribeNextRequest(BaseModel):
+    exercise_id: int
+    prior_sets: list[dict] = []  # [{"weight": float, "reps": int, "rpe": float}]
+    actual_weight: float | None = None  # user-adjusted weight for this set
+
+
+@router.post("/prescribe-next")
+def prescribe_next(
+    data: PrescribeNextRequest,
+    session: Session = Depends(get_session),
+    _user: str = Depends(get_current_user),
+):
+    """Prescribe the next set sequentially based on completed prior sets.
+
+    - 0 prior sets: prescribe set 1 from prior-data curve (RIR 3)
+    - 1 prior set: refit with set 1, prescribe set 2 (RIR 2)
+    - 2 prior sets: refit, prescribe set 3 (RIR 1)
+    - 3+ prior sets: refit, check inflection, prescribe set 4 or mark complete
+    """
+    bw_lookup = _get_bw_lookup(session)
+    bw_lb = latest_bodyweight(bw_lookup, datetime.date.today())
+
+    return prescribe_next_set(
+        exercise_id=data.exercise_id,
+        session=session,
+        prior_sets=data.prior_sets,
+        bodyweight_lb=bw_lb,
+        actual_weight=data.actual_weight,
+    )
+
+
+# ── Quick-start: skip plan/save, go directly to workout ──
+
+
+class QuickStartRequest(BaseModel):
+    exercise_ids: list[int]
+    date: datetime.date | None = None
+
+
+@router.post("/quick-start", status_code=201)
+def quick_start(
+    data: QuickStartRequest,
+    session: Session = Depends(get_session),
+    _user: str = Depends(get_current_user),
+):
+    """Create a workout session immediately with selected exercises.
+
+    Skips the plan→save→start flow. Creates a WorkoutSession and a
+    lightweight PlannedSession record for compatibility, but does NOT
+    pre-create empty sets — sets are added one at a time via the
+    workout set API as the athlete logs them.
+    """
+    plan_date = data.date or datetime.date.today()
+
+    # Get or create auto program
+    program = session.exec(
+        select(TrainingProgram).where(TrainingProgram.name == "__auto_plan__")
+    ).first()
+    if not program:
+        program = TrainingProgram(name="__auto_plan__", notes="Auto-generated daily plans")
+        session.add(program)
+        session.commit()
+        session.refresh(program)
+
+    # Delete any existing auto-generated planned session for this date
+    existing = session.exec(
+        select(PlannedSession).where(PlannedSession.date == plan_date)
+    ).all()
+    for ps in existing:
+        old_day = session.get(ProgramDay, ps.program_day_id)
+        if old_day and old_day.program_id == program.id:
+            old_exercises = session.exec(
+                select(ProgramDayExercise).where(
+                    ProgramDayExercise.program_day_id == old_day.id
+                )
+            ).all()
+            for oe in old_exercises:
+                session.delete(oe)
+            session.delete(old_day)
+            session.delete(ps)
+    session.commit()
+
+    # Create program day
+    exercise_names = []
+    for eid in data.exercise_ids:
+        ex = session.get(Exercise, eid)
+        if ex:
+            exercise_names.append(ex.name)
+
+    day = ProgramDay(
+        program_id=program.id,
+        day_label="Quick Start",
+        target_regions=json.dumps([]),
+        sort_order=0,
+    )
+    session.add(day)
+    session.commit()
+    session.refresh(day)
+
+    # Create exercise entries
+    for i, eid in enumerate(data.exercise_ids):
+        pde = ProgramDayExercise(
+            program_day_id=day.id,
+            exercise_id=eid,
+            target_sets=3,
+            sort_order=i,
+            notes=json.dumps({"workflow_role": "quick_start"}),
+        )
+        session.add(pde)
+
+    # Create workout session
+    ws = WorkoutSession(date=plan_date)
+    session.add(ws)
+    session.commit()
+    session.refresh(ws)
+
+    # Create planned session linked to workout
+    planned = PlannedSession(
+        program_day_id=day.id,
+        date=plan_date,
+        status="in_progress",
+        workout_session_id=ws.id,
+    )
+    session.add(planned)
+    session.commit()
+
+    return {
+        "workout_session_id": ws.id,
+        "exercise_ids": data.exercise_ids,
+        "exercise_names": exercise_names,
+        "date": plan_date.isoformat(),
+    }
