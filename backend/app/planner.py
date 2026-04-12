@@ -14,6 +14,7 @@ from datetime import UTC, date, datetime, timedelta
 
 from sqlmodel import Session, col, select
 
+from app.config import user_today
 from app.exercise_history import (
     REP_SCHEME_VERSION,
     build_scheme_history,
@@ -1029,7 +1030,7 @@ def _prescribe_all(
     *,
     as_of: date | None = None,
 ) -> list[dict]:
-    today = as_of or date.today()
+    today = as_of or user_today()
     tissue_readiness: dict[int, float] = {}
     tissue_condition_by_id: dict[int, dict] = {}
     for t in tissues_data:

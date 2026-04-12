@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, col, select
 
 from app.auth import get_current_user
+from app.config import user_today
 from app.database import get_session
 from app.exercise_loads import bodyweight_by_date, effective_set_load, effective_weight
 from app.models import (
@@ -324,7 +325,7 @@ def _list_pain_check_in_rows(
         if end_date is not None:
             stmt = stmt.where(col(RecoveryCheckIn.date) <= end_date)
         if start_date is None and end_date is None:
-            stmt = stmt.where(RecoveryCheckIn.date == datetime.date.today())
+            stmt = stmt.where(RecoveryCheckIn.date == user_today())
     rows = list(session.exec(stmt).all())
     return _latest_rows(
         rows,
@@ -352,7 +353,7 @@ def _list_region_soreness_rows(
             soreness_stmt = soreness_stmt.where(col(RegionSorenessCheckIn.date) <= end_date)
             legacy_stmt = legacy_stmt.where(col(RecoveryCheckIn.date) <= end_date)
         if start_date is None and end_date is None:
-            today = datetime.date.today()
+            today = user_today()
             soreness_stmt = soreness_stmt.where(RegionSorenessCheckIn.date == today)
             legacy_stmt = legacy_stmt.where(RecoveryCheckIn.date == today)
     rows = list(session.exec(soreness_stmt).all()) + list(session.exec(legacy_stmt).all())
@@ -767,7 +768,7 @@ def get_check_in_targets(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    target_date = date or datetime.date.today()
+    target_date = date or user_today()
     return _build_check_in_targets(session=session, target_date=target_date)
 
 
@@ -954,7 +955,7 @@ def get_volume_by_region(
     _user: str = Depends(get_current_user),
 ):
     """Per-day volume broken down by muscle region for the last N days."""
-    today = as_of or datetime.date.today()
+    today = as_of or user_today()
     cutoff = today - datetime.timedelta(days=days - 1)
 
     exercises = {

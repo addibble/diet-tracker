@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime
 
 from sqlmodel import Session, col, select
 
+from app.config import user_today
 from app.macro_targets import get_active_macro_target, macro_target_to_dict
 from app.macros import MACRO_FIELDS, compute_food_macros, sum_macros, zero_macros
 from app.models import (
@@ -1005,7 +1006,7 @@ def handle_set_meal_logs(args: dict, session: Session) -> dict:
         relations = change.get("relations", {})
 
         if op == "create":
-            d = parse_date_val(set_fields.get("date", str(date.today())))
+            d = parse_date_val(set_fields.get("date", str(user_today())))
             mt = set_fields.get("meal_type", "snack")
             new_records = (relations.get("items") or {}).get("records", [])
 

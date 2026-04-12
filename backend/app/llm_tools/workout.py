@@ -12,6 +12,7 @@ from datetime import UTC, date, datetime
 from sqlalchemy import func
 from sqlmodel import Session, col, select
 
+from app.config import user_today
 from app.models import (
     Exercise,
     ExerciseTissue,
@@ -1914,7 +1915,7 @@ def handle_set_workout_sessions(
 
         if op == "create":
             d = parse_date_val(
-                set_fields.get("date", str(date.today()))
+                set_fields.get("date", str(user_today()))
             )
             ws = WorkoutSession(
                 date=d,
@@ -2150,7 +2151,7 @@ def handle_set_workouts(args: dict, session: Session) -> dict:
             else:
                 w = Workout(
                     sync_key=set_fields.get("sync_key", ""),
-                    date=parse_date_val(set_fields.get("date", str(date.today()))),
+                    date=parse_date_val(set_fields.get("date", str(user_today()))),
                     workout_type=set_fields.get("workout_type", ""),
                     duration_minutes=set_fields.get(
                         "duration_minutes", 0

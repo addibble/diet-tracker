@@ -7,6 +7,7 @@ from datetime import date, timedelta
 
 from sqlmodel import Session, col, select
 
+from app.config import user_today
 from app.exercise_loads import (
     bodyweight_by_date,
     effective_set_load,
@@ -535,7 +536,7 @@ def build_exercise_strength(
     if exercise is None:
         raise KeyError(f"Unknown exercise_id {exercise_id}")
 
-    as_of_date = as_of or date.today()
+    as_of_date = as_of or user_today()
     cutoff = as_of_date - timedelta(days=max(1, days - 1))
 
     # Load bodyweight data for bodyweight/mixed exercises
@@ -748,7 +749,7 @@ def _build_context(session: Session, *, as_of: date | None) -> dict:
         as_of=as_of,
         excluded_days=excluded_days,
     )
-    as_of_date = as_of or (max(all_dates) if all_dates else date.today())
+    as_of_date = as_of or (max(all_dates) if all_dates else user_today())
     if not all_dates:
         all_dates = [as_of_date]
     else:

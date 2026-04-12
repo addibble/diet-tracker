@@ -16,6 +16,7 @@ from scipy.optimize import minimize
 from scipy.stats import ttest_ind
 from sqlmodel import Session, select
 
+from app.config import user_today
 from app.exercise_loads import (
     bodyweight_by_date,
     effective_weight,
@@ -377,7 +378,7 @@ def _load_recent_sets(
     if (exercise.load_input_mode or "external_weight") in BODYWEIGHT_MODES:
         return exercise, []
 
-    cutoff = date.today() - timedelta(days=days)
+    cutoff = user_today() - timedelta(days=days)
 
     stmt = (
         select(WorkoutSet, WorkoutSession.date)
@@ -417,7 +418,7 @@ def fit_curve(
         return None
 
     bw_lookup = _load_bodyweight_lookup(session)
-    today = date.today()
+    today = user_today()
 
     # Build observations
     eff_weights: list[float] = []
@@ -829,8 +830,8 @@ def refit_with_observations(
         return None
 
     bw_lookup = _load_bodyweight_lookup(session)
-    bodyweight_lb = latest_bodyweight(bw_lookup, date.today())
-    today = date.today()
+    bodyweight_lb = latest_bodyweight(bw_lookup, user_today())
+    today = user_today()
 
     # Build observations from DB
     eff_weights: list[float] = []
@@ -942,7 +943,7 @@ def get_exercise_freshness(
     load_input_mode, is_bodyweight}
     """
     exercises = session.exec(select(Exercise)).all()
-    today = date.today()
+    today = user_today()
     result = []
 
     for ex in exercises:
@@ -995,7 +996,7 @@ def get_bodyweight_suggestion(
     exercise_id: int, session: Session
 ) -> dict:
     """Get a fixed-rep suggestion for a bodyweight exercise based on recent history."""
-    cutoff = date.today() - timedelta(days=30)
+    cutoff = user_today() - timedelta(days=30)
     stmt = (
         select(WorkoutSet.reps)
         .join(WorkoutSession, WorkoutSet.session_id == WorkoutSession.id)
@@ -1050,7 +1051,7 @@ def get_max_recent_entered_weight(
     exercise_id: int, session: Session, days: int = 90
 ) -> float | None:
     """Get the maximum entered weight used for this exercise recently."""
-    cutoff = date.today() - timedelta(days=days)
+    cutoff = user_today() - timedelta(days=days)
     stmt = (
         select(WorkoutSet.weight)
         .join(WorkoutSession, WorkoutSet.session_id == WorkoutSession.id)

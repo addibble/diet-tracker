@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlmodel import Session, select
 
+from app.config import user_today
 from app.models import (
     Exercise,
     ExerciseTissue,
@@ -104,7 +105,7 @@ def build_tracked_protection_profiles(
     *,
     as_of: date | None = None,
 ) -> dict[int, list[TrackedProtectionProfile]]:
-    day = as_of or date.today()
+    day = as_of or user_today()
     tissues = {
         tissue.id: tissue
         for tissue in session.exec(select(Tissue)).all()

@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.auth import get_current_user
+from app.config import user_today
 from app.database import get_session
 from app.exercise_loads import bodyweight_by_date, latest_bodyweight
 from app.models import (
@@ -64,7 +65,7 @@ def save_today(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    plan_date = as_of or datetime.date.today()
+    plan_date = as_of or user_today()
     return save_plan(session, plan_date, data.day_label, data.target_regions, data.exercises)
 
 
@@ -74,7 +75,7 @@ def get_active(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    plan_date = as_of or datetime.date.today()
+    plan_date = as_of or user_today()
     plan = get_saved_plan(session, plan_date)
     if not plan:
         raise HTTPException(status_code=404, detail="No saved plan for this date")
@@ -87,7 +88,7 @@ def start_today(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    plan_date = as_of or datetime.date.today()
+    plan_date = as_of or user_today()
     plan = get_saved_plan(session, plan_date)
     if not plan:
         raise HTTPException(status_code=404, detail="No saved plan for this date")
@@ -100,7 +101,7 @@ def complete_today(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    plan_date = as_of or datetime.date.today()
+    plan_date = as_of or user_today()
     plan = get_saved_plan(session, plan_date)
     if not plan:
         raise HTTPException(status_code=404, detail="No saved plan for this date")
@@ -113,7 +114,7 @@ def delete_active(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    plan_date = as_of or datetime.date.today()
+    plan_date = as_of or user_today()
     try:
         delete_plan(session, plan_date)
     except ValueError as e:
@@ -131,7 +132,7 @@ def add_exercises(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    plan_date = as_of or datetime.date.today()
+    plan_date = as_of or user_today()
     try:
         return add_exercises_to_plan(session, plan_date, data.exercises)
     except ValueError as e:
@@ -145,7 +146,7 @@ def remove_exercise(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    plan_date = as_of or datetime.date.today()
+    plan_date = as_of or user_today()
     try:
         return remove_exercises_from_plan(session, plan_date, [exercise_id])
     except ValueError as e:
@@ -163,7 +164,7 @@ def reorder_exercises(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    plan_date = as_of or datetime.date.today()
+    plan_date = as_of or user_today()
     try:
         return reorder_plan_exercises(session, plan_date, data.pde_ids)
     except ValueError as e:
@@ -206,7 +207,7 @@ def prescribe_set(
         raise HTTPException(status_code=404, detail="Exercise not found")
 
     bw_lookup = _get_bw_lookup(session)
-    bw_lb = latest_bodyweight(bw_lookup, datetime.date.today())
+    bw_lb = latest_bodyweight(bw_lookup, user_today())
 
     # Fit or refit the curve
     if data.prior_sets:
@@ -254,7 +255,7 @@ def prescribe_all_sets(
         raise HTTPException(status_code=404, detail="Exercise not found")
 
     bw_lookup = _get_bw_lookup(session)
-    bw_lb = latest_bodyweight(bw_lookup, datetime.date.today())
+    bw_lb = latest_bodyweight(bw_lookup, user_today())
 
     if data.prior_sets:
         fit = refit_with_observations(data.exercise_id, session, data.prior_sets)
@@ -344,7 +345,7 @@ def prescribe_next(
     - 3+ prior sets: refit, check inflection, prescribe set 4 or mark complete
     """
     bw_lookup = _get_bw_lookup(session)
-    bw_lb = latest_bodyweight(bw_lookup, datetime.date.today())
+    bw_lb = latest_bodyweight(bw_lookup, user_today())
 
     return prescribe_next_set(
         exercise_id=data.exercise_id,
@@ -376,7 +377,7 @@ def quick_start(
     pre-create empty sets — sets are added one at a time via the
     workout set API as the athlete logs them.
     """
-    plan_date = data.date or datetime.date.today()
+    plan_date = data.date or user_today()
 
     # Get or create auto program
     program = session.exec(

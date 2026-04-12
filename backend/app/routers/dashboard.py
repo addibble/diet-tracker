@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.auth import get_current_user
+from app.config import user_today
 from app.database import get_session
 from app.macros import compute_food_macros
 from app.models import (
@@ -204,7 +205,7 @@ def dashboard_trends(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    resolved_end_date = end_date or date.today()
+    resolved_end_date = end_date or user_today()
 
     # 7-day window drives the daily macros breakdown and target-normalized trends
     seven_day_start = resolved_end_date - timedelta(days=6)
@@ -297,7 +298,7 @@ def put_today_weight(
     _user: str = Depends(get_current_user),
 ):
     """Create or update today's weight log entry."""
-    today = date.today()
+    today = user_today()
     day_start = datetime.combine(today, time.min, tzinfo=UTC)
     day_end = datetime.combine(today + timedelta(days=1), time.min, tzinfo=UTC)
 

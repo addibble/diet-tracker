@@ -5,6 +5,7 @@ from datetime import date, timedelta
 
 from sqlmodel import Session, col, select
 
+from app.config import user_today
 from app.exercise_history import empty_scheme_history
 from app.exercise_protection import build_tracked_protection_profiles, evaluate_exercise_protection
 from app.models import ExerciseTissue, RecoveryCheckIn, WorkoutSession, WorkoutSet
@@ -42,7 +43,7 @@ _MILD_CHECKIN_ALLOWED_LOAD = 0.5
 
 
 def suggest_today_workflow(session: Session, *, as_of: date | None = None) -> dict:
-    today = as_of or date.today()
+    today = as_of or user_today()
     summary = build_training_model_summary(session, as_of=as_of, include_exercises=True)
     tissues_data = summary.get("tissues", [])
     exercises_data = summary.get("exercises", [])

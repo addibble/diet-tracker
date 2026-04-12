@@ -1,4 +1,6 @@
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from pydantic_settings import BaseSettings
 
@@ -24,3 +26,8 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def user_today() -> date:
+    """Return today's date in the user's configured timezone."""
+    return datetime.now(ZoneInfo(settings.default_timezone)).date()
