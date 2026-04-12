@@ -510,9 +510,10 @@ def plan_progressive_sets(
 
     Uses heavy scheme if exercise.allow_heavy_loading, else light scheme.
     Converts effective weight to entered weight for user display.
-    Clips to max_entered_weight if the user is at machine limit.
+    Soft-caps to 125% of max_entered_weight if provided (equipment limit).
     """
     scheme = HEAVY_SCHEME if exercise.allow_heavy_loading else LIGHT_SCHEME
+    weight_ceiling = max_entered_weight * 1.25 if max_entered_weight else None
     prescriptions: list[SetPrescription] = []
 
     for i, (r_fail, rir, target_rpe, expected_reps, rep_min, rep_max) in enumerate(scheme):
@@ -521,9 +522,9 @@ def plan_progressive_sets(
             exercise, effective_weight_lb=ew, bodyweight_lb=bodyweight_lb
         )
 
-        # Clip to max available weight
-        if entered is not None and max_entered_weight is not None:
-            entered = min(entered, max_entered_weight)
+        # Soft cap: allow overload up to 125% of recent max
+        if entered is not None and weight_ceiling is not None:
+            entered = min(entered, weight_ceiling)
             # Recompute effective weight from clipped entered weight
             ew = _entered_to_effective(exercise, entered, bodyweight_lb)
             # Recompute expected reps at the clipped weight
@@ -531,6 +532,21 @@ def plan_progressive_sets(
             expected_reps = max(1, round(r_fail - rir))
             rep_min = max(1, expected_reps - 3)
             rep_max = expected_reps + 3
+
+        # Monotonicity guard: later sets should not prescribe more reps
+        # than earlier sets at the same or lower weight with higher RPE.
+        if prescriptions:
+            prev = prescriptions[-1]
+            if (entered is not None and prev.entered_weight is not None
+                    and entered <= prev.entered_weight
+                    and r_fail >= prev.r_fail
+                    and target_rpe >= prev.target_rpe):
+                entered = prev.entered_weight * 1.1
+                ew = _entered_to_effective(exercise, entered, bodyweight_lb)
+                r_fail = predict_reps(ew, fit)
+                expected_reps = max(1, round(r_fail - rir))
+                rep_min = max(1, expected_reps - 3)
+                rep_max = expected_reps + 3
 
         prescriptions.append(SetPrescription(
             set_number=i + 1,
@@ -690,7 +706,20 @@ def prescribe_next_set(
     is_bw = (exercise.load_input_mode or "external_weight") in BODYWEIGHT_MODES
     if is_bw:
         suggestion = get_bodyweight_suggestion(exercise_id, session)
-        return {"has_curve": False, "is_bodyweight": True, "suggestion": suggestion}
+        n_done = len(prior_sets)
+        target_sets = suggestion.get("sets", 3)
+        return {
+            "has_curve": False,
+            "is_bodyweight": True,
+            "suggestion": suggestion,
+            "exercise_complete": n_done >= target_sets,
+            "next_set": None if n_done >= target_sets else {
+                "set_number": n_done + 1,
+                "proposed_weight": 0,
+                "target_reps": suggestion.get("reps_per_set", 15),
+                "target_rir": None,
+            },
+        }
 
     # Fit or refit curve
     if prior_sets:
@@ -767,14 +796,43 @@ def prescribe_next_set(
         exercise, effective_weight_lb=ew, bodyweight_lb=bodyweight_lb
     )
 
-    # Clip to max available weight
-    if entered is not None and max_weight is not None:
-        entered = min(entered, max_weight)
+    # Soft cap: allow up to 125% of the highest weight ever used.
+    # This prevents wildly extrapolated prescriptions while still
+    # permitting progressive overload beyond recent history.
+    if prior_sets:
+        session_max = max(
+            (s["weight"] for s in prior_sets if s.get("weight")),
+            default=0,
+        )
+    else:
+        session_max = 0
+    effective_max = max(max_weight or 0, session_max)
+    weight_ceiling = effective_max * 1.25 if effective_max > 0 else None
+
+    if entered is not None and weight_ceiling is not None:
+        entered = min(entered, weight_ceiling)
 
     if entered is not None:
         ew = _entered_to_effective(exercise, entered, bodyweight_lb)
         r_fail_target = predict_reps(ew, fit)
         expected_reps = max(1, round(r_fail_target - rir))
+
+        # Monotonicity guard: a later set must not prescribe more reps
+        # at the same-or-lower weight with a higher target RPE than the
+        # previous completed set.
+        if prior_sets:
+            last = prior_sets[-1]
+            last_rtf = last["reps"] + (10.0 - last["rpe"])
+            if (entered <= last["weight"]
+                    and r_fail_target >= last_rtf
+                    and target_rpe >= last.get("rpe", 0)):
+                # Clipping created a nonsensical prescription; bump
+                # weight above the last set instead.
+                entered = last["weight"] * 1.1
+                ew = _entered_to_effective(exercise, entered, bodyweight_lb)
+                r_fail_target = predict_reps(ew, fit)
+                expected_reps = max(1, round(r_fail_target - rir))
+
         rep_min = max(1, expected_reps - 3)
         rep_max = expected_reps + 3
 

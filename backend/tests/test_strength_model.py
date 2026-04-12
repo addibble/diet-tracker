@@ -290,17 +290,41 @@ class TestPlanProgressiveSets:
         # Light scheme: higher reps overall
         assert prescriptions[0].target_reps > prescriptions[2].target_reps
 
-    def test_max_weight_clipping(self):
+    def test_max_weight_soft_cap(self):
+        """Soft cap allows up to 125% of historical max."""
         fit = self._make_fit()
         ex = Exercise(name="Machine Press", allow_heavy_loading=True,
                       load_input_mode="external_weight",
                       bodyweight_fraction=0.0, external_load_multiplier=1.0)
         prescriptions = plan_progressive_sets(fit, ex, bodyweight_lb=180,
                                               max_entered_weight=150)
-        # The heaviest set shouldn't exceed 150 entered weight
+        # The heaviest set shouldn't exceed 125% of 150 = 187.5
         for p in prescriptions:
             if p.entered_weight is not None:
-                assert p.entered_weight <= 150
+                assert p.entered_weight <= 187.5
+
+    def test_monotonicity_guard_prevents_absurd_prescription(self):
+        """Regression: clipping weight must not produce more reps at higher RPE.
+
+        Back Extension bug: user did 200 lb x 13 @ RPE 8 (set 2). Curve solves
+        258 lb for set 3 but gets clipped to 200, producing 14 reps @ RPE 9.
+        The monotonicity guard should bump weight above 200 instead.
+        """
+        # Use plan_progressive_sets with a strong curve and a low max_weight
+        # to trigger clipping that would violate monotonicity
+        fit = CurveFit(M=350, k=28, gamma=0.7, n_obs=10, rmse=1.0,
+                        max_observed_weight=200, fit_tier="tier1")
+        ex = Exercise(name="Back Extension Machine", allow_heavy_loading=True,
+                      load_input_mode="external_weight",
+                      bodyweight_fraction=0.0, external_load_multiplier=1.0)
+        prescriptions = plan_progressive_sets(fit, ex, bodyweight_lb=180,
+                                              max_entered_weight=200)
+        # Weight must monotonically increase across sets
+        for i in range(1, len(prescriptions)):
+            assert prescriptions[i].entered_weight >= prescriptions[i-1].entered_weight, (
+                f"Set {i+1} weight {prescriptions[i].entered_weight} < "
+                f"Set {i} weight {prescriptions[i-1].entered_weight}"
+            )
 
     def test_entered_weight_is_set(self):
         fit = self._make_fit()
@@ -487,6 +511,29 @@ class TestPrescribeEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert data["has_curve"] is True
+
+    def test_prescribe_set3_respects_monotonicity(self, client, session):
+        """Regression: set 3 must not prescribe >= reps at same weight as set 2."""
+        ex = _seed_exercise_with_sets(session)
+        prior_sets = [
+            {"weight": 90, "reps": 15, "rpe": 7.0},
+            {"weight": 120, "reps": 13, "rpe": 8.0},
+        ]
+        resp = client.post("/api/planner/prescribe", json={
+            "exercise_id": ex.id,
+            "set_number": 3,
+            "prior_sets": prior_sets,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        if data.get("has_curve") and data.get("set"):
+            s = data["set"]
+            # If weight <= set 2's weight, reps must be fewer
+            if s["proposed_weight"] <= 120:
+                assert s["target_reps"] < 13, (
+                    f"Monotonicity violation: {s['proposed_weight']} lb x "
+                    f"{s['target_reps']} after 120 lb x 13"
+                )
 
     def test_prescribe_no_data_exercise(self, client, session):
         ex = Exercise(name="No Data", load_input_mode="external_weight")
