@@ -642,8 +642,14 @@ def detect_inflection(
         exercise, effective_weight_lb=ew, bodyweight_lb=bodyweight_lb
     )
 
+    # For set 4, ensure we go heavier than the last set (the whole point is to
+    # push past the plateau).  Only cap at machine limit if provided.
+    last_entered = last_set["weight"]
+    if entered is not None and entered <= last_entered:
+        entered = last_entered * 1.1  # at least 10% heavier than last set
     if entered is not None and max_entered_weight is not None:
-        entered = min(entered, max_entered_weight)
+        entered = min(entered, max_entered_weight * 1.25)  # allow 25% above historical max
+    if entered is not None:
         ew = _entered_to_effective(exercise, entered, bodyweight_lb)
         target_r_fail = predict_reps(ew, fit)
         target_actual = max(1, round(target_r_fail - rir))
