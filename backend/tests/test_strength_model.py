@@ -15,6 +15,7 @@ from app.strength_model import (
     _brzycki_1rm,
     _entered_to_effective,
     _estimate_M_bounds,
+    _filter_stale_sessions,
     _identifiability_score,
     _rpe_confidence,
     adjust_prescription,
@@ -217,7 +218,7 @@ class TestFitCurve:
         assert result.gamma > 0
         assert result.n_obs == 6
         assert result.rmse < 10  # reasonable fit
-        assert result.fit_tier == "tier1"
+        assert result.fit_tier in ("tier1", "tier2")  # may auto-demote if gamma < 0.5
 
     def test_tier2_with_single_weight(self, session):
         ex = _make_exercise(session, name="Single Weight Test")
@@ -520,3 +521,104 @@ class TestPrescribeAllEndpoint:
         assert len(data["sets"]) == 3
         # Weights should ascend
         assert data["sets"][0]["proposed_weight"] < data["sets"][2]["proposed_weight"]
+
+
+# ── Tests for outlier filtering ──
+
+
+class TestFilterStaleSessions:
+    """Tests for _filter_stale_sessions t-test filter."""
+
+    def test_same_strength_sessions_kept(self):
+        """Sessions with similar 1RM distributions should all be kept."""
+        # Two sessions at similar strength: ~160 lb 1RM
+        weights = [100.0, 120.0, 100.0, 120.0]
+        reps = [12.0, 8.0, 11.0, 7.0]  # similar r_fail
+        confs = [0.8, 0.8, 0.8, 0.8]
+        ages = [0.0, 0.0, 7.0, 7.0]
+        w2, r2, c2, a2 = _filter_stale_sessions(weights, reps, confs, ages)
+        assert len(w2) == 4  # all kept
+
+    def test_different_strength_sessions_dropped(self):
+        """Sessions with significantly different 1RM should be dropped."""
+        # Recent: high strength (~230 1RM)
+        # Old: low strength (~120 1RM)
+        weights = [120.0, 120.0, 120.0, 70.0, 70.0, 70.0]
+        reps = [18.0, 18.0, 14.0, 15.0, 15.0, 15.0]
+        confs = [0.8, 0.8, 0.9, 0.8, 0.8, 0.8]
+        ages = [4.0, 4.0, 4.0, 21.0, 21.0, 21.0]
+        w2, r2, c2, a2 = _filter_stale_sessions(weights, reps, confs, ages)
+        # Should drop the 21d-old session
+        assert len(w2) == 3
+        assert all(a == 4.0 for a in a2)
+
+    def test_single_set_sessions_kept(self):
+        """Sessions with only 1 set can't be t-tested — keep them."""
+        weights = [120.0, 120.0, 70.0]
+        reps = [18.0, 18.0, 15.0]
+        confs = [0.8, 0.8, 0.8]
+        ages = [4.0, 4.0, 21.0]  # 21d session has 1 set
+        w2, r2, c2, a2 = _filter_stale_sessions(weights, reps, confs, ages)
+        assert len(w2) == 3  # all kept (can't t-test single-set session)
+
+    def test_too_few_observations_fallback(self):
+        """If filtering would leave < MIN_SETS, return unfiltered."""
+        # Only 2 recent sets + 3 stale → dropping stale leaves only 2
+        weights = [120.0, 120.0, 70.0, 70.0, 70.0]
+        reps = [18.0, 18.0, 15.0, 15.0, 15.0]
+        confs = [0.8, 0.8, 0.8, 0.8, 0.8]
+        ages = [4.0, 4.0, 21.0, 21.0, 21.0]
+        w2, r2, c2, a2 = _filter_stale_sessions(weights, reps, confs, ages)
+        # Falls back to unfiltered since 2 < MIN_SETS_TIER2=3
+        assert len(w2) == 5
+
+    def test_single_session_no_filter(self):
+        """All sets from same session → nothing to filter."""
+        weights = [80.0, 100.0, 120.0]
+        reps = [15.0, 12.0, 8.0]
+        confs = [0.8, 0.8, 0.9]
+        ages = [0.0, 0.0, 0.0]
+        w2, r2, c2, a2 = _filter_stale_sessions(weights, reps, confs, ages)
+        assert len(w2) == 3
+
+
+class TestRPEFloor:
+    """RPE floor should exclude sets with RPE < MIN_RPE_FOR_FIT."""
+
+    def test_low_rpe_sets_excluded(self, session):
+        ex = _make_exercise(session, name="RPE Floor Test")
+        # 3 good sets + 2 low-RPE sets
+        sets_data = [
+            {"reps": 15, "weight": 80, "rpe": 7.0},
+            {"reps": 12, "weight": 100, "rpe": 8.0},
+            {"reps": 10, "weight": 120, "rpe": 9.0},
+            {"reps": 20, "weight": 60, "rpe": 5.0},  # should be excluded
+            {"reps": 18, "weight": 70, "rpe": 6.0},  # should be excluded
+        ]
+        _make_session_and_sets(session, ex, sets_data)
+        result = fit_curve(ex.id, session)
+        assert result is not None
+        assert result.n_obs == 3  # only the 3 good sets
+
+
+class TestAutoDemotion:
+    """Auto-demotion should force tier 2 when gamma is unreasonably low."""
+
+    def test_auto_demote_with_inverted_data(self, session):
+        """Data where more reps at higher weight should auto-demote to tier2."""
+        ex = _make_exercise(session, name="Auto Demote Test")
+        # Inverted pattern: more reps at higher weight (rapid progression)
+        sets_data = [
+            {"reps": 15, "weight": 70, "rpe": 7.0},
+            {"reps": 14, "weight": 90, "rpe": 8.0},
+            {"reps": 14, "weight": 90, "rpe": 8.0},
+            {"reps": 14, "weight": 90, "rpe": 8.0},
+            {"reps": 18, "weight": 120, "rpe": 7.0},
+            {"reps": 18, "weight": 120, "rpe": 7.0},
+        ]
+        _make_session_and_sets(session, ex, sets_data)
+        result = fit_curve(ex.id, session)
+        assert result is not None
+        # Should be demoted to tier2 due to low gamma
+        assert result.fit_tier == "tier2"
+        assert result.gamma == DEFAULT_GAMMA

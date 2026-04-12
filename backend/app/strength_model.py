@@ -7,11 +7,13 @@ weight/rep prescription for progressive-overload workouts.
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
 
 import numpy as np
 from scipy.optimize import minimize
+from scipy.stats import ttest_ind
 from sqlmodel import Session, select
 
 from app.exercise_loads import (
@@ -39,6 +41,15 @@ SESSION_TARGET_SHARE = 0.70
 MIN_SETS_TIER1 = 5  # full 3-param (M, k, gamma)
 MIN_SETS_TIER2 = 3  # 2-param (M, k) with fixed gamma
 MIN_DISTINCT_WEIGHTS_TIER1 = 2
+
+# RPE floor: sets below this are too far from failure to inform max estimation
+MIN_RPE_FOR_FIT = 7.0
+
+# Auto-demotion: if free-gamma fit produces gamma below this, demote to tier 2
+GAMMA_DEMOTE_THRESHOLD = 0.5
+
+# T-test significance level for dropping stale sessions
+TTEST_ALPHA = 0.05
 
 
 @dataclass
@@ -138,6 +149,67 @@ def _recency_weights(
     """Exponential recency weighting: recent sets count more."""
     arr = np.array(ages_days, dtype=float)
     return np.exp(-np.log(2) * arr / half_life_days)
+
+
+def _filter_stale_sessions(
+    eff_weights: list[float],
+    reps_to_failure: list[float],
+    confidences: list[float],
+    ages_days: list[float],
+) -> tuple[list[float], list[float], list[float], list[float]]:
+    """Drop sets from sessions whose strength level is statistically different.
+
+    Groups observations by session age (days), computes per-set Brzycki 1RM,
+    and uses Welch's t-test to compare each older session against the most
+    recent one. Sessions with p < TTEST_ALPHA are dropped (significantly
+    different strength level, likely stale). Sessions with fewer than 2 sets
+    are kept (can't t-test reliably, low impact).
+    """
+    if len(eff_weights) < 3:
+        return eff_weights, reps_to_failure, confidences, ages_days
+
+    # Group observation indices by session age
+    by_age: dict[float, list[int]] = defaultdict(list)
+    for i, age in enumerate(ages_days):
+        by_age[age].append(i)
+
+    sorted_ages = sorted(by_age.keys())
+    if len(sorted_ages) < 2:
+        return eff_weights, reps_to_failure, confidences, ages_days
+
+    # Anchor: most recent session's implied 1RM distribution
+    anchor_age = sorted_ages[0]
+    anchor_1rms = [
+        _brzycki_1rm(eff_weights[i], reps_to_failure[i])
+        for i in by_age[anchor_age]
+    ]
+
+    keep_indices = list(by_age[anchor_age])  # always keep most recent
+
+    for age in sorted_ages[1:]:
+        indices = by_age[age]
+        session_1rms = [
+            _brzycki_1rm(eff_weights[i], reps_to_failure[i])
+            for i in indices
+        ]
+        # Only t-test if both sessions have >= 2 data points
+        if len(session_1rms) >= 2 and len(anchor_1rms) >= 2:
+            _, p = ttest_ind(anchor_1rms, session_1rms, equal_var=False)
+            if p < TTEST_ALPHA:
+                continue  # drop this session
+        keep_indices.extend(indices)
+
+    if len(keep_indices) < MIN_SETS_TIER2:
+        # Filtering removed too much data — fall back to unfiltered
+        return eff_weights, reps_to_failure, confidences, ages_days
+
+    keep_indices.sort()
+    return (
+        [eff_weights[i] for i in keep_indices],
+        [reps_to_failure[i] for i in keep_indices],
+        [confidences[i] for i in keep_indices],
+        [ages_days[i] for i in keep_indices],
+    )
 
 
 # ── Brzycki bounds ──
@@ -356,7 +428,7 @@ def fit_curve(
     for ws, ws_date in set_rows:
         if not supports_strength_estimate(exercise, ws):
             continue
-        if ws.rpe is None or ws.rpe < 5.0 or ws.rpe > 10.0:
+        if ws.rpe is None or ws.rpe < MIN_RPE_FOR_FIT or ws.rpe > 10.0:
             continue
 
         ew = effective_weight(exercise, ws, bw_lookup, ws_date)
@@ -370,6 +442,11 @@ def fit_curve(
         reps_to_failure.append(r_fail)
         confidences.append(_rpe_confidence(ws.rpe))
         ages_days.append((today - ws_date).days)
+
+    # Filter stale sessions via t-test
+    eff_weights, reps_to_failure, confidences, ages_days = _filter_stale_sessions(
+        eff_weights, reps_to_failure, confidences, ages_days,
+    )
 
     n_obs = len(eff_weights)
     if n_obs < MIN_SETS_TIER2:
@@ -394,6 +471,13 @@ def fit_curve(
     M_fit, k_fit, gamma_fit, success = _fit_params(
         W, r, fit_w, M_lower, M_upper, M_prior, lambda_M, fixed_gamma
     )
+
+    # Auto-demote: if free gamma is unreasonably low, refit as tier 2
+    if tier == "tier1" and gamma_fit < GAMMA_DEMOTE_THRESHOLD:
+        tier = "tier2"
+        M_fit, k_fit, gamma_fit, success = _fit_params(
+            W, r, fit_w, M_lower, M_upper, M_prior, lambda_M, DEFAULT_GAMMA
+        )
 
     # Compute RMSE
     predicted = fresh_curve(W, M_fit, k_fit, gamma_fit)
@@ -676,8 +760,11 @@ def prescribe_next_set(
         exercise, effective_weight_lb=ew, bodyweight_lb=bodyweight_lb
     )
 
+    # Clip to max available weight
     if entered is not None and max_weight is not None:
         entered = min(entered, max_weight)
+
+    if entered is not None:
         ew = _entered_to_effective(exercise, entered, bodyweight_lb)
         r_fail_target = predict_reps(ew, fit)
         expected_reps = max(1, round(r_fail_target - rir))
@@ -748,7 +835,7 @@ def refit_with_observations(
     for ws, ws_date in set_rows:
         if not supports_strength_estimate(exercise, ws):
             continue
-        if ws.rpe is None or ws.rpe < 5.0 or ws.rpe > 10.0:
+        if ws.rpe is None or ws.rpe < MIN_RPE_FOR_FIT or ws.rpe > 10.0:
             continue
 
         ew = effective_weight(exercise, ws, bw_lookup, ws_date)
@@ -760,6 +847,11 @@ def refit_with_observations(
         reps_to_failure.append(ws.reps + rir)
         confidences.append(_rpe_confidence(ws.rpe))
         ages_days.append((today - ws_date).days)
+
+    # Filter stale sessions from historical data before merging with new obs
+    eff_weights, reps_to_failure, confidences, ages_days = _filter_stale_sessions(
+        eff_weights, reps_to_failure, confidences, ages_days,
+    )
 
     # Add new in-session observations (age=0, high confidence since just performed)
     for obs in new_obs:
@@ -808,6 +900,13 @@ def refit_with_observations(
     M_fit, k_fit, gamma_fit, success = _fit_params(
         W, r, fit_w, M_lower, M_upper, M_prior, lambda_M, fixed_gamma
     )
+
+    # Auto-demote: if free gamma is unreasonably low, refit as tier 2
+    if tier == "tier1" and gamma_fit < GAMMA_DEMOTE_THRESHOLD:
+        tier = "tier2"
+        M_fit, k_fit, gamma_fit, success = _fit_params(
+            W, r, fit_w, M_lower, M_upper, M_prior, lambda_M, DEFAULT_GAMMA
+        )
 
     predicted = fresh_curve(W, M_fit, k_fit, gamma_fit)
     residuals = r - predicted
