@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from sqlmodel import Session, col, select
 
@@ -388,6 +388,14 @@ def complete_workout(session: Session, planned_session_id: int) -> dict:
 
     planned.status = "completed"
     session.add(planned)
+
+    # Also mark the workout session as finished
+    if planned.workout_session_id:
+        ws = session.get(WorkoutSession, planned.workout_session_id)
+        if ws and not ws.finished_at:
+            ws.finished_at = datetime.now(UTC)
+            session.add(ws)
+
     session.commit()
 
     return {"id": planned.id, "status": "completed"}

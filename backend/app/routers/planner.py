@@ -435,7 +435,10 @@ def quick_start(
         session.add(pde)
 
     # Create workout session
-    ws = WorkoutSession(date=plan_date)
+    ws = WorkoutSession(
+        date=plan_date,
+        started_at=datetime.datetime.now(datetime.UTC),
+    )
     session.add(ws)
     session.commit()
     session.refresh(ws)

@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import {
+  addPlanExercise,
   addWorkoutSet,
   completePlan,
   deleteWorkoutSession,
+  getExerciseMenu,
   getWorkoutSession,
   prescribeNext,
   type ExerciseMenuItem,
@@ -56,6 +58,9 @@ export default function ActiveWorkoutCard({
   const [activeIdx, setActiveIdx] = useState(0)
   const [completing, setCompleting] = useState(false)
   const [cancelling, setCancelling] = useState(false)
+  const [showAddExercise, setShowAddExercise] = useState(false)
+  const [availableExercises, setAvailableExercises] = useState<ExerciseMenuItem[]>([])
+  const [addingExercise, setAddingExercise] = useState(false)
   const initRef = useRef(false)
 
   // Initialize exercise states and load any existing sets from session
@@ -154,6 +159,48 @@ export default function ActiveWorkoutCard({
     if (needsRx) fetchPrescription(activeIdx, exStates)
   })
 
+  const handleAddExercise = async (exerciseId: number) => {
+    setAddingExercise(true)
+    try {
+      await addPlanExercise([{ exercise_id: exerciseId }], today())
+      const chosen = availableExercises.find(e => e.exercise_id === exerciseId)
+      if (chosen) {
+        const newState: ExerciseState = {
+          exercise_id: chosen.exercise_id,
+          name: chosen.name,
+          allow_heavy_loading: chosen.allow_heavy_loading,
+          is_bodyweight: chosen.is_bodyweight ?? false,
+          sets: [],
+          prescription: null,
+          prescribing: false,
+          complete: false,
+          inflection_detected: null,
+          estimated_1rm: null,
+        }
+        setExStates(prev => [...prev, newState])
+        setActiveIdx(exStates.length) // switch to the newly added exercise
+      }
+    } catch { /* best effort */ }
+    setAddingExercise(false)
+    setShowAddExercise(false)
+  }
+
+  const handleOpenAddExercise = async () => {
+    if (showAddExercise) {
+      setShowAddExercise(false)
+      return
+    }
+    setShowAddExercise(true)
+    try {
+      const menu = await getExerciseMenu()
+      // Filter out exercises already in this session
+      const currentIds = new Set(exStates.map(s => s.exercise_id))
+      setAvailableExercises(menu.filter(e => !currentIds.has(e.exercise_id)))
+    } catch {
+      setAvailableExercises([])
+    }
+  }
+
   const handleFinish = async () => {
     setCompleting(true)
     try {
@@ -215,7 +262,41 @@ export default function ActiveWorkoutCard({
             {ex.name}
           </button>
         ))}
+        <button
+          type="button"
+          onClick={handleOpenAddExercise}
+          disabled={addingExercise}
+          className="shrink-0 rounded-lg bg-blue-50 px-2.5 py-1.5 text-[11px] font-medium text-blue-600 transition-all hover:bg-blue-100 disabled:opacity-50"
+        >
+          + Add
+        </button>
       </div>
+
+      {/* Add exercise dropdown */}
+      {showAddExercise && (
+        <div className="mb-4 max-h-48 overflow-y-auto rounded-lg border border-gray-200 bg-gray-50 p-2">
+          {availableExercises.length === 0 ? (
+            <p className="py-2 text-center text-xs text-gray-400">Loading...</p>
+          ) : (
+            availableExercises.map(ex => (
+              <button
+                key={ex.exercise_id}
+                type="button"
+                onClick={() => handleAddExercise(ex.exercise_id)}
+                disabled={addingExercise}
+                className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs text-gray-700 transition-colors hover:bg-white disabled:opacity-50"
+              >
+                <span className="font-medium">{ex.name}</span>
+                <span className="text-[10px] text-gray-400">
+                  {ex.days_since_trained != null
+                    ? `${ex.days_since_trained}d ago`
+                    : 'never'}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
 
       {/* Active exercise card */}
       {exStates.length > 0 && exStates[activeIdx] && (
