@@ -99,17 +99,15 @@ export default function TrainingPage() {
             <CardSkeleton lines={5} />
             <CardSkeleton lines={8} />
           </div>
+        ) : activeSessionId && activeExercises.length > 0 ? (
+          <ActiveWorkoutCard
+            sessionId={activeSessionId}
+            exercises={activeExercises}
+            onFinish={handleFinish}
+            onCancel={handleCancel}
+          />
         ) : (
           <>
-            {activeSessionId && activeExercises.length > 0 && (
-              <ActiveWorkoutCard
-                sessionId={activeSessionId}
-                exercises={activeExercises}
-                onFinish={handleFinish}
-                onCancel={handleCancel}
-              />
-            )}
-
             {starting && (
               <div className="rounded-2xl border border-gray-200 bg-white p-5">
                 <p className="text-xs text-gray-500 italic">Starting workout...</p>
@@ -118,7 +116,7 @@ export default function TrainingPage() {
 
             <StrengthPlannerCard
               onStart={handleStart}
-              disabled={activeSessionId !== null}
+              disabled={starting}
             />
           </>
         )}
