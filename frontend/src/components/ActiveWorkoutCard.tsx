@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import WorkoutSetEditor from './WorkoutSetEditor'
 import {
   addPlanExercise,
   addWorkoutSet,
@@ -61,6 +62,7 @@ export default function ActiveWorkoutCard({
   const [showAddExercise, setShowAddExercise] = useState(false)
   const [availableExercises, setAvailableExercises] = useState<ExerciseMenuItem[]>([])
   const [addingExercise, setAddingExercise] = useState(false)
+  const [editing, setEditing] = useState(false)
   const initRef = useRef(false)
 
   // Initialize exercise states and load any existing sets from session
@@ -108,6 +110,36 @@ export default function ActiveWorkoutCard({
     }
     init()
   }, [sessionId, exercises])
+
+  // Rebuild exercise states from session after edits (clears prescriptions to re-trigger)
+  const rebuildFromSession = useCallback(async () => {
+    try {
+      const session = await getWorkoutSession(sessionId)
+      const freshSets = session.sets || []
+      setExStates(prev => {
+        // Preserve exercise order; update sets and clear prescription
+        const exerciseIds = new Set(prev.map(s => s.exercise_id))
+        // Also pick up any exercises added via the editor
+        for (const s of freshSets) {
+          if (!exerciseIds.has(s.exercise_id)) exerciseIds.add(s.exercise_id)
+        }
+        const updated: ExerciseState[] = []
+        for (const old of prev) {
+          const mySets = freshSets
+            .filter(s => s.exercise_id === old.exercise_id)
+            .sort((a, b) => a.set_order - b.set_order)
+            .map(s => ({
+              id: s.id,
+              weight: s.weight ?? 0,
+              reps: s.reps ?? 0,
+              rir: s.rpe != null ? Math.round(10 - s.rpe) : 3,
+            }))
+          updated.push({ ...old, sets: mySets, prescription: null, prescribing: false })
+        }
+        return updated
+      })
+    } catch { /* ignore */ }
+  }, [sessionId])
 
   // Fetch prescription for a specific exercise index
   const fetchingRef = useRef<number | null>(null)
@@ -230,6 +262,20 @@ export default function ActiveWorkoutCard({
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              if (editing) rebuildFromSession()
+              setEditing(e => !e)
+            }}
+            className={`text-[10px] transition-colors ${
+              editing
+                ? 'font-medium text-blue-600 hover:text-blue-800'
+                : 'text-gray-400 hover:text-gray-600'
+            }`}
+          >
+            {editing ? 'done editing' : 'edit sets'}
+          </button>
           {!allComplete && (
             <button
               type="button"
@@ -243,83 +289,95 @@ export default function ActiveWorkoutCard({
         </div>
       </div>
 
-      {/* Exercise tabs */}
-      <div className="mb-4 flex gap-1.5 overflow-x-auto pb-1">
-        {exStates.map((ex, i) => (
-          <button
-            key={ex.exercise_id}
-            type="button"
-            onClick={() => setActiveIdx(i)}
-            className={`shrink-0 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-all ${
-              i === activeIdx
-                ? 'bg-gray-900 text-white'
-                : ex.complete
-                  ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-            }`}
-          >
-            {ex.complete && '✓ '}
-            {ex.name}
-          </button>
-        ))}
-        <button
-          type="button"
-          onClick={handleOpenAddExercise}
-          disabled={addingExercise}
-          className="shrink-0 rounded-lg bg-blue-50 px-2.5 py-1.5 text-[11px] font-medium text-blue-600 transition-all hover:bg-blue-100 disabled:opacity-50"
-        >
-          + Add
-        </button>
-      </div>
-
-      {/* Add exercise dropdown */}
-      {showAddExercise && (
-        <div className="mb-4 max-h-48 overflow-y-auto rounded-lg border border-gray-200 bg-gray-50 p-2">
-          {availableExercises.length === 0 ? (
-            <p className="py-2 text-center text-xs text-gray-400">Loading...</p>
-          ) : (
-            availableExercises.map(ex => (
+      {editing ? (
+        /* Set editor mode */
+        <WorkoutSetEditor
+          mode="log"
+          sessionId={sessionId}
+          onSessionChanged={() => { /* live updates; rebuild happens on "done editing" */ }}
+          compact
+        />
+      ) : (
+        <>
+          {/* Exercise tabs */}
+          <div className="mb-4 flex gap-1.5 overflow-x-auto pb-1">
+            {exStates.map((ex, i) => (
               <button
                 key={ex.exercise_id}
                 type="button"
-                onClick={() => handleAddExercise(ex.exercise_id)}
-                disabled={addingExercise}
-                className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs text-gray-700 transition-colors hover:bg-white disabled:opacity-50"
+                onClick={() => setActiveIdx(i)}
+                className={`shrink-0 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-all ${
+                  i === activeIdx
+                    ? 'bg-gray-900 text-white'
+                    : ex.complete
+                      ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
               >
-                <span className="font-medium">{ex.name}</span>
-                <span className="text-[10px] text-gray-400">
-                  {ex.days_since_trained != null
-                    ? `${ex.days_since_trained}d ago`
-                    : 'never'}
-                </span>
+                {ex.complete && '✓ '}
+                {ex.name}
               </button>
-            ))
-          )}
-        </div>
-      )}
+            ))}
+            <button
+              type="button"
+              onClick={handleOpenAddExercise}
+              disabled={addingExercise}
+              className="shrink-0 rounded-lg bg-blue-50 px-2.5 py-1.5 text-[11px] font-medium text-blue-600 transition-all hover:bg-blue-100 disabled:opacity-50"
+            >
+              + Add
+            </button>
+          </div>
 
-      {/* Active exercise card */}
-      {exStates.length > 0 && exStates[activeIdx] && (
-        <ExerciseWorkout
-          key={exStates[activeIdx].exercise_id}
-          sessionId={sessionId}
-          state={exStates[activeIdx]}
-          onSetLogged={(loggedSet) => {
-            const idx = activeIdx
-            setExStates(prev => prev.map((s, i) => {
-              if (i !== idx) return s
-              return { ...s, sets: [...s.sets, loggedSet], prescription: null }
-            }))
-          }}
-          onMarkComplete={() => {
-            setExStates(prev => prev.map((s, i) =>
-              i === activeIdx ? { ...s, complete: true } : s
-            ))
-            // Auto-advance to next incomplete
-            const nextIdx = exStates.findIndex((s, i) => i > activeIdx && !s.complete)
-            if (nextIdx >= 0) setActiveIdx(nextIdx)
-          }}
-        />
+          {/* Add exercise dropdown */}
+          {showAddExercise && (
+            <div className="mb-4 max-h-48 overflow-y-auto rounded-lg border border-gray-200 bg-gray-50 p-2">
+              {availableExercises.length === 0 ? (
+                <p className="py-2 text-center text-xs text-gray-400">Loading...</p>
+              ) : (
+                availableExercises.map(ex => (
+                  <button
+                    key={ex.exercise_id}
+                    type="button"
+                    onClick={() => handleAddExercise(ex.exercise_id)}
+                    disabled={addingExercise}
+                    className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs text-gray-700 transition-colors hover:bg-white disabled:opacity-50"
+                  >
+                    <span className="font-medium">{ex.name}</span>
+                    <span className="text-[10px] text-gray-400">
+                      {ex.days_since_trained != null
+                        ? `${ex.days_since_trained}d ago`
+                        : 'never'}
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+
+          {/* Active exercise card */}
+          {exStates.length > 0 && exStates[activeIdx] && (
+            <ExerciseWorkout
+              key={exStates[activeIdx].exercise_id}
+              sessionId={sessionId}
+              state={exStates[activeIdx]}
+              onSetLogged={(loggedSet) => {
+                const idx = activeIdx
+                setExStates(prev => prev.map((s, i) => {
+                  if (i !== idx) return s
+                  return { ...s, sets: [...s.sets, loggedSet], prescription: null }
+                }))
+              }}
+              onMarkComplete={() => {
+                setExStates(prev => prev.map((s, i) =>
+                  i === activeIdx ? { ...s, complete: true } : s
+                ))
+                // Auto-advance to next incomplete
+                const nextIdx = exStates.findIndex((s, i) => i > activeIdx && !s.complete)
+                if (nextIdx >= 0) setActiveIdx(nextIdx)
+              }}
+            />
+          )}
+        </>
       )}
 
       {/* Finish / Complete button */}
@@ -356,16 +414,58 @@ function ExerciseWorkout({
   const [reps, setReps] = useState('')
   const [rir, setRir] = useState('')
   const [logging, setLogging] = useState(false)
+  const [adjusting, setAdjusting] = useState(false)
+  const adjustTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Pre-fill from prescription
   useEffect(() => {
     if (state.prescription?.next_set) {
       const ns = state.prescription.next_set
       if (ns.proposed_weight != null) setWeight(String(Math.round(ns.proposed_weight)))
-      setReps(String(ns.target_reps))
-      setRir(String(ns.target_rir))
+      if (ns.target_reps != null) setReps(String(ns.target_reps))
+      if (ns.target_rir != null) setRir(String(ns.target_rir))
     }
   }, [state.prescription])
+
+  // Clean up debounce timer on unmount
+  useEffect(() => () => { if (adjustTimer.current) clearTimeout(adjustTimer.current) }, [])
+
+  // Re-prescribe when user enters a different weight
+  const handleWeightChange = (value: string) => {
+    setWeight(value)
+
+    const rx = state.prescription
+    if (!rx?.has_curve || !rx?.next_set) return
+
+    const w = parseFloat(value)
+    if (isNaN(w) || w <= 0) return
+
+    // Skip if weight matches original prescription
+    if (rx.next_set.proposed_weight != null
+        && Math.abs(Math.round(rx.next_set.proposed_weight) - Math.round(w)) < 0.5) return
+
+    if (adjustTimer.current) clearTimeout(adjustTimer.current)
+    adjustTimer.current = setTimeout(async () => {
+      setAdjusting(true)
+      try {
+        const priorSets = state.sets.map(s => ({
+          weight: s.weight,
+          reps: s.reps,
+          rpe: 10 - s.rir,
+        }))
+        const adjusted = await prescribeNext({
+          exercise_id: state.exercise_id,
+          prior_sets: priorSets,
+          actual_weight: w,
+        })
+        if (adjusted.next_set) {
+          setReps(String(adjusted.next_set.target_reps))
+          setRir(String(adjusted.next_set.target_rir))
+        }
+      } catch { /* ignore */ }
+      finally { setAdjusting(false) }
+    }, 500)
+  }
 
   const handleLogSet = async () => {
     const w = parseFloat(weight)
@@ -439,7 +539,7 @@ function ExerciseWorkout({
             </div>
           )}
 
-          {rx && !state.prescribing && rx.next_set && (
+          {rx && !state.prescribing && rx.next_set && !rx.is_bodyweight && (
             <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
               <div className="flex items-center justify-between">
                 <p className="text-xs font-medium text-blue-800">
@@ -467,12 +567,13 @@ function ExerciseWorkout({
             </div>
           )}
 
-          {rx && rx.is_bodyweight && rx.suggestion && (
+          {rx && rx.is_bodyweight && rx.suggestion && !rx.exercise_complete && (
             <div className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3">
-              <p className="text-xs font-medium text-sky-800">Bodyweight</p>
+              <p className="text-xs font-medium text-sky-800">
+                Bodyweight — Set {state.sets.length + 1} of {rx.suggestion.sets}
+              </p>
               <p className="mt-0.5 text-xs text-sky-700">
-                {rx.suggestion.sets} × {rx.suggestion.reps_per_set} reps
-                {rx.suggestion.notes && ` — ${rx.suggestion.notes}`}
+                {rx.suggestion.reps_per_set} reps
               </p>
             </div>
           )}
@@ -485,24 +586,30 @@ function ExerciseWorkout({
                 type="number"
                 inputMode="decimal"
                 value={weight}
-                onChange={e => setWeight(e.target.value)}
+                onChange={e => handleWeightChange(e.target.value)}
                 className="mt-0.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400"
                 placeholder="0"
               />
             </div>
             <div className="w-20">
-              <label className="block text-[10px] font-medium text-gray-500">Reps</label>
+              <label className="block text-[10px] font-medium text-gray-500">
+                Reps{adjusting && <span className="ml-1 text-blue-400">…</span>}
+              </label>
               <input
                 type="number"
                 inputMode="numeric"
                 value={reps}
                 onChange={e => setReps(e.target.value)}
-                className="mt-0.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400"
+                className={`mt-0.5 w-full rounded-lg border px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400 ${
+                  adjusting ? 'border-blue-300 bg-blue-50' : 'border-gray-300'
+                }`}
                 placeholder="0"
               />
             </div>
             <div className="w-16">
-              <label className="block text-[10px] font-medium text-gray-500">RIR</label>
+              <label className="block text-[10px] font-medium text-gray-500">
+                RIR{adjusting && <span className="ml-1 text-blue-400">…</span>}
+              </label>
               <input
                 type="number"
                 inputMode="numeric"
@@ -510,7 +617,9 @@ function ExerciseWorkout({
                 onChange={e => setRir(e.target.value)}
                 min={0}
                 max={5}
-                className="mt-0.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400"
+                className={`mt-0.5 w-full rounded-lg border px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400 ${
+                  adjusting ? 'border-blue-300 bg-blue-50' : 'border-gray-300'
+                }`}
                 placeholder="0"
               />
             </div>
