@@ -71,10 +71,10 @@ class SetPrescription:
 
 @dataclass
 class InflectionResult:
-    """Result of checking whether the strength curve inflects downward."""
+    """Result of checking whether per-set 1RM is declining (fatigue visible)."""
 
-    inflecting: bool  # True if 2nd derivative < 0 at max session weight
-    estimated_1rm: float | None  # M from the refit (if inflecting)
+    inflecting: bool  # True if last set 1RM < previous set 1RM
+    estimated_1rm: float | None  # average per-set 1RM (if inflecting)
     suggested_set4: SetPrescription | None  # only if not inflecting + heavy
 
 
@@ -497,50 +497,47 @@ def detect_inflection(
     bodyweight_lb: float,
     max_entered_weight: float | None = None,
 ) -> InflectionResult:
-    """Check if the strength curve inflects downward at the heaviest session weight.
+    """Check if per-set 1RM is declining (fatigue visible).
 
-    Requires 3+ session sets at different weights.
+    Requires 3+ session sets.
     session_sets: [{"weight": float, "reps": int, "rpe": float}] (entered weights)
 
-    Uses the analytical second derivative of r_fresh(W) = k*(M/W - 1)^gamma:
-      d²r/dW² = k*gamma*M/W³ * (M/W - 1)^(gamma-2) * [(gamma+1)*M/W - (gamma-1)]
-    The sign depends on [(gamma+1)*M/W - (gamma-1)].
-    Inflecting (concave) when (gamma+1)*M/W < (gamma-1), i.e. W > M*(gamma+1)/(gamma-1).
-    For gamma < 1, (gamma-1) < 0 so inflection always present (always concave).
-    For gamma = 1, boundary at W = inf (linear) — never inflects.
-    For gamma > 1, inflection at W = M*(gamma+1)/(gamma-1).
+    Computes a per-set 1RM estimate from each set's effective weight and
+    reps-to-failure using a standard Brzycki-style formula.  If the last
+    set's estimated 1RM is lower than the previous set's, fatigue is
+    showing (inflecting).  Otherwise the user still has headroom and
+    should do another set.
     """
     if len(session_sets) < 3:
         return InflectionResult(inflecting=False, estimated_1rm=None, suggested_set4=None)
 
-    # Find the heaviest effective weight from the session
-    max_ew = 0.0
+    # Compute per-set 1RM estimates from raw data (model-independent)
+    set_1rms: list[float] = []
     for s in session_sets:
         ew = _entered_to_effective(exercise, s["weight"], bodyweight_lb)
-        max_ew = max(max_ew, ew)
+        if ew <= 0:
+            continue
+        rpe = s.get("rpe") or 7.0
+        rir = 10.0 - rpe
+        r_fail = s["reps"] + rir
+        # Brzycki: 1RM = W / (1 - r_fail / 37), clamped for safety
+        denom = max(1.0 - r_fail / 37.0, 0.05)
+        est_1rm = ew / denom
+        set_1rms.append(est_1rm)
 
-    if max_ew <= 0:
+    if len(set_1rms) < 3:
         return InflectionResult(inflecting=False, estimated_1rm=None, suggested_set4=None)
 
-    M, gamma = fit.M, fit.gamma
-
-    # Check if curve is concave (inflecting down) at max session weight
-    # For gamma < 1: always concave for W < M — inflecting
-    # For gamma >= 1: check the analytical condition
-    if gamma < 1.0:
-        inflecting = True
-    else:
-        # Inflection boundary at W_inflect = M*(gamma+1)/(gamma-1) for gamma > 1
-        if gamma <= 1.0 + 1e-9:
-            inflecting = False  # gamma ≈ 1 → linear, no inflection
-        else:
-            w_inflect = M * (gamma + 1) / (gamma - 1)
-            inflecting = max_ew > w_inflect * 0.85  # near or past inflection point
+    # Inflecting = last set 1RM is lower than the second-to-last
+    last = set_1rms[-1]
+    prev = set_1rms[-2]
+    inflecting = last < prev
 
     if inflecting:
+        avg_1rm = sum(set_1rms) / len(set_1rms)
         return InflectionResult(
             inflecting=True,
-            estimated_1rm=round(M, 1),
+            estimated_1rm=round(avg_1rm, 1),
             suggested_set4=None,
         )
 
