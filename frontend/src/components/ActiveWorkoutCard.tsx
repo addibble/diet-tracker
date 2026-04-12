@@ -104,34 +104,30 @@ export default function ActiveWorkoutCard({
     init()
   }, [sessionId, exercises])
 
-  // Fetch prescription for the active exercise whenever it changes or sets are updated
-  // Auto-fetch prescription when active exercise changes or has no prescription
-  const needsPrescription = exStates.length > 0
-    && exStates[activeIdx]
-    && !exStates[activeIdx].prescribing
-    && !exStates[activeIdx].complete
-    && !exStates[activeIdx].prescription
+  // Fetch prescription for a specific exercise index
+  const fetchingRef = useRef<number | null>(null)
 
-  useEffect(() => {
-    if (!needsPrescription) return
-    const ex = exStates[activeIdx]
-    if (!ex) return
-    let cancelled = false
-    const fetchRx = async () => {
-      setExStates(prev => prev.map((s, i) => i === activeIdx ? { ...s, prescribing: true } : s))
-      const priorSets = ex.sets.map(s => ({
-        weight: s.weight,
-        reps: s.reps,
-        rpe: 10 - s.rir,
-      }))
-      try {
-        const rx = await prescribeNext({
-          exercise_id: ex.exercise_id,
-          prior_sets: priorSets,
-        })
-        if (cancelled) return
+  const fetchPrescription = (idx: number, states: typeof exStates) => {
+    const ex = states[idx]
+    if (!ex || ex.complete || ex.prescription) return
+    if (fetchingRef.current === ex.exercise_id) return
+
+    fetchingRef.current = ex.exercise_id
+    const exerciseId = ex.exercise_id
+
+    setExStates(prev => prev.map((s, i) => i === idx ? { ...s, prescribing: true } : s))
+
+    const priorSets = ex.sets.map(s => ({
+      weight: s.weight,
+      reps: s.reps,
+      rpe: 10 - s.rir,
+    }))
+
+    prescribeNext({ exercise_id: exerciseId, prior_sets: priorSets })
+      .then(rx => {
+        fetchingRef.current = null
         setExStates(prev => prev.map((s, i) => {
-          if (i !== activeIdx) return s
+          if (i !== idx || s.exercise_id !== exerciseId) return s
           return {
             ...s,
             prescription: rx,
@@ -141,16 +137,22 @@ export default function ActiveWorkoutCard({
             estimated_1rm: rx.estimated_1rm ?? null,
           }
         }))
-      } catch {
-        if (!cancelled) {
-          setExStates(prev => prev.map((s, i) => i === activeIdx ? { ...s, prescribing: false } : s))
-        }
-      }
-    }
-    fetchRx()
-    return () => { cancelled = true }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [needsPrescription, activeIdx])
+      })
+      .catch(() => {
+        fetchingRef.current = null
+        setExStates(prev => prev.map((s, i) =>
+          i === idx ? { ...s, prescribing: false } : s
+        ))
+      })
+  }
+
+  // Auto-trigger prescription fetch when active exercise needs one
+  const activeEx = exStates[activeIdx]
+  const needsRx = activeEx && !activeEx.complete && !activeEx.prescription && !activeEx.prescribing
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async data fetch triggered by state change
+    if (needsRx) fetchPrescription(activeIdx, exStates)
+  })
 
   const handleFinish = async () => {
     setCompleting(true)

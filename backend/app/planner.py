@@ -513,6 +513,7 @@ def _serialize_saved_plan(session: Session, planned: PlannedSession) -> dict:
             "exercise_id": pde.exercise_id,
             "exercise_name": exercise.name if exercise else "Unknown",
             "equipment": exercise.equipment if exercise else None,
+            "allow_heavy_loading": exercise.allow_heavy_loading if exercise else True,
             "load_input_mode": (
                 exercise.load_input_mode if exercise else "external_weight"
             ),

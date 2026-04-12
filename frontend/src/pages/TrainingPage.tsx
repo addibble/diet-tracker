@@ -4,7 +4,6 @@ import ActiveWorkoutCard from '../components/ActiveWorkoutCard'
 import StrengthPlannerCard from '../components/StrengthPlannerCard'
 import {
   getActivePlan,
-  getWorkoutSession,
   quickStart,
   type ExerciseMenuItem,
 } from '../api'
@@ -35,54 +34,26 @@ export default function TrainingPage() {
   const [activeExercises, setActiveExercises] = useState<ExerciseMenuItem[]>([])
   const [starting, setStarting] = useState(false)
 
-  // Restore active workout on mount (e.g., after page refresh)
+  // Restore active workout on mount (e.g., after page refresh or tab switch)
   useEffect(() => {
     let cancelled = false
     getActivePlan(today()).then(plan => {
       if (cancelled) return
       if (plan && plan.status === 'in_progress' && plan.workout_session_id) {
-        // Resume existing workout
         setActiveSessionId(plan.workout_session_id)
-        // Reconstruct exercise list from session sets
-        getWorkoutSession(plan.workout_session_id).then(session => {
-          if (cancelled) return
-          const exerciseMap = new Map<number, ExerciseMenuItem>()
-          for (const s of session.sets) {
-            if (!exerciseMap.has(s.exercise_id)) {
-              exerciseMap.set(s.exercise_id, {
-                exercise_id: s.exercise_id,
-                name: s.exercise_name,
-                allow_heavy_loading: true,
-                is_bodyweight: false,
-                load_input_mode: 'external_weight',
-                has_curve_fit: false,
-                days_since_trained: 0,
-                recent_rpe_sets: 0,
-              })
-            }
-          }
-          // Also get exercises from plan
-          if (plan.exercises) {
-            for (const ex of plan.exercises) {
-              if (!exerciseMap.has(ex.exercise_id)) {
-                exerciseMap.set(ex.exercise_id, {
-                  exercise_id: ex.exercise_id,
-                  name: ex.exercise_name,
-                  allow_heavy_loading: true,
-                  is_bodyweight: false,
-                  load_input_mode: 'external_weight',
-                  has_curve_fit: false,
-                  days_since_trained: 0,
-                  recent_rpe_sets: 0,
-                })
-              }
-            }
-          }
-          setActiveExercises(Array.from(exerciseMap.values()))
-          setLoading(false)
-        }).catch(() => {
-          if (!cancelled) setLoading(false)
-        })
+        // Build exercise list from plan exercises (always available)
+        const exercises: ExerciseMenuItem[] = (plan.exercises || []).map(ex => ({
+          exercise_id: ex.exercise_id,
+          name: ex.exercise_name,
+          allow_heavy_loading: ex.allow_heavy_loading ?? true,
+          is_bodyweight: ex.load_input_mode === 'bodyweight',
+          load_input_mode: ex.load_input_mode || 'external_weight',
+          has_curve_fit: false,
+          days_since_trained: 0,
+          recent_rpe_sets: 0,
+        }))
+        setActiveExercises(exercises)
+        setLoading(false)
       } else {
         setLoading(false)
       }

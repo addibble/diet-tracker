@@ -1424,6 +1424,7 @@ export interface SavedPlanExercise {
   exercise_id: number;
   exercise_name: string;
   equipment: string | null;
+  allow_heavy_loading?: boolean;
   load_input_mode: string;
   laterality?: 'bilateral' | 'unilateral' | 'either';
   target_sets: number;
