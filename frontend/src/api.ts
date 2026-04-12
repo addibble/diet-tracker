@@ -1514,6 +1514,28 @@ export interface PrescribeAllResponse {
 export const getExerciseMenu = () =>
   request<ExerciseMenuItem[]>('/planner/exercise-menu');
 
+// --- Weekly menu (exercise groups + schedule) ---
+
+export interface WeeklyExerciseItem extends ExerciseMenuItem {
+  group: string;
+  confidence: number;
+}
+
+export interface WeeklyMenuDay {
+  day_index: number;
+  day_label: string;
+  groups: string[];
+  exercises: WeeklyExerciseItem[];
+}
+
+export interface WeeklyMenuResponse {
+  days: WeeklyMenuDay[];
+  today_index: number;
+}
+
+export const getWeeklyMenu = () =>
+  request<WeeklyMenuResponse>('/planner/weekly-menu');
+
 export const prescribeSet = (data: {
   exercise_id: number;
   set_number: number;
