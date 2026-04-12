@@ -913,12 +913,13 @@ def refit_with_observations(
         confidences.append(_rpe_confidence(ws.rpe))
         ages_days.append((today - ws_date).days)
 
-    # Filter stale sessions from historical data before merging with new obs
-    eff_weights, reps_to_failure, confidences, ages_days = _filter_stale_sessions(
-        eff_weights, reps_to_failure, confidences, ages_days,
-    )
-
-    # Add new in-session observations (age=0, high confidence since just performed)
+    # Add new in-session observations (age=0) BEFORE filtering so the
+    # t-test uses current session performance as the anchor.  This drops
+    # historical sessions whose strength level is statistically different
+    # from what we're doing right now (injury recovery, technique change,
+    # detraining, etc.).  After only 1 session set the t-test can't run
+    # (needs ≥2 in the anchor), so historical filtering still applies.
+    n_session = 0
     for obs in new_obs:
         if obs.get("rpe") is None or obs.get("reps") is None:
             continue
@@ -930,6 +931,15 @@ def refit_with_observations(
         reps_to_failure.append(obs["reps"] + rir)
         confidences.append(_rpe_confidence(obs["rpe"]))
         ages_days.append(0.0)  # just happened
+        n_session += 1
+
+    # Filter stale sessions — with session data present (age=0) it becomes
+    # the anchor, so historical sessions that don't match current performance
+    # are dropped.  Without session data this falls back to historical-only
+    # filtering (most recent historical session as anchor).
+    eff_weights, reps_to_failure, confidences, ages_days = _filter_stale_sessions(
+        eff_weights, reps_to_failure, confidences, ages_days,
+    )
 
     n_obs = len(eff_weights)
     if n_obs < MIN_SETS_TIER2:
@@ -941,9 +951,9 @@ def refit_with_observations(
     recency = _recency_weights(ages_days)
     fit_w = conf * recency
 
-    # Session boost: scale same-day weights so they contribute TARGET share
-    n_session = sum(1 for obs in new_obs
-                    if obs.get("rpe") is not None and obs.get("reps") is not None)
+    # Session boost: scale same-day weights so they contribute TARGET share.
+    # Session data (anchor) is always kept by the filter, so n_session is
+    # unchanged.  n_prior may have shrunk if historical sessions were dropped.
     n_prior = n_obs - n_session
     if n_session > 0 and n_prior > 0:
         prior_total = float(np.sum(fit_w[:n_prior]))
