@@ -218,7 +218,7 @@ class TestFitCurve:
         assert result.gamma > 0
         assert result.n_obs == 6
         assert result.rmse < 10  # reasonable fit
-        assert result.fit_tier in ("tier1", "tier2")  # may auto-demote if gamma < 0.5
+        assert result.fit_tier in ("tier1", "tier2")  # tier depends on session count
 
     def test_tier2_with_single_weight(self, session):
         ex = _make_exercise(session, name="Single Weight Test")
@@ -583,8 +583,9 @@ class TestFilterStaleSessions:
         reps = [12.0, 8.0, 11.0, 7.0]  # similar r_fail
         confs = [0.8, 0.8, 0.8, 0.8]
         ages = [0.0, 0.0, 7.0, 7.0]
-        w2, r2, c2, a2 = _filter_stale_sessions(weights, reps, confs, ages)
+        w2, r2, c2, a2, ns = _filter_stale_sessions(weights, reps, confs, ages)
         assert len(w2) == 4  # all kept
+        assert ns == 2  # both sessions survived
 
     def test_different_strength_sessions_dropped(self):
         """Sessions with significantly different 1RM should be dropped."""
@@ -594,10 +595,11 @@ class TestFilterStaleSessions:
         reps = [18.0, 18.0, 14.0, 15.0, 15.0, 15.0]
         confs = [0.8, 0.8, 0.9, 0.8, 0.8, 0.8]
         ages = [4.0, 4.0, 4.0, 21.0, 21.0, 21.0]
-        w2, r2, c2, a2 = _filter_stale_sessions(weights, reps, confs, ages)
+        w2, r2, c2, a2, ns = _filter_stale_sessions(weights, reps, confs, ages)
         # Should drop the 21d-old session
         assert len(w2) == 3
         assert all(a == 4.0 for a in a2)
+        assert ns == 1  # only anchor survived
 
     def test_single_set_sessions_kept(self):
         """Sessions with only 1 set can't be t-tested — keep them."""
@@ -605,8 +607,9 @@ class TestFilterStaleSessions:
         reps = [18.0, 18.0, 15.0]
         confs = [0.8, 0.8, 0.8]
         ages = [4.0, 4.0, 21.0]  # 21d session has 1 set
-        w2, r2, c2, a2 = _filter_stale_sessions(weights, reps, confs, ages)
+        w2, r2, c2, a2, ns = _filter_stale_sessions(weights, reps, confs, ages)
         assert len(w2) == 3  # all kept (can't t-test single-set session)
+        assert ns == 2
 
     def test_too_few_observations_fallback(self):
         """If filtering would leave < MIN_SETS, return unfiltered."""
@@ -615,9 +618,10 @@ class TestFilterStaleSessions:
         reps = [18.0, 18.0, 15.0, 15.0, 15.0]
         confs = [0.8, 0.8, 0.8, 0.8, 0.8]
         ages = [4.0, 4.0, 21.0, 21.0, 21.0]
-        w2, r2, c2, a2 = _filter_stale_sessions(weights, reps, confs, ages)
+        w2, r2, c2, a2, ns = _filter_stale_sessions(weights, reps, confs, ages)
         # Falls back to unfiltered since 2 < MIN_SETS_TIER2=3
         assert len(w2) == 5
+        assert ns == 2  # fallback reports all original sessions
 
     def test_single_session_no_filter(self):
         """All sets from same session → nothing to filter."""
@@ -625,8 +629,9 @@ class TestFilterStaleSessions:
         reps = [15.0, 12.0, 8.0]
         confs = [0.8, 0.8, 0.9]
         ages = [0.0, 0.0, 0.0]
-        w2, r2, c2, a2 = _filter_stale_sessions(weights, reps, confs, ages)
+        w2, r2, c2, a2, ns = _filter_stale_sessions(weights, reps, confs, ages)
         assert len(w2) == 3
+        assert ns == 1
 
 
 class TestRPEFloor:
@@ -655,6 +660,7 @@ class TestAutoDemotion:
         """Data where more reps at higher weight should auto-demote to tier2."""
         ex = _make_exercise(session, name="Auto Demote Test")
         # Inverted pattern: more reps at higher weight (rapid progression)
+        # Single session → n_sessions_kept=1 → tier2
         sets_data = [
             {"reps": 15, "weight": 70, "rpe": 7.0},
             {"reps": 14, "weight": 90, "rpe": 8.0},
@@ -666,6 +672,6 @@ class TestAutoDemotion:
         _make_session_and_sets(session, ex, sets_data)
         result = fit_curve(ex.id, session)
         assert result is not None
-        # Should be demoted to tier2 due to low gamma
+        # Should be tier2 (single session → not enough for free gamma)
         assert result.fit_tier == "tier2"
         assert result.gamma == DEFAULT_GAMMA

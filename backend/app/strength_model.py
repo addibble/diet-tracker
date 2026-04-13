@@ -28,11 +28,11 @@ from app.models import Exercise, WeightLog, WorkoutSession, WorkoutSet
 
 BODYWEIGHT_MODES = {"bodyweight", "assisted_bodyweight"}
 
-# Default class prior for gamma — aligned with Brzycki curve shape (~1.0)
-DEFAULT_GAMMA = 1.0
+# Default class prior for gamma — physiological cap: concave-down near max
+DEFAULT_GAMMA = 0.9
 
-# Gamma regularization: penalizes deviation from Brzycki-expected shape
-GAMMA_PRIOR = 1.0
+# Gamma regularization: penalizes deviation from prior shape
+GAMMA_PRIOR = 0.9
 GAMMA_REG_LAMBDA = 3.0  # per-observation strength (scaled by mean fit_weight)
 
 # Session refit: same-day observations get boosted to this share of total weight
@@ -46,8 +46,9 @@ MIN_DISTINCT_WEIGHTS_TIER1 = 2
 # RPE floor: sets below this are too far from failure to inform max estimation
 MIN_RPE_FOR_FIT = 7.0
 
-# Auto-demotion: if free-gamma fit produces gamma below this, demote to tier 2
-GAMMA_DEMOTE_THRESHOLD = 0.5
+# Gamma bounds: physiological range (concave-down near max, >0 for valid curve)
+GAMMA_MIN = 0.01
+GAMMA_MAX = 0.9
 
 # T-test significance level for dropping stale sessions
 TTEST_ALPHA = 0.05
@@ -157,7 +158,7 @@ def _filter_stale_sessions(
     reps_to_failure: list[float],
     confidences: list[float],
     ages_days: list[float],
-) -> tuple[list[float], list[float], list[float], list[float]]:
+) -> tuple[list[float], list[float], list[float], list[float], int]:
     """Drop sets from sessions whose strength level is statistically different.
 
     Groups observations by session age (days), computes per-set Brzycki 1RM,
@@ -165,9 +166,13 @@ def _filter_stale_sessions(
     recent one. Sessions with p < TTEST_ALPHA are dropped (significantly
     different strength level, likely stale). Sessions with fewer than 2 sets
     are kept (can't t-test reliably, low impact).
+
+    Returns the four filtered lists plus the number of distinct sessions that
+    survived the filter (used by callers for tier demotion decisions).
     """
     if len(eff_weights) < 3:
-        return eff_weights, reps_to_failure, confidences, ages_days
+        n_sessions = len(set(ages_days))
+        return eff_weights, reps_to_failure, confidences, ages_days, n_sessions
 
     # Group observation indices by session age
     by_age: dict[float, list[int]] = defaultdict(list)
@@ -176,7 +181,7 @@ def _filter_stale_sessions(
 
     sorted_ages = sorted(by_age.keys())
     if len(sorted_ages) < 2:
-        return eff_weights, reps_to_failure, confidences, ages_days
+        return eff_weights, reps_to_failure, confidences, ages_days, len(sorted_ages)
 
     # Anchor: most recent session's implied 1RM distribution
     anchor_age = sorted_ages[0]
@@ -186,6 +191,7 @@ def _filter_stale_sessions(
     ]
 
     keep_indices = list(by_age[anchor_age])  # always keep most recent
+    kept_ages = {anchor_age}
 
     for age in sorted_ages[1:]:
         indices = by_age[age]
@@ -199,10 +205,12 @@ def _filter_stale_sessions(
             if p < TTEST_ALPHA:
                 continue  # drop this session
         keep_indices.extend(indices)
+        kept_ages.add(age)
 
     if len(keep_indices) < MIN_SETS_TIER2:
         # Filtering removed too much data — fall back to unfiltered
-        return eff_weights, reps_to_failure, confidences, ages_days
+        return (eff_weights, reps_to_failure, confidences, ages_days,
+                len(sorted_ages))
 
     keep_indices.sort()
     return (
@@ -210,6 +218,7 @@ def _filter_stale_sessions(
         [reps_to_failure[i] for i in keep_indices],
         [confidences[i] for i in keep_indices],
         [ages_days[i] for i in keep_indices],
+        len(kept_ages),
     )
 
 
@@ -322,7 +331,7 @@ def _fit_params(
     best_result = None
     best_loss = float("inf")
 
-    gamma_inits = [0.15, 0.5, 1.0, 1.5] if fixed_gamma is None else [None]
+    gamma_inits = [0.2, 0.5, 0.7, 0.9] if fixed_gamma is None else [None]
     M_factors = [1.1, 1.3, 1.5, 2.0]
 
     for M_factor in M_factors:
@@ -335,7 +344,7 @@ def _fit_params(
                 bounds = [(M_lower, M_upper), (0.5, 200.0)]
             else:
                 x0 = [M_init, k_init, g_init]
-                bounds = [(M_lower, M_upper), (0.5, 200.0), (0.15, 2.5)]
+                bounds = [(M_lower, M_upper), (0.5, 200.0), (GAMMA_MIN, GAMMA_MAX)]
 
             try:
                 res = minimize(
@@ -445,8 +454,10 @@ def fit_curve(
         ages_days.append((today - ws_date).days)
 
     # Filter stale sessions via t-test
-    eff_weights, reps_to_failure, confidences, ages_days = _filter_stale_sessions(
-        eff_weights, reps_to_failure, confidences, ages_days,
+    eff_weights, reps_to_failure, confidences, ages_days, n_sessions_kept = (
+        _filter_stale_sessions(
+            eff_weights, reps_to_failure, confidences, ages_days,
+        )
     )
 
     n_obs = len(eff_weights)
@@ -459,9 +470,15 @@ def fit_curve(
     recency = _recency_weights(ages_days)
     fit_w = conf * recency
 
-    # Determine tier
+    # Determine tier — require multiple t-test-compatible sessions for tier 1
     distinct_w = len(set(round(w, 1) for w in eff_weights))
-    tier = "tier1" if n_obs >= MIN_SETS_TIER1 and distinct_w >= MIN_DISTINCT_WEIGHTS_TIER1 else "tier2"
+    tier = (
+        "tier1"
+        if (n_obs >= MIN_SETS_TIER1
+            and distinct_w >= MIN_DISTINCT_WEIGHTS_TIER1
+            and n_sessions_kept >= 2)
+        else "tier2"
+    )
 
     # Bounds and regularization
     M_lower, M_upper, M_prior = _estimate_M_bounds(eff_weights, reps_to_failure)
@@ -472,13 +489,6 @@ def fit_curve(
     M_fit, k_fit, gamma_fit, success = _fit_params(
         W, r, fit_w, M_lower, M_upper, M_prior, lambda_M, fixed_gamma
     )
-
-    # Auto-demote: if free gamma is unreasonably low, refit as tier 2
-    if tier == "tier1" and gamma_fit < GAMMA_DEMOTE_THRESHOLD:
-        tier = "tier2"
-        M_fit, k_fit, gamma_fit, success = _fit_params(
-            W, r, fit_w, M_lower, M_upper, M_prior, lambda_M, DEFAULT_GAMMA
-        )
 
     # Compute RMSE
     predicted = fresh_curve(W, M_fit, k_fit, gamma_fit)
@@ -937,8 +947,10 @@ def refit_with_observations(
     # the anchor, so historical sessions that don't match current performance
     # are dropped.  Without session data this falls back to historical-only
     # filtering (most recent historical session as anchor).
-    eff_weights, reps_to_failure, confidences, ages_days = _filter_stale_sessions(
-        eff_weights, reps_to_failure, confidences, ages_days,
+    eff_weights, reps_to_failure, confidences, ages_days, n_sessions_kept = (
+        _filter_stale_sessions(
+            eff_weights, reps_to_failure, confidences, ages_days,
+        )
     )
 
     n_obs = len(eff_weights)
@@ -964,8 +976,15 @@ def refit_with_observations(
             boost = max(1.0, min(boost, 100.0))
             fit_w[n_prior:] *= boost
 
+    # Determine tier — require multiple t-test-compatible sessions for tier 1
     distinct_w = len(set(round(w, 1) for w in eff_weights))
-    tier = "tier1" if n_obs >= MIN_SETS_TIER1 and distinct_w >= MIN_DISTINCT_WEIGHTS_TIER1 else "tier2"
+    tier = (
+        "tier1"
+        if (n_obs >= MIN_SETS_TIER1
+            and distinct_w >= MIN_DISTINCT_WEIGHTS_TIER1
+            and n_sessions_kept >= 2)
+        else "tier2"
+    )
 
     M_lower, M_upper, M_prior = _estimate_M_bounds(eff_weights, reps_to_failure)
     ident = _identifiability_score(eff_weights, reps_to_failure)
@@ -975,13 +994,6 @@ def refit_with_observations(
     M_fit, k_fit, gamma_fit, success = _fit_params(
         W, r, fit_w, M_lower, M_upper, M_prior, lambda_M, fixed_gamma
     )
-
-    # Auto-demote: if free gamma is unreasonably low, refit as tier 2
-    if tier == "tier1" and gamma_fit < GAMMA_DEMOTE_THRESHOLD:
-        tier = "tier2"
-        M_fit, k_fit, gamma_fit, success = _fit_params(
-            W, r, fit_w, M_lower, M_upper, M_prior, lambda_M, DEFAULT_GAMMA
-        )
 
     predicted = fresh_curve(W, M_fit, k_fit, gamma_fit)
     residuals = r - predicted
