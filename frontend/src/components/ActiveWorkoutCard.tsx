@@ -32,6 +32,9 @@ interface ExerciseState {
   name: string
   allow_heavy_loading: boolean
   is_bodyweight: boolean
+  heavy_available: boolean
+  heavy_blocked_reason: string | null
+  training_mode: 'heavy' | 'volume'
   sets: LoggedSet[]
   prescription: PrescribeNextResponse | null
   prescribing: boolean
@@ -89,11 +92,19 @@ export default function ActiveWorkoutCard({
             rir: s.rpe != null ? Math.round(10 - s.rpe) : 3,
           }))
 
+        // Resume mode from saved sets, or default to volume
+        const savedMode = existingSets.find(
+          s => s.exercise_id === ex.exercise_id && s.training_mode
+        )?.training_mode as 'heavy' | 'volume' | undefined
+
         return {
           exercise_id: ex.exercise_id,
           name: ex.name,
           allow_heavy_loading: ex.allow_heavy_loading,
           is_bodyweight: ex.is_bodyweight,
+          heavy_available: ex.heavy_available ?? false,
+          heavy_blocked_reason: ex.heavy_blocked_reason ?? null,
+          training_mode: savedMode ?? 'volume',
           sets: mySets,
           prescription: null,
           prescribing: false,
@@ -160,7 +171,7 @@ export default function ActiveWorkoutCard({
       rpe: 10 - s.rir,
     }))
 
-    prescribeNext({ exercise_id: exerciseId, prior_sets: priorSets })
+    prescribeNext({ exercise_id: exerciseId, prior_sets: priorSets, training_mode: ex.training_mode })
       .then(rx => {
         fetchingRef.current = null
         setExStates(prev => prev.map((s, i) => {
@@ -202,6 +213,9 @@ export default function ActiveWorkoutCard({
           name: chosen.name,
           allow_heavy_loading: chosen.allow_heavy_loading,
           is_bodyweight: chosen.is_bodyweight ?? false,
+          heavy_available: chosen.heavy_available ?? false,
+          heavy_blocked_reason: chosen.heavy_blocked_reason ?? null,
+          training_mode: 'volume',
           sets: [],
           prescription: null,
           prescribing: false,
@@ -224,7 +238,7 @@ export default function ActiveWorkoutCard({
     }
     setShowAddExercise(true)
     try {
-      const menu = await getExerciseMenu()
+      const menu = await getExerciseMenu(sessionId)
       // Filter out exercises already in this session
       const currentIds = new Set(exStates.map(s => s.exercise_id))
       setAvailableExercises(menu.filter(e => !currentIds.has(e.exercise_id)))
@@ -375,6 +389,11 @@ export default function ActiveWorkoutCard({
                 const nextIdx = exStates.findIndex((s, i) => i > activeIdx && !s.complete)
                 if (nextIdx >= 0) setActiveIdx(nextIdx)
               }}
+              onModeChange={(mode) => {
+                setExStates(prev => prev.map((s, i) =>
+                  i === activeIdx ? { ...s, training_mode: mode, prescription: null } : s
+                ))
+              }}
             />
           )}
         </>
@@ -404,11 +423,13 @@ function ExerciseWorkout({
   state,
   onSetLogged,
   onMarkComplete,
+  onModeChange,
 }: {
   sessionId: number
   state: ExerciseState
   onSetLogged: (set: LoggedSet) => void
   onMarkComplete: () => void
+  onModeChange: (mode: 'heavy' | 'volume') => void
 }) {
   const [weight, setWeight] = useState('')
   const [reps, setReps] = useState('')
@@ -457,6 +478,7 @@ function ExerciseWorkout({
           exercise_id: state.exercise_id,
           prior_sets: priorSets,
           actual_weight: w,
+          training_mode: state.training_mode,
         })
         if (adjusted.next_set) {
           setReps(String(adjusted.next_set.target_reps))
@@ -480,6 +502,7 @@ function ExerciseWorkout({
         weight: w,
         reps: r,
         rir: ri,
+        training_mode: state.training_mode,
       })
       onSetLogged({ id: result.id, weight: w, reps: r, rir: ri })
       // Clear fields for next set
@@ -494,9 +517,56 @@ function ExerciseWorkout({
   }
 
   const rx = state.prescription
+  const canToggleMode = state.allow_heavy_loading && state.sets.length === 0
 
   return (
     <div className="space-y-3">
+      {/* Training mode toggle (only before first set on allow_heavy exercises) */}
+      {state.allow_heavy_loading && (
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-lg border border-gray-200 bg-gray-50 p-0.5">
+            <button
+              type="button"
+              disabled={!canToggleMode}
+              onClick={() => onModeChange('volume')}
+              className={`rounded-md px-3 py-1 text-[11px] font-medium transition-colors ${
+                state.training_mode === 'volume'
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : canToggleMode
+                    ? 'text-gray-500 hover:text-gray-700'
+                    : 'text-gray-300'
+              }`}
+            >
+              Volume
+            </button>
+            <button
+              type="button"
+              disabled={!canToggleMode || !state.heavy_available}
+              onClick={() => onModeChange('heavy')}
+              className={`rounded-md px-3 py-1 text-[11px] font-medium transition-colors ${
+                state.training_mode === 'heavy'
+                  ? 'bg-red-600 text-white shadow-sm'
+                  : canToggleMode && state.heavy_available
+                    ? 'text-gray-500 hover:text-gray-700'
+                    : 'text-gray-300'
+              }`}
+            >
+              Heavy
+            </button>
+          </div>
+          {state.training_mode === 'heavy' && (
+            <span className="text-[10px] font-medium text-red-600">🔥 Heavy mode</span>
+          )}
+          {!state.heavy_available && state.allow_heavy_loading && state.training_mode !== 'heavy' && (
+            <span className="text-[10px] text-gray-400" title={state.heavy_blocked_reason ?? ''}>
+              {state.heavy_blocked_reason ?? 'Heavy unavailable'}
+            </span>
+          )}
+          {!canToggleMode && state.sets.length > 0 && (
+            <span className="text-[10px] text-gray-400">Mode locked after first set</span>
+          )}
+        </div>
+      )}
       {/* Logged sets summary */}
       {state.sets.length > 0 && (
         <div className="space-y-1">

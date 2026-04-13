@@ -52,6 +52,7 @@ from app.models import (
 )
 from app.planner_groups import significant_mapping_load
 from app.recovery_check_ins import aggregate_recovery_checkins_for_day
+from app.strength_model import check_heavy_availability
 from app.tissue_regions import load_tissue_regions
 from app.tracked_tissues import (
     default_performed_side,
@@ -516,6 +517,13 @@ def _serialize_saved_plan(session: Session, planned: PlannedSession) -> dict:
             except (json.JSONDecodeError, TypeError):
                 pass
 
+        # Check heavy availability for allow_heavy exercises
+        heavy_avail = {"available": False, "reason": None}
+        if exercise and exercise.allow_heavy_loading:
+            heavy_avail = check_heavy_availability(
+                pde.exercise_id, session, planned.workout_session_id,
+            )
+
         completed_sets = logged_sets.get(pde.exercise_id, [])
         exercises.append({
             "pde_id": pde.id,
@@ -523,6 +531,8 @@ def _serialize_saved_plan(session: Session, planned: PlannedSession) -> dict:
             "exercise_name": exercise.name if exercise else "Unknown",
             "equipment": exercise.equipment if exercise else None,
             "allow_heavy_loading": exercise.allow_heavy_loading if exercise else True,
+            "heavy_available": heavy_avail["available"],
+            "heavy_blocked_reason": heavy_avail["reason"],
             "load_input_mode": (
                 exercise.load_input_mode if exercise else "external_weight"
             ),

@@ -24,7 +24,7 @@ from app.exercise_loads import (
     latest_bodyweight,
     supports_strength_estimate,
 )
-from app.models import Exercise, WeightLog, WorkoutSession, WorkoutSet
+from app.models import Exercise, ExerciseTissue, Tissue, WeightLog, WorkoutSession, WorkoutSet
 
 BODYWEIGHT_MODES = {"bodyweight", "assisted_bodyweight"}
 
@@ -98,9 +98,15 @@ class InflectionResult:
 
 HEAVY_SCHEME = [
     # (r_fail_target, rir, target_rpe, expected_actual, rep_min, rep_max)
-    (18, 3, 7.0, 15, 12, 18),
-    (12, 2, 8.0, 10, 8, 12),
-    (6, 1, 9.0, 5, 4, 6),
+    (15, 3, 7.0, 12, 9, 15),    # ~12 reps + RIR 3
+    (10, 2, 8.0, 8, 6, 10),     # ~8 reps + RIR 2
+    (5, 1, 9.0, 4, 3, 5),       # ~4 reps + RIR 1
+]
+
+VOLUME_SCHEME = [
+    (18, 3, 7.0, 15, 12, 18),   # ~15 reps + RIR 3
+    (14, 2, 8.0, 12, 10, 14),   # ~12 reps + RIR 2
+    (11, 1, 9.0, 10, 8, 11),    # ~10 reps + RIR 1
 ]
 
 LIGHT_SCHEME = [
@@ -858,11 +864,13 @@ def prescribe_next_set(
     prior_sets: list[dict],
     bodyweight_lb: float,
     actual_weight: float | None = None,
+    training_mode: str = "volume",
 ) -> dict:
     """Prescribe the next set based on completed prior sets.
 
     prior_sets: [{"weight": float, "reps": int, "rpe": float}]
-    Returns dict with: has_curve, next_set, exercise_complete, inflection_detected, estimated_1rm
+    training_mode: "heavy" or "volume" (controls scheme + stopping)
+    Returns dict with: has_curve, next_set, exercise_complete, inflection_detected, estimated_1rm, training_mode
     """
     exercise = session.get(Exercise, exercise_id)
     if exercise is None:
@@ -886,7 +894,8 @@ def prescribe_next_set(
             },
         }
 
-    # Fit or refit curve — non-heavy exercises always get tier2 (fixed gamma)
+    # Fit or refit curve — allow_heavy keyed off exercise capability (not mode)
+    # so volume mode on heavy exercises still gets a trained curve
     allow_heavy = exercise.allow_heavy_loading
     if prior_sets:
         fit = refit_with_observations(exercise_id, session, prior_sets,
@@ -900,44 +909,63 @@ def prescribe_next_set(
             "has_curve": False,
             "fallback_weight": last_weight,
             "message": "Insufficient RPE data for curve fit.",
+            "training_mode": training_mode,
         }
 
     n_done = len(prior_sets)
-    scheme = HEAVY_SCHEME if exercise.allow_heavy_loading else LIGHT_SCHEME
+    is_heavy_mode = training_mode == "heavy" and exercise.allow_heavy_loading
+    if is_heavy_mode:
+        scheme = HEAVY_SCHEME
+    elif exercise.allow_heavy_loading:
+        scheme = VOLUME_SCHEME
+    else:
+        scheme = LIGHT_SCHEME
     max_weight = get_max_recent_entered_weight(exercise_id, session)
 
-    # After 3+ sets: check inflection
+    # After 3+ sets: only heavy mode gets inflection checks + set 4+
     if n_done >= 3:
-        inflection = detect_inflection(
-            fit, prior_sets, exercise, bodyweight_lb, max_weight
-        )
-        result = {
-            "has_curve": True,
-            "fit_tier": fit.fit_tier,
-            "n_obs": fit.n_obs,
-            "inflection_detected": inflection.inflecting,
-            "estimated_1rm": inflection.estimated_1rm,
-        }
-        if inflection.inflecting:
-            result["exercise_complete"] = True
-            result["next_set"] = None
-        elif inflection.suggested_set4:
-            result["exercise_complete"] = False
-            result["next_set"] = _set_prescription_dict(inflection.suggested_set4)
+        if is_heavy_mode:
+            inflection = detect_inflection(
+                fit, prior_sets, exercise, bodyweight_lb, max_weight
+            )
+            result = {
+                "has_curve": True,
+                "fit_tier": fit.fit_tier,
+                "n_obs": fit.n_obs,
+                "inflection_detected": inflection.inflecting,
+                "estimated_1rm": inflection.estimated_1rm,
+                "training_mode": training_mode,
+            }
+            if inflection.inflecting:
+                result["exercise_complete"] = True
+                result["next_set"] = None
+            elif inflection.suggested_set4:
+                result["exercise_complete"] = False
+                result["next_set"] = _set_prescription_dict(inflection.suggested_set4)
+            else:
+                result["exercise_complete"] = True
+                result["next_set"] = None
+            return result
         else:
-            result["exercise_complete"] = True
-            result["next_set"] = None
-        return result
+            # Volume/light mode: hard stop at 3 sets
+            return {
+                "has_curve": True,
+                "exercise_complete": True,
+                "inflection_detected": None,
+                "estimated_1rm": round(fit.M, 1),
+                "next_set": None,
+                "training_mode": training_mode,
+            }
 
     # Sets 1-3: prescribe from scheme
     if n_done >= len(scheme):
-        # Non-heavy exercises capped at 3 sets
         return {
             "has_curve": True,
             "exercise_complete": True,
             "inflection_detected": None,
             "estimated_1rm": round(fit.M, 1),
             "next_set": None,
+            "training_mode": training_mode,
         }
 
     set_idx = n_done  # 0-indexed
@@ -955,6 +983,7 @@ def prescribe_next_set(
             "inflection_detected": None,
             "estimated_1rm": None,
             "next_set": _set_prescription_dict(prescription),
+            "training_mode": training_mode,
         }
 
     # Standard prescription
@@ -1020,6 +1049,7 @@ def prescribe_next_set(
         "inflection_detected": None,
         "estimated_1rm": None,
         "next_set": _set_prescription_dict(prescription),
+        "training_mode": training_mode,
     }
 
 
@@ -1168,6 +1198,132 @@ def refit_with_observations(
         fit_tier=tier,
         identifiability=ident,
     )
+
+
+# ── Heavy availability checker ──
+
+# Limits for heavy-mode frequency
+HEAVY_PER_REGION_PER_SESSION = 1
+HEAVY_PER_REGION_PER_WEEK = 2
+HEAVY_EXERCISE_COOLDOWN_DAYS = 10
+
+
+def _get_exercise_regions(exercise_id: int, session: Session) -> list[str]:
+    """Return primary regions for an exercise via ExerciseTissue → Tissue."""
+    stmt = (
+        select(Tissue.region)
+        .join(ExerciseTissue, ExerciseTissue.tissue_id == Tissue.id)
+        .where(ExerciseTissue.exercise_id == exercise_id)
+    )
+    return list(set(session.exec(stmt).all()))
+
+
+def check_heavy_availability(
+    exercise_id: int,
+    session: Session,
+    current_session_id: int | None = None,
+) -> dict:
+    """Check if an exercise can run in heavy mode.
+
+    Rules:
+    1. Exercise must have allow_heavy_loading=True
+    2. ≤1 heavy exercise per region in current session
+    3. ≤2 heavy exercises per region in past 7 days
+    4. >10 days since this exercise was last done in heavy mode
+
+    Returns {available: bool, reason: str|None, regions: list[str]}
+    """
+    exercise = session.get(Exercise, exercise_id)
+    if exercise is None or not exercise.allow_heavy_loading:
+        return {"available": False, "reason": "Exercise does not allow heavy loading", "regions": []}
+
+    regions = _get_exercise_regions(exercise_id, session)
+    if not regions:
+        return {"available": False, "reason": "No tissue regions mapped", "regions": []}
+
+    today = user_today()
+
+    # Rule 4: exercise-specific cooldown (>10 days since last heavy)
+    cooldown_cutoff = today - timedelta(days=HEAVY_EXERCISE_COOLDOWN_DAYS)
+    last_heavy_stmt = (
+        select(WorkoutSession.date)
+        .join(WorkoutSet, WorkoutSet.session_id == WorkoutSession.id)
+        .where(
+            WorkoutSet.exercise_id == exercise_id,
+            WorkoutSet.training_mode == "heavy",
+            WorkoutSession.date >= cooldown_cutoff,
+        )
+        .order_by(WorkoutSession.date.desc())
+        .limit(1)
+    )
+    last_heavy_date = session.exec(last_heavy_stmt).first()
+    if last_heavy_date is not None:
+        days_since = (today - last_heavy_date).days
+        return {
+            "available": False,
+            "reason": f"Heavy {days_since}d ago (need {HEAVY_EXERCISE_COOLDOWN_DAYS}d)",
+            "regions": regions,
+        }
+
+    # Rule 2: ≤2 heavy per region per week (count distinct exercise exposures)
+    week_cutoff = today - timedelta(days=7)
+    for region in regions:
+        # Get exercise IDs that target this region
+        region_exercise_ids_stmt = (
+            select(ExerciseTissue.exercise_id)
+            .join(Tissue, Tissue.id == ExerciseTissue.tissue_id)
+            .where(Tissue.region == region)
+        )
+        region_ex_ids = list(session.exec(region_exercise_ids_stmt).all())
+
+        # Count distinct (session_id, exercise_id) with heavy mode in past week
+        weekly_stmt = (
+            select(WorkoutSet.session_id, WorkoutSet.exercise_id)
+            .join(WorkoutSession, WorkoutSession.id == WorkoutSet.session_id)
+            .where(
+                WorkoutSet.exercise_id.in_(region_ex_ids),
+                WorkoutSet.training_mode == "heavy",
+                WorkoutSession.date >= week_cutoff,
+            )
+            .distinct()
+        )
+        weekly_heavy = len(session.exec(weekly_stmt).all())
+        if weekly_heavy >= HEAVY_PER_REGION_PER_WEEK:
+            return {
+                "available": False,
+                "reason": f"{region}: {weekly_heavy} heavy this week (max {HEAVY_PER_REGION_PER_WEEK})",
+                "regions": regions,
+            }
+
+    # Rule 1: ≤1 heavy per region in current session
+    if current_session_id is not None:
+        for region in regions:
+            region_exercise_ids_stmt = (
+                select(ExerciseTissue.exercise_id)
+                .join(Tissue, Tissue.id == ExerciseTissue.tissue_id)
+                .where(Tissue.region == region)
+            )
+            region_ex_ids = list(session.exec(region_exercise_ids_stmt).all())
+
+            session_stmt = (
+                select(WorkoutSet.session_id, WorkoutSet.exercise_id)
+                .where(
+                    WorkoutSet.session_id == current_session_id,
+                    WorkoutSet.exercise_id.in_(region_ex_ids),
+                    WorkoutSet.exercise_id != exercise_id,
+                    WorkoutSet.training_mode == "heavy",
+                )
+                .distinct()
+            )
+            session_heavy = len(session.exec(session_stmt).all())
+            if session_heavy >= HEAVY_PER_REGION_PER_SESSION:
+                return {
+                    "available": False,
+                    "reason": f"{region}: already {session_heavy} heavy in session (max {HEAVY_PER_REGION_PER_SESSION})",
+                    "regions": regions,
+                }
+
+    return {"available": True, "reason": None, "regions": regions}
 
 
 # ── Exercise menu helpers ──

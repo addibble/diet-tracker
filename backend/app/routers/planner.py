@@ -1,5 +1,6 @@
 import datetime
 import json
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -32,6 +33,7 @@ from app.planner import (
 )
 from app.strength_model import (
     adjust_prescription,
+    check_heavy_availability,
     fit_curve,
     get_bodyweight_suggestion,
     get_exercise_freshness,
@@ -177,11 +179,26 @@ def reorder_exercises(
 
 @router.get("/exercise-menu")
 def exercise_menu(
+    workout_session_id: int | None = Query(None, description="Current workout session ID for heavy availability check"),
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    """Return all exercises ordered by freshness (days since last trained)."""
-    return get_exercise_freshness(session)
+    """Return all exercises ordered by freshness (days since last trained).
+
+    If workout_session_id is provided, includes heavy_available for each exercise.
+    """
+    items = get_exercise_freshness(session)
+    for item in items:
+        if item.get("allow_heavy_loading"):
+            avail = check_heavy_availability(
+                item["exercise_id"], session, workout_session_id
+            )
+            item["heavy_available"] = avail["available"]
+            item["heavy_blocked_reason"] = avail["reason"]
+        else:
+            item["heavy_available"] = False
+            item["heavy_blocked_reason"] = None
+    return items
 
 
 @router.get("/weekly-menu")
@@ -339,6 +356,7 @@ class PrescribeNextRequest(BaseModel):
     exercise_id: int
     prior_sets: list[dict] = []  # [{"weight": float, "reps": int, "rpe": float}]
     actual_weight: float | None = None  # user-adjusted weight for this set
+    training_mode: Literal["heavy", "volume"] = "volume"
 
 
 @router.post("/prescribe-next")
@@ -352,7 +370,8 @@ def prescribe_next(
     - 0 prior sets: prescribe set 1 from prior-data curve (RIR 3)
     - 1 prior set: refit with set 1, prescribe set 2 (RIR 2)
     - 2 prior sets: refit, prescribe set 3 (RIR 1)
-    - 3+ prior sets: refit, check inflection, prescribe set 4 or mark complete
+    - 3+ prior sets (heavy only): refit, check inflection, prescribe set 4 or mark complete
+    - 3+ prior sets (volume/light): exercise complete
     """
     bw_lookup = _get_bw_lookup(session)
     bw_lb = latest_bodyweight(bw_lookup, user_today())
@@ -363,6 +382,7 @@ def prescribe_next(
         prior_sets=data.prior_sets,
         bodyweight_lb=bw_lb,
         actual_weight=data.actual_weight,
+        training_mode=data.training_mode,
     )
 
 

@@ -538,6 +538,7 @@ export interface WkSetDetail {
   rpe: number | null;
   rep_completion: string | null;
   notes: string | null;
+  training_mode: 'heavy' | 'volume' | null;
   scheme_history?: ExerciseSchemeHistory;
   tissue_feedback: WkSetTissueFeedback[];
 }
@@ -1151,6 +1152,7 @@ export interface WorkoutSetUpdateInput {
   rir?: number | null;
   rep_completion?: string | null;
   notes?: string | null;
+  training_mode?: 'heavy' | 'volume' | null;
   tissue_feedback?: WkSetTissueFeedbackInput[];
 }
 
@@ -1425,6 +1427,8 @@ export interface SavedPlanExercise {
   exercise_name: string;
   equipment: string | null;
   allow_heavy_loading?: boolean;
+  heavy_available?: boolean;
+  heavy_blocked_reason?: string | null;
   load_input_mode: string;
   laterality?: 'bilateral' | 'unilateral' | 'either';
   target_sets: number;
@@ -1470,6 +1474,8 @@ export interface ExerciseMenuItem {
   is_bodyweight: boolean;
   recent_rpe_sets: number;
   has_curve_fit: boolean;
+  heavy_available?: boolean;
+  heavy_blocked_reason?: string | null;
 }
 
 export interface PrescribedSet {
@@ -1511,8 +1517,10 @@ export interface PrescribeAllResponse {
   suggestion?: { sets: number; reps_per_set: number; notes: string };
 }
 
-export const getExerciseMenu = () =>
-  request<ExerciseMenuItem[]>('/planner/exercise-menu');
+export const getExerciseMenu = (workoutSessionId?: number) => {
+  const params = workoutSessionId ? `?workout_session_id=${workoutSessionId}` : '';
+  return request<ExerciseMenuItem[]>(`/planner/exercise-menu${params}`);
+};
 
 // --- Weekly menu (exercise groups + schedule) ---
 
@@ -1563,6 +1571,7 @@ export interface PrescribeNextRequest {
   exercise_id: number;
   prior_sets: { weight: number; reps: number; rpe: number }[];
   actual_weight?: number | null;
+  training_mode?: 'heavy' | 'volume';
 }
 
 export interface PrescribeNextResponse {
@@ -1572,6 +1581,7 @@ export interface PrescribeNextResponse {
   exercise_complete?: boolean;
   inflection_detected?: boolean | null;
   estimated_1rm?: number | null;
+  training_mode?: 'heavy' | 'volume';
   next_set?: {
     set_number: number;
     proposed_weight: number | null;

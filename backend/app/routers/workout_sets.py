@@ -41,6 +41,7 @@ class SetUpdate(BaseModel):
     rir: float | None = None  # converted to rpe = 10 - rir
     rep_completion: str | None = None
     notes: str | None = None
+    training_mode: Literal["heavy", "volume"] | None = None
     tissue_feedback: list[SetTissueFeedbackInput] | None = None
 
 
@@ -58,6 +59,7 @@ class SetCreate(BaseModel):
     rir: float | None = None  # converted to rpe = 10 - rir
     rep_completion: str | None = None
     notes: str | None = None
+    training_mode: Literal["heavy", "volume"] | None = None
     tissue_feedback: list[SetTissueFeedbackInput] | None = None
 
 
@@ -124,6 +126,7 @@ def _set_response(s: WorkoutSet, session: Session) -> dict:
         "rpe": s.rpe,
         "rep_completion": s.rep_completion,
         "notes": s.notes,
+        "training_mode": s.training_mode,
         "scheme_history": scheme_history,
         "tissue_feedback": [
             {
@@ -294,6 +297,7 @@ def add_set(
         rpe=rpe_val,
         rep_completion=data.rep_completion,
         notes=data.notes,
+        training_mode=data.training_mode,
     )
     session.add(new_set)
     session.flush()
