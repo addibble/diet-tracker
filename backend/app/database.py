@@ -87,6 +87,7 @@ RUNTIME_REQUIRED_COLUMNS = {
         "performed_side",
         "started_at",
         "completed_at",
+        "training_mode",
     },
     "tissue_conditions": {
         "tracked_tissue_id",

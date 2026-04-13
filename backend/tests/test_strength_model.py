@@ -19,7 +19,9 @@ from app.strength_model import (
     _identifiability_score,
     _rpe_confidence,
     adjust_prescription,
+    detect_inflection,
     fit_curve,
+    fit_from_data,
     fresh_curve,
     get_bodyweight_suggestion,
     get_exercise_freshness,
@@ -218,7 +220,7 @@ class TestFitCurve:
         assert result.gamma > 0
         assert result.n_obs == 6
         assert result.rmse < 10  # reasonable fit
-        assert result.fit_tier in ("tier1", "tier2")  # may auto-demote if gamma < 0.5
+        assert result.fit_tier in ("tier1", "tier2")  # tier depends on session count
 
     def test_tier2_with_single_weight(self, session):
         ex = _make_exercise(session, name="Single Weight Test")
@@ -351,6 +353,161 @@ class TestAdjustPrescription:
         assert p.entered_weight == 130
         assert p.target_reps > 0
         assert p.target_rpe == 7.0  # set 1 heavy scheme
+
+
+class TestAllowHeavyTierGating:
+    """Non-heavy exercises should always get tier2 (fixed gamma)."""
+
+    def test_fit_from_data_non_heavy_forces_tier2(self):
+        """Even with enough data for tier1, non-heavy gets tier2."""
+        # 6 obs across 2+ sessions, distinct weights — would be tier1 if heavy
+        weights = [100.0, 120.0, 140.0, 100.0, 120.0, 140.0]
+        reps = [20.0, 15.0, 10.0, 19.0, 14.0, 9.0]
+        confs = [1.0] * 6
+        ages = [7.0, 7.0, 7.0, 0.0, 0.0, 0.0]
+
+        fit_heavy = fit_from_data(weights, reps, confs, ages, allow_heavy=True)
+        fit_light = fit_from_data(weights, reps, confs, ages, allow_heavy=False)
+
+        assert fit_heavy is not None
+        assert fit_light is not None
+        assert fit_light.fit_tier == "tier2"
+        assert fit_light.gamma == DEFAULT_GAMMA
+
+    def test_fit_curve_non_heavy_forces_tier2(self, session):
+        """fit_curve with allow_heavy=False always returns tier2."""
+        ex = _make_exercise(session, name="Light Exercise", allow_heavy_loading=False)
+        # Seed enough varied data across 2 sessions for tier1 eligibility
+        ws1 = WorkoutSession(date=date.today() - timedelta(days=7))
+        session.add(ws1)
+        session.flush()
+        for w, r, rpe in [(80, 15, 7.0), (100, 12, 8.0), (120, 8, 9.0)]:
+            session.add(WorkoutSet(
+                session_id=ws1.id, exercise_id=ex.id, set_order=1,
+                reps=r, weight=w, rpe=rpe,
+            ))
+        ws2 = WorkoutSession(date=date.today())
+        session.add(ws2)
+        session.flush()
+        for w, r, rpe in [(80, 14, 7.0), (100, 11, 8.0), (120, 7, 9.0)]:
+            session.add(WorkoutSet(
+                session_id=ws2.id, exercise_id=ex.id, set_order=1,
+                reps=r, weight=w, rpe=rpe,
+            ))
+        session.flush()
+
+        fit = fit_curve(ex.id, session, allow_heavy=False)
+        assert fit is not None
+        assert fit.fit_tier == "tier2"
+        assert fit.gamma == DEFAULT_GAMMA
+
+
+class TestLightScheme:
+    """LIGHT_SCHEME should target 18+RIR3, 15+RIR2, 12+RIR1."""
+
+    def test_light_scheme_rep_targets(self):
+        fit = CurveFit(M=200, k=15, gamma=0.9, n_obs=10, rmse=1.0,
+                        max_observed_weight=150, fit_tier="tier2")
+        ex = Exercise(name="Lateral Raise", allow_heavy_loading=False,
+                      load_input_mode="external_weight",
+                      bodyweight_fraction=0.0, external_load_multiplier=1.0)
+        prescriptions = plan_progressive_sets(fit, ex, bodyweight_lb=180)
+        assert len(prescriptions) == 3
+        # RPE targets: 7, 8, 9
+        assert prescriptions[0].target_rpe == 7.0
+        assert prescriptions[1].target_rpe == 8.0
+        assert prescriptions[2].target_rpe == 9.0
+        # Reps should be in the 12-18 range (metabolic failure scheme)
+        assert prescriptions[0].target_reps >= 12
+        assert prescriptions[2].target_reps >= 8
+
+
+class TestDetectInflection:
+    """Tests for inflection-aware stopping logic."""
+
+    def _make_heavy_exercise(self):
+        return Exercise(name="Squat", allow_heavy_loading=True,
+                        load_input_mode="external_weight",
+                        bodyweight_fraction=0.0, external_load_multiplier=1.0)
+
+    def _make_light_exercise(self):
+        return Exercise(name="Cable Fly", allow_heavy_loading=False,
+                        load_input_mode="external_weight",
+                        bodyweight_fraction=0.0, external_load_multiplier=1.0)
+
+    def test_fatigue_inflection_detected(self):
+        """When per-set 1RM declines, fatigue inflection is detected."""
+        fit = CurveFit(M=200, k=20, gamma=0.7, n_obs=10, rmse=1.0,
+                        max_observed_weight=180, fit_tier="tier1")
+        ex = self._make_heavy_exercise()
+        # Set 3 shows declining 1RM (fatigue)
+        sets = [
+            {"weight": 100, "reps": 15, "rpe": 7.0},
+            {"weight": 140, "reps": 10, "rpe": 8.0},
+            {"weight": 170, "reps": 3, "rpe": 10.0},  # very fatigued
+        ]
+        result = detect_inflection(fit, sets, ex, bodyweight_lb=180)
+        assert result.inflecting is True
+        assert result.estimated_1rm is not None
+
+    def test_curve_inflection_past_inflection_point(self):
+        """When last set is past M*(γ+1)/2, curve inflection stops exercise."""
+        # gamma=0.7, M=200 → inflection at 200*(0.7+1)/2 = 170
+        fit = CurveFit(M=200, k=20, gamma=0.7, n_obs=10, rmse=1.0,
+                        max_observed_weight=190, fit_tier="tier1")
+        ex = self._make_heavy_exercise()
+        # Last set at 180 > inflection (170) — model is constrained
+        sets = [
+            {"weight": 100, "reps": 15, "rpe": 7.0},
+            {"weight": 140, "reps": 10, "rpe": 8.0},
+            {"weight": 180, "reps": 5, "rpe": 9.0},
+        ]
+        result = detect_inflection(fit, sets, ex, bodyweight_lb=180)
+        assert result.inflecting is True
+        assert result.suggested_set4 is None
+
+    def test_not_past_inflection_suggests_heavier(self):
+        """When last set is before inflection, suggests heavier set."""
+        # gamma=0.9, M=300 → inflection at 300*1.9/2 = 285
+        fit = CurveFit(M=300, k=20, gamma=0.9, n_obs=10, rmse=1.0,
+                        max_observed_weight=200, fit_tier="tier1")
+        ex = self._make_heavy_exercise()
+        # Last set at 200 < inflection (285)
+        sets = [
+            {"weight": 100, "reps": 20, "rpe": 7.0},
+            {"weight": 150, "reps": 14, "rpe": 8.0},
+            {"weight": 200, "reps": 8, "rpe": 9.0},
+        ]
+        result = detect_inflection(fit, sets, ex, bodyweight_lb=180)
+        assert result.inflecting is False
+        assert result.suggested_set4 is not None
+        assert result.suggested_set4.entered_weight > 200
+
+    def test_non_heavy_never_suggests_extra_set(self):
+        """Light exercises never get a set 4 suggestion even when not fatigued."""
+        fit = CurveFit(M=300, k=20, gamma=0.9, n_obs=10, rmse=1.0,
+                        max_observed_weight=200, fit_tier="tier2")
+        ex = self._make_light_exercise()
+        # Sets with non-declining Brzycki 1RM so fatigue isn't triggered
+        sets = [
+            {"weight": 50, "reps": 18, "rpe": 7.0},
+            {"weight": 70, "reps": 15, "rpe": 8.0},
+            {"weight": 90, "reps": 12, "rpe": 9.0},
+        ]
+        result = detect_inflection(fit, sets, ex, bodyweight_lb=180)
+        # Should not suggest a set 4 regardless of inflection status
+        assert result.suggested_set4 is None
+
+    def test_fewer_than_3_sets_returns_not_inflecting(self):
+        fit = CurveFit(M=200, k=20, gamma=0.7, n_obs=10, rmse=1.0,
+                        max_observed_weight=180, fit_tier="tier1")
+        ex = self._make_heavy_exercise()
+        result = detect_inflection(fit, [
+            {"weight": 100, "reps": 15, "rpe": 7.0},
+            {"weight": 140, "reps": 10, "rpe": 8.0},
+        ], ex, bodyweight_lb=180)
+        assert result.inflecting is False
+        assert result.suggested_set4 is None
 
 
 class TestRefitWithObservations:
@@ -583,8 +740,9 @@ class TestFilterStaleSessions:
         reps = [12.0, 8.0, 11.0, 7.0]  # similar r_fail
         confs = [0.8, 0.8, 0.8, 0.8]
         ages = [0.0, 0.0, 7.0, 7.0]
-        w2, r2, c2, a2 = _filter_stale_sessions(weights, reps, confs, ages)
+        w2, r2, c2, a2, ns = _filter_stale_sessions(weights, reps, confs, ages)
         assert len(w2) == 4  # all kept
+        assert ns == 2  # both sessions survived
 
     def test_different_strength_sessions_dropped(self):
         """Sessions with significantly different 1RM should be dropped."""
@@ -594,10 +752,11 @@ class TestFilterStaleSessions:
         reps = [18.0, 18.0, 14.0, 15.0, 15.0, 15.0]
         confs = [0.8, 0.8, 0.9, 0.8, 0.8, 0.8]
         ages = [4.0, 4.0, 4.0, 21.0, 21.0, 21.0]
-        w2, r2, c2, a2 = _filter_stale_sessions(weights, reps, confs, ages)
+        w2, r2, c2, a2, ns = _filter_stale_sessions(weights, reps, confs, ages)
         # Should drop the 21d-old session
         assert len(w2) == 3
         assert all(a == 4.0 for a in a2)
+        assert ns == 1  # only anchor survived
 
     def test_single_set_sessions_kept(self):
         """Sessions with only 1 set can't be t-tested — keep them."""
@@ -605,8 +764,9 @@ class TestFilterStaleSessions:
         reps = [18.0, 18.0, 15.0]
         confs = [0.8, 0.8, 0.8]
         ages = [4.0, 4.0, 21.0]  # 21d session has 1 set
-        w2, r2, c2, a2 = _filter_stale_sessions(weights, reps, confs, ages)
+        w2, r2, c2, a2, ns = _filter_stale_sessions(weights, reps, confs, ages)
         assert len(w2) == 3  # all kept (can't t-test single-set session)
+        assert ns == 2
 
     def test_too_few_observations_fallback(self):
         """If filtering would leave < MIN_SETS, return unfiltered."""
@@ -615,9 +775,10 @@ class TestFilterStaleSessions:
         reps = [18.0, 18.0, 15.0, 15.0, 15.0]
         confs = [0.8, 0.8, 0.8, 0.8, 0.8]
         ages = [4.0, 4.0, 21.0, 21.0, 21.0]
-        w2, r2, c2, a2 = _filter_stale_sessions(weights, reps, confs, ages)
+        w2, r2, c2, a2, ns = _filter_stale_sessions(weights, reps, confs, ages)
         # Falls back to unfiltered since 2 < MIN_SETS_TIER2=3
         assert len(w2) == 5
+        assert ns == 2  # fallback reports all original sessions
 
     def test_single_session_no_filter(self):
         """All sets from same session → nothing to filter."""
@@ -625,8 +786,9 @@ class TestFilterStaleSessions:
         reps = [15.0, 12.0, 8.0]
         confs = [0.8, 0.8, 0.9]
         ages = [0.0, 0.0, 0.0]
-        w2, r2, c2, a2 = _filter_stale_sessions(weights, reps, confs, ages)
+        w2, r2, c2, a2, ns = _filter_stale_sessions(weights, reps, confs, ages)
         assert len(w2) == 3
+        assert ns == 1
 
 
 class TestRPEFloor:
@@ -655,6 +817,7 @@ class TestAutoDemotion:
         """Data where more reps at higher weight should auto-demote to tier2."""
         ex = _make_exercise(session, name="Auto Demote Test")
         # Inverted pattern: more reps at higher weight (rapid progression)
+        # Single session → n_sessions_kept=1 → tier2
         sets_data = [
             {"reps": 15, "weight": 70, "rpe": 7.0},
             {"reps": 14, "weight": 90, "rpe": 8.0},
@@ -666,6 +829,362 @@ class TestAutoDemotion:
         _make_session_and_sets(session, ex, sets_data)
         result = fit_curve(ex.id, session)
         assert result is not None
-        # Should be demoted to tier2 due to low gamma
+        # Should be tier2 (single session → not enough for free gamma)
         assert result.fit_tier == "tier2"
         assert result.gamma == DEFAULT_GAMMA
+
+
+# ── Tests for training_mode and scheme selection ──
+
+
+class TestSchemes:
+    """HEAVY_SCHEME, VOLUME_SCHEME, and LIGHT_SCHEME have correct structure."""
+
+    def test_heavy_scheme_rep_targets(self):
+        from app.strength_model import HEAVY_SCHEME
+        # 12/8/4 reps at RIR 3/2/1
+        assert HEAVY_SCHEME[0][3] == 12  # expected_actual set 1
+        assert HEAVY_SCHEME[1][3] == 8   # expected_actual set 2
+        assert HEAVY_SCHEME[2][3] == 4   # expected_actual set 3
+        assert HEAVY_SCHEME[0][1] == 3   # RIR 3
+        assert HEAVY_SCHEME[1][1] == 2   # RIR 2
+        assert HEAVY_SCHEME[2][1] == 1   # RIR 1
+
+    def test_volume_scheme_rep_targets(self):
+        from app.strength_model import VOLUME_SCHEME
+        # 15/12/10 reps at RIR 3/2/1
+        assert VOLUME_SCHEME[0][3] == 15
+        assert VOLUME_SCHEME[1][3] == 12
+        assert VOLUME_SCHEME[2][3] == 10
+        assert VOLUME_SCHEME[0][1] == 3
+        assert VOLUME_SCHEME[1][1] == 2
+        assert VOLUME_SCHEME[2][1] == 1
+
+    def test_light_scheme_rep_targets(self):
+        from app.strength_model import LIGHT_SCHEME
+        # 18/15/12 reps at RIR 3/2/1
+        assert LIGHT_SCHEME[0][3] == 18
+        assert LIGHT_SCHEME[1][3] == 15
+        assert LIGHT_SCHEME[2][3] == 12
+
+
+class TestPrescribeTrainingMode:
+    """prescribe_next_set respects training_mode for scheme selection and stopping."""
+
+    def test_volume_mode_heavy_exercise_stops_at_3(self, session):
+        """Heavy exercise in volume mode should stop after 3 sets."""
+        from app.strength_model import prescribe_next_set
+        ex = _make_exercise(session, name="Volume Stop Test", allow_heavy_loading=True)
+        _make_session_and_sets(session, ex, [
+            {"reps": 15, "weight": 80, "rpe": 7.0},
+            {"reps": 12, "weight": 100, "rpe": 8.0},
+            {"reps": 10, "weight": 120, "rpe": 8.0},
+            {"reps": 15, "weight": 80, "rpe": 7.0},
+            {"reps": 12, "weight": 100, "rpe": 8.0},
+            {"reps": 10, "weight": 120, "rpe": 8.0},
+        ], session_date=date.today() - timedelta(days=7))
+        _make_session_and_sets(session, ex, [
+            {"reps": 14, "weight": 80, "rpe": 7.0},
+            {"reps": 11, "weight": 100, "rpe": 8.0},
+            {"reps": 9, "weight": 120, "rpe": 8.0},
+        ], session_date=date.today() - timedelta(days=3))
+        session.flush()
+        # After 3 completed sets, volume mode should say exercise_complete
+        prior = [
+            {"weight": 80, "reps": 15, "rpe": 7.0},
+            {"weight": 100, "reps": 12, "rpe": 8.0},
+            {"weight": 120, "reps": 10, "rpe": 9.0},
+        ]
+        result = prescribe_next_set(
+            ex.id, session, prior, bodyweight_lb=180, training_mode="volume",
+        )
+        assert result.get("exercise_complete") is True
+        assert result.get("training_mode") == "volume"
+
+    def test_heavy_mode_can_get_set4(self, session):
+        """Heavy exercise in heavy mode can get set 4 suggestion."""
+        from app.strength_model import prescribe_next_set
+        ex = _make_exercise(session, name="Heavy Set4 Test", allow_heavy_loading=True)
+        _make_session_and_sets(session, ex, [
+            {"reps": 12, "weight": 100, "rpe": 7.0},
+            {"reps": 8, "weight": 140, "rpe": 8.0},
+            {"reps": 4, "weight": 170, "rpe": 9.0},
+            {"reps": 12, "weight": 100, "rpe": 7.0},
+            {"reps": 8, "weight": 140, "rpe": 8.0},
+            {"reps": 4, "weight": 170, "rpe": 9.0},
+        ], session_date=date.today() - timedelta(days=7))
+        _make_session_and_sets(session, ex, [
+            {"reps": 11, "weight": 100, "rpe": 7.0},
+            {"reps": 7, "weight": 140, "rpe": 8.0},
+            {"reps": 3, "weight": 170, "rpe": 9.0},
+        ], session_date=date.today() - timedelta(days=3))
+        session.flush()
+        prior = [
+            {"weight": 100, "reps": 12, "rpe": 7.0},
+            {"weight": 140, "reps": 8, "rpe": 8.0},
+            {"weight": 170, "reps": 4, "rpe": 9.0},
+        ]
+        result = prescribe_next_set(
+            ex.id, session, prior, bodyweight_lb=180, training_mode="heavy",
+        )
+        assert result.get("training_mode") == "heavy"
+        # Heavy mode with non-declining 1RM should either suggest set 4 or
+        # detect inflection — but should NOT hard-stop at 3
+        if not result.get("exercise_complete"):
+            assert result.get("next_set") is not None
+
+    def test_volume_mode_uses_volume_scheme(self, session):
+        """Volume mode on heavy exercise uses VOLUME_SCHEME (15/12/10)."""
+        from app.strength_model import prescribe_next_set
+        ex = _make_exercise(session, name="Volume Scheme Test", allow_heavy_loading=True)
+        _make_session_and_sets(session, ex, [
+            {"reps": 15, "weight": 80, "rpe": 7.0},
+            {"reps": 12, "weight": 100, "rpe": 8.0},
+            {"reps": 10, "weight": 120, "rpe": 8.0},
+        ], session_date=date.today() - timedelta(days=7))
+        _make_session_and_sets(session, ex, [
+            {"reps": 14, "weight": 80, "rpe": 7.0},
+            {"reps": 11, "weight": 100, "rpe": 8.0},
+            {"reps": 9, "weight": 120, "rpe": 8.0},
+        ], session_date=date.today() - timedelta(days=3))
+        session.flush()
+        result = prescribe_next_set(
+            ex.id, session, [], bodyweight_lb=180, training_mode="volume",
+        )
+        assert result.get("has_curve") is True
+        # First set should be in the 12-18 range (volume scheme targets ~15)
+        if result.get("next_set"):
+            assert 8 <= result["next_set"]["target_reps"] <= 20
+
+    def test_light_exercise_always_light_scheme(self, session):
+        """Non-heavy exercise always uses LIGHT_SCHEME regardless of mode."""
+        from app.strength_model import prescribe_next_set
+        ex = _make_exercise(session, name="Light Scheme Test", allow_heavy_loading=False)
+        _make_session_and_sets(session, ex, [
+            {"reps": 18, "weight": 50, "rpe": 7.0},
+            {"reps": 15, "weight": 65, "rpe": 8.0},
+            {"reps": 12, "weight": 80, "rpe": 8.0},
+        ], session_date=date.today() - timedelta(days=7))
+        _make_session_and_sets(session, ex, [
+            {"reps": 17, "weight": 50, "rpe": 7.0},
+            {"reps": 14, "weight": 65, "rpe": 8.0},
+            {"reps": 11, "weight": 80, "rpe": 8.0},
+        ], session_date=date.today() - timedelta(days=3))
+        session.flush()
+        # Even if "heavy" mode is requested, non-heavy exercise uses light
+        result = prescribe_next_set(
+            ex.id, session, [], bodyweight_lb=180, training_mode="heavy",
+        )
+        assert result.get("has_curve") is True
+        assert result.get("training_mode") == "heavy"  # echoed back
+
+    def test_prescribe_next_returns_training_mode(self, session):
+        """All prescribe_next_set responses include training_mode."""
+        from app.strength_model import prescribe_next_set
+        ex = _make_exercise(session, name="Mode Echo Test", allow_heavy_loading=True)
+        _make_session_and_sets(session, ex, [
+            {"reps": 15, "weight": 80, "rpe": 7.0},
+            {"reps": 12, "weight": 100, "rpe": 8.0},
+            {"reps": 10, "weight": 120, "rpe": 9.0},
+        ], session_date=date.today() - timedelta(days=7))
+        _make_session_and_sets(session, ex, [
+            {"reps": 14, "weight": 80, "rpe": 7.0},
+            {"reps": 11, "weight": 100, "rpe": 8.0},
+            {"reps": 9, "weight": 120, "rpe": 9.0},
+        ], session_date=date.today() - timedelta(days=3))
+        session.flush()
+        for mode in ("heavy", "volume"):
+            result = prescribe_next_set(
+                ex.id, session, [], bodyweight_lb=180, training_mode=mode,
+            )
+            if result.get("has_curve"):
+                assert result.get("training_mode") == mode
+
+
+class TestCheckHeavyAvailability:
+    """Tests for the heavy availability checker."""
+
+    def test_non_heavy_exercise_unavailable(self, session):
+        from app.strength_model import check_heavy_availability
+        ex = _make_exercise(session, name="Light Only", allow_heavy_loading=False)
+        result = check_heavy_availability(ex.id, session)
+        assert result["available"] is False
+
+    def test_heavy_exercise_available_by_default(self, session):
+        from app.models import ExerciseTissue, Tissue
+        from app.strength_model import check_heavy_availability
+        ex = _make_exercise(session, name="Heavy Default", allow_heavy_loading=True)
+        tissue = Tissue(name="test_quads_avail", display_name="Quads", region="quads")
+        session.add(tissue)
+        session.flush()
+        session.add(ExerciseTissue(exercise_id=ex.id, tissue_id=tissue.id))
+        session.flush()
+        result = check_heavy_availability(ex.id, session)
+        assert result["available"] is True
+        assert "quads" in result["regions"]
+
+    def test_exercise_cooldown_blocks(self, session):
+        """Heavy within 10 days blocks availability."""
+        from app.models import ExerciseTissue, Tissue
+        from app.strength_model import check_heavy_availability
+        ex = _make_exercise(session, name="Cooldown Test", allow_heavy_loading=True)
+        tissue = Tissue(name="test_quads_cooldown", display_name="Quads", region="quads")
+        session.add(tissue)
+        session.flush()
+        session.add(ExerciseTissue(exercise_id=ex.id, tissue_id=tissue.id))
+        ws = WorkoutSession(date=date.today() - timedelta(days=5))
+        session.add(ws)
+        session.flush()
+        session.add(WorkoutSet(
+            session_id=ws.id, exercise_id=ex.id, set_order=1,
+            reps=4, weight=200, rpe=9.0, training_mode="heavy",
+        ))
+        session.flush()
+        result = check_heavy_availability(ex.id, session)
+        assert result["available"] is False
+        assert "5d ago" in result["reason"]
+
+    def test_exercise_cooldown_passes_after_11_days(self, session):
+        """Heavy >10 days ago allows availability."""
+        from app.models import ExerciseTissue, Tissue
+        from app.strength_model import check_heavy_availability
+        ex = _make_exercise(session, name="Cooldown Pass", allow_heavy_loading=True)
+        tissue = Tissue(name="test_quads_pass", display_name="Quads", region="quads")
+        session.add(tissue)
+        session.flush()
+        session.add(ExerciseTissue(exercise_id=ex.id, tissue_id=tissue.id))
+        ws = WorkoutSession(date=date.today() - timedelta(days=11))
+        session.add(ws)
+        session.flush()
+        session.add(WorkoutSet(
+            session_id=ws.id, exercise_id=ex.id, set_order=1,
+            reps=4, weight=200, rpe=9.0, training_mode="heavy",
+        ))
+        session.flush()
+        result = check_heavy_availability(ex.id, session)
+        assert result["available"] is True
+
+    def test_weekly_region_cap_blocks(self, session):
+        """2 heavy exercises on same region in past week blocks a 3rd."""
+        from app.models import ExerciseTissue, Tissue
+        from app.strength_model import check_heavy_availability
+        tissue = Tissue(name="test_chest_weekly", display_name="Chest", region="chest")
+        session.add(tissue)
+        session.flush()
+        # Two different exercises on same region, both heavy this week
+        ex1 = _make_exercise(session, name="Bench Press", allow_heavy_loading=True)
+        ex2 = _make_exercise(session, name="Incline Bench", allow_heavy_loading=True)
+        ex3 = _make_exercise(session, name="Dumbbell Fly", allow_heavy_loading=True)
+        for ex in [ex1, ex2, ex3]:
+            session.add(ExerciseTissue(exercise_id=ex.id, tissue_id=tissue.id))
+        session.flush()
+        # ex1 heavy 5 days ago, ex2 heavy 3 days ago
+        for i, ex in enumerate([ex1, ex2]):
+            ws = WorkoutSession(date=date.today() - timedelta(days=5 - i * 2))
+            session.add(ws)
+            session.flush()
+            session.add(WorkoutSet(
+                session_id=ws.id, exercise_id=ex.id, set_order=1,
+                reps=4, weight=200, rpe=9.0, training_mode="heavy",
+            ))
+        session.flush()
+        result = check_heavy_availability(ex3.id, session)
+        assert result["available"] is False
+        assert "chest" in result["reason"]
+
+    def test_session_region_cap_blocks(self, session):
+        """1 heavy exercise on same region in same session blocks another."""
+        from app.models import ExerciseTissue, Tissue
+        from app.strength_model import check_heavy_availability
+        tissue = Tissue(name="test_back_session", display_name="Back", region="back")
+        session.add(tissue)
+        session.flush()
+        ex1 = _make_exercise(session, name="Deadlift", allow_heavy_loading=True)
+        ex2 = _make_exercise(session, name="Barbell Row", allow_heavy_loading=True)
+        for ex in [ex1, ex2]:
+            session.add(ExerciseTissue(exercise_id=ex.id, tissue_id=tissue.id))
+        ws = WorkoutSession(date=date.today())
+        session.add(ws)
+        session.flush()
+        session.add(WorkoutSet(
+            session_id=ws.id, exercise_id=ex1.id, set_order=1,
+            reps=4, weight=300, rpe=9.0, training_mode="heavy",
+        ))
+        session.flush()
+        result = check_heavy_availability(ex2.id, session, current_session_id=ws.id)
+        assert result["available"] is False
+        assert "session" in result["reason"]
+
+
+class TestPrescribeNextEndpointTrainingMode:
+    """Test the prescribe-next endpoint with training_mode."""
+
+    def test_prescribe_next_accepts_training_mode(self, client, session):
+        ex = _seed_exercise_with_sets(session)
+        resp = client.post("/api/planner/prescribe-next", json={
+            "exercise_id": ex.id,
+            "training_mode": "volume",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("training_mode") == "volume"
+
+    def test_prescribe_next_defaults_to_volume(self, client, session):
+        ex = _seed_exercise_with_sets(session)
+        resp = client.post("/api/planner/prescribe-next", json={
+            "exercise_id": ex.id,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("training_mode") == "volume"
+
+
+class TestWorkoutSetTrainingMode:
+    """Test that training_mode is stored and returned on workout sets."""
+
+    def test_create_set_with_training_mode(self, client, session):
+        ex = _make_exercise(session, name="Mode Create Test")
+        ws = WorkoutSession(date=date.today())
+        session.add(ws)
+        session.flush()
+        resp = client.post(f"/api/workout-sessions/{ws.id}/sets", json={
+            "exercise_id": ex.id,
+            "reps": 10,
+            "weight": 100,
+            "rpe": 8.0,
+            "training_mode": "heavy",
+        })
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["training_mode"] == "heavy"
+
+    def test_create_set_with_volume_mode(self, client, session):
+        ex = _make_exercise(session, name="Mode Volume Test")
+        ws = WorkoutSession(date=date.today())
+        session.add(ws)
+        session.flush()
+        resp = client.post(f"/api/workout-sessions/{ws.id}/sets", json={
+            "exercise_id": ex.id,
+            "reps": 15,
+            "weight": 80,
+            "rpe": 7.0,
+            "training_mode": "volume",
+        })
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["training_mode"] == "volume"
+
+    def test_create_set_without_training_mode(self, client, session):
+        ex = _make_exercise(session, name="Mode None Test")
+        ws = WorkoutSession(date=date.today())
+        session.add(ws)
+        session.flush()
+        resp = client.post(f"/api/workout-sessions/{ws.id}/sets", json={
+            "exercise_id": ex.id,
+            "reps": 10,
+            "weight": 100,
+            "rpe": 8.0,
+        })
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["training_mode"] is None

@@ -51,6 +51,8 @@ export default function TrainingPage() {
           has_curve_fit: false,
           days_since_trained: 0,
           recent_rpe_sets: 0,
+          heavy_available: ex.heavy_available ?? false,
+          heavy_blocked_reason: ex.heavy_blocked_reason ?? null,
         }))
         setActiveExercises(exercises)
         setLoading(false)

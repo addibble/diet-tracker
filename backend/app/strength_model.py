@@ -24,16 +24,19 @@ from app.exercise_loads import (
     latest_bodyweight,
     supports_strength_estimate,
 )
-from app.models import Exercise, WeightLog, WorkoutSession, WorkoutSet
+from app.models import Exercise, ExerciseTissue, Tissue, WeightLog, WorkoutSession, WorkoutSet
 
 BODYWEIGHT_MODES = {"bodyweight", "assisted_bodyweight"}
 
-# Default class prior for gamma — aligned with Brzycki curve shape (~1.0)
-DEFAULT_GAMMA = 1.0
+# Default class prior for gamma — physiological cap: concave-down near max
+DEFAULT_GAMMA = 0.9
 
-# Gamma regularization: penalizes deviation from Brzycki-expected shape
-GAMMA_PRIOR = 1.0
+# Gamma regularization: penalizes deviation from prior shape
+GAMMA_PRIOR = 0.9
 GAMMA_REG_LAMBDA = 3.0  # per-observation strength (scaled by mean fit_weight)
+
+# M regularization: fixed strength (no longer scaled by identifiability)
+M_REG_LAMBDA = 15.0
 
 # Session refit: same-day observations get boosted to this share of total weight
 SESSION_TARGET_SHARE = 0.70
@@ -46,8 +49,9 @@ MIN_DISTINCT_WEIGHTS_TIER1 = 2
 # RPE floor: sets below this are too far from failure to inform max estimation
 MIN_RPE_FOR_FIT = 7.0
 
-# Auto-demotion: if free-gamma fit produces gamma below this, demote to tier 2
-GAMMA_DEMOTE_THRESHOLD = 0.5
+# Gamma bounds: physiological range (concave-down near max, >0 for valid curve)
+GAMMA_MIN = 0.01
+GAMMA_MAX = 0.9
 
 # T-test significance level for dropping stale sessions
 TTEST_ALPHA = 0.05
@@ -94,15 +98,21 @@ class InflectionResult:
 
 HEAVY_SCHEME = [
     # (r_fail_target, rir, target_rpe, expected_actual, rep_min, rep_max)
-    (18, 3, 7.0, 15, 12, 18),
-    (12, 2, 8.0, 10, 8, 12),
-    (6, 1, 9.0, 5, 4, 6),
+    (15, 3, 7.0, 12, 9, 15),    # ~12 reps + RIR 3
+    (10, 2, 8.0, 8, 6, 10),     # ~8 reps + RIR 2
+    (5, 1, 9.0, 4, 3, 5),       # ~4 reps + RIR 1
+]
+
+VOLUME_SCHEME = [
+    (18, 3, 7.0, 15, 12, 18),   # ~15 reps + RIR 3
+    (14, 2, 8.0, 12, 10, 14),   # ~12 reps + RIR 2
+    (11, 1, 9.0, 10, 8, 11),    # ~10 reps + RIR 1
 ]
 
 LIGHT_SCHEME = [
-    (23, 3, 7.0, 20, 17, 23),
-    (20, 2, 8.0, 18, 16, 20),
-    (16, 1, 9.0, 15, 13, 16),
+    (21, 3, 7.0, 18, 15, 21),   # ~18 reps + RIR 3 (metabolic failure)
+    (17, 2, 8.0, 15, 13, 17),   # ~15 reps + RIR 2
+    (13, 1, 9.0, 12, 10, 13),   # ~12 reps + RIR 1
 ]
 
 
@@ -157,7 +167,7 @@ def _filter_stale_sessions(
     reps_to_failure: list[float],
     confidences: list[float],
     ages_days: list[float],
-) -> tuple[list[float], list[float], list[float], list[float]]:
+) -> tuple[list[float], list[float], list[float], list[float], int]:
     """Drop sets from sessions whose strength level is statistically different.
 
     Groups observations by session age (days), computes per-set Brzycki 1RM,
@@ -165,9 +175,13 @@ def _filter_stale_sessions(
     recent one. Sessions with p < TTEST_ALPHA are dropped (significantly
     different strength level, likely stale). Sessions with fewer than 2 sets
     are kept (can't t-test reliably, low impact).
+
+    Returns the four filtered lists plus the number of distinct sessions that
+    survived the filter (used by callers for tier demotion decisions).
     """
     if len(eff_weights) < 3:
-        return eff_weights, reps_to_failure, confidences, ages_days
+        n_sessions = len(set(ages_days))
+        return eff_weights, reps_to_failure, confidences, ages_days, n_sessions
 
     # Group observation indices by session age
     by_age: dict[float, list[int]] = defaultdict(list)
@@ -176,7 +190,7 @@ def _filter_stale_sessions(
 
     sorted_ages = sorted(by_age.keys())
     if len(sorted_ages) < 2:
-        return eff_weights, reps_to_failure, confidences, ages_days
+        return eff_weights, reps_to_failure, confidences, ages_days, len(sorted_ages)
 
     # Anchor: most recent session's implied 1RM distribution
     anchor_age = sorted_ages[0]
@@ -186,6 +200,7 @@ def _filter_stale_sessions(
     ]
 
     keep_indices = list(by_age[anchor_age])  # always keep most recent
+    kept_ages = {anchor_age}
 
     for age in sorted_ages[1:]:
         indices = by_age[age]
@@ -199,10 +214,12 @@ def _filter_stale_sessions(
             if p < TTEST_ALPHA:
                 continue  # drop this session
         keep_indices.extend(indices)
+        kept_ages.add(age)
 
     if len(keep_indices) < MIN_SETS_TIER2:
         # Filtering removed too much data — fall back to unfiltered
-        return eff_weights, reps_to_failure, confidences, ages_days
+        return (eff_weights, reps_to_failure, confidences, ages_days,
+                len(sorted_ages))
 
     keep_indices.sort()
     return (
@@ -210,6 +227,7 @@ def _filter_stale_sessions(
         [reps_to_failure[i] for i in keep_indices],
         [confidences[i] for i in keep_indices],
         [ages_days[i] for i in keep_indices],
+        len(kept_ages),
     )
 
 
@@ -322,7 +340,7 @@ def _fit_params(
     best_result = None
     best_loss = float("inf")
 
-    gamma_inits = [0.15, 0.5, 1.0, 1.5] if fixed_gamma is None else [None]
+    gamma_inits = [0.2, 0.5, 0.7, 0.9] if fixed_gamma is None else [None]
     M_factors = [1.1, 1.3, 1.5, 2.0]
 
     for M_factor in M_factors:
@@ -335,7 +353,7 @@ def _fit_params(
                 bounds = [(M_lower, M_upper), (0.5, 200.0)]
             else:
                 x0 = [M_init, k_init, g_init]
-                bounds = [(M_lower, M_upper), (0.5, 200.0), (0.15, 2.5)]
+                bounds = [(M_lower, M_upper), (0.5, 200.0), (GAMMA_MIN, GAMMA_MAX)]
 
             try:
                 res = minimize(
@@ -406,12 +424,14 @@ def _load_bodyweight_lookup(session: Session) -> dict[date, float]:
 
 
 def fit_curve(
-    exercise_id: int, session: Session, *, days: int = 30
+    exercise_id: int, session: Session, *, days: int = 30,
+    allow_heavy: bool = True,
 ) -> CurveFit | None:
     """Fit the fresh-set strength curve for an exercise using recent RPE data.
 
     Returns None if insufficient qualifying data (< MIN_SETS_TIER2 RPE sets
     within the last `days` days, or exercise is bodyweight/non-strength).
+    When allow_heavy is False, forces tier2 (fixed gamma) regardless of data.
     """
     exercise, set_rows = _load_recent_sets(exercise_id, session, days)
     if exercise is None or not set_rows:
@@ -445,8 +465,10 @@ def fit_curve(
         ages_days.append((today - ws_date).days)
 
     # Filter stale sessions via t-test
-    eff_weights, reps_to_failure, confidences, ages_days = _filter_stale_sessions(
-        eff_weights, reps_to_failure, confidences, ages_days,
+    eff_weights, reps_to_failure, confidences, ages_days, n_sessions_kept = (
+        _filter_stale_sessions(
+            eff_weights, reps_to_failure, confidences, ages_days,
+        )
     )
 
     n_obs = len(eff_weights)
@@ -459,26 +481,25 @@ def fit_curve(
     recency = _recency_weights(ages_days)
     fit_w = conf * recency
 
-    # Determine tier
+    # Determine tier — non-heavy exercises always tier2; heavy need sufficient data
     distinct_w = len(set(round(w, 1) for w in eff_weights))
-    tier = "tier1" if n_obs >= MIN_SETS_TIER1 and distinct_w >= MIN_DISTINCT_WEIGHTS_TIER1 else "tier2"
+    tier = (
+        "tier1"
+        if (allow_heavy
+            and n_obs >= MIN_SETS_TIER1
+            and distinct_w >= MIN_DISTINCT_WEIGHTS_TIER1
+            and n_sessions_kept >= 2)
+        else "tier2"
+    )
 
     # Bounds and regularization
     M_lower, M_upper, M_prior = _estimate_M_bounds(eff_weights, reps_to_failure)
     ident = _identifiability_score(eff_weights, reps_to_failure)
-    lambda_M = 10.0 + 20.0 * (1.0 - ident)
 
     fixed_gamma = DEFAULT_GAMMA if tier == "tier2" else None
     M_fit, k_fit, gamma_fit, success = _fit_params(
-        W, r, fit_w, M_lower, M_upper, M_prior, lambda_M, fixed_gamma
+        W, r, fit_w, M_lower, M_upper, M_prior, M_REG_LAMBDA, fixed_gamma
     )
-
-    # Auto-demote: if free gamma is unreasonably low, refit as tier 2
-    if tier == "tier1" and gamma_fit < GAMMA_DEMOTE_THRESHOLD:
-        tier = "tier2"
-        M_fit, k_fit, gamma_fit, success = _fit_params(
-            W, r, fit_w, M_lower, M_upper, M_prior, lambda_M, DEFAULT_GAMMA
-        )
 
     # Compute RMSE
     predicted = fresh_curve(W, M_fit, k_fit, gamma_fit)
@@ -494,6 +515,141 @@ def fit_curve(
         max_observed_weight=float(np.max(W)),
         fit_tier=tier,
         identifiability=ident,
+    )
+
+
+def fit_from_data(
+    eff_weights: list[float],
+    reps_to_failure: list[float],
+    confidences: list[float],
+    ages_days: list[float],
+    *,
+    allow_heavy: bool = True,
+) -> CurveFit | None:
+    """Fit a strength curve from raw observation arrays (no DB access).
+
+    Runs the full pipeline: t-test filter → tier determination → curve fit.
+    Useful for plotting and analysis without needing a DB session.
+    When allow_heavy is False, forces tier2 (fixed gamma).
+    """
+    eff_weights, reps_to_failure, confidences, ages_days, n_sessions_kept = (
+        _filter_stale_sessions(eff_weights, reps_to_failure, confidences, ages_days)
+    )
+
+    n_obs = len(eff_weights)
+    if n_obs < MIN_SETS_TIER2:
+        return None
+
+    W = np.array(eff_weights)
+    r = np.array(reps_to_failure)
+    conf = np.array(confidences)
+    recency = _recency_weights(ages_days)
+    fit_w = conf * recency
+
+    distinct_w = len(set(round(w, 1) for w in eff_weights))
+    tier = (
+        "tier1"
+        if (allow_heavy
+            and n_obs >= MIN_SETS_TIER1
+            and distinct_w >= MIN_DISTINCT_WEIGHTS_TIER1
+            and n_sessions_kept >= 2)
+        else "tier2"
+    )
+
+    M_lower, M_upper, M_prior = _estimate_M_bounds(eff_weights, reps_to_failure)
+    ident = _identifiability_score(eff_weights, reps_to_failure)
+
+    fixed_gamma = DEFAULT_GAMMA if tier == "tier2" else None
+    M_fit, k_fit, gamma_fit, success = _fit_params(
+        W, r, fit_w, M_lower, M_upper, M_prior, M_REG_LAMBDA, fixed_gamma
+    )
+
+    predicted = fresh_curve(W, M_fit, k_fit, gamma_fit)
+    residuals = r - predicted
+    rmse = float(np.sqrt(np.mean(residuals**2)))
+
+    return CurveFit(
+        M=M_fit, k=k_fit, gamma=gamma_fit,
+        n_obs=n_obs, rmse=rmse,
+        max_observed_weight=float(np.max(W)),
+        fit_tier=tier, identifiability=ident,
+    )
+
+
+def refit_from_data(
+    hist_weights: list[float],
+    hist_reps: list[float],
+    hist_confs: list[float],
+    hist_ages: list[float],
+    session_weights: list[float],
+    session_reps: list[float],
+    session_confs: list[float],
+    *,
+    allow_heavy: bool = True,
+) -> CurveFit | None:
+    """Refit combining historical + session data with t-test and session boost.
+
+    Session data (age=0) becomes the t-test anchor. Historical sessions that
+    don't match current performance are dropped. No DB access needed.
+    When allow_heavy is False, forces tier2 (fixed gamma).
+    """
+    all_w = hist_weights + session_weights
+    all_r = hist_reps + session_reps
+    all_c = hist_confs + session_confs
+    all_a = hist_ages + [0.0] * len(session_weights)
+
+    all_w, all_r, all_c, all_a, n_sessions_kept = _filter_stale_sessions(
+        all_w, all_r, all_c, all_a
+    )
+
+    n_obs = len(all_w)
+    if n_obs < MIN_SETS_TIER2:
+        return None
+
+    W = np.array(all_w)
+    r = np.array(all_r)
+    conf = np.array(all_c)
+    recency = _recency_weights(all_a)
+    fit_w = conf * recency
+
+    n_session = len(session_weights)
+    n_prior = n_obs - n_session
+    if n_session > 0 and n_prior > 0:
+        prior_total = float(np.sum(fit_w[:n_prior]))
+        session_total = float(np.sum(fit_w[n_prior:]))
+        if session_total > 0 and prior_total > 0:
+            target = SESSION_TARGET_SHARE
+            boost = (target * prior_total) / ((1 - target) * session_total)
+            boost = max(1.0, min(boost, 100.0))
+            fit_w[n_prior:] *= boost
+
+    distinct_w = len(set(round(w, 1) for w in all_w))
+    tier = (
+        "tier1"
+        if (allow_heavy
+            and n_obs >= MIN_SETS_TIER1
+            and distinct_w >= MIN_DISTINCT_WEIGHTS_TIER1
+            and n_sessions_kept >= 2)
+        else "tier2"
+    )
+
+    M_lower, M_upper, M_prior = _estimate_M_bounds(all_w, all_r)
+    ident = _identifiability_score(all_w, all_r)
+
+    fixed_gamma = DEFAULT_GAMMA if tier == "tier2" else None
+    M_fit, k_fit, gamma_fit, success = _fit_params(
+        W, r, fit_w, M_lower, M_upper, M_prior, M_REG_LAMBDA, fixed_gamma
+    )
+
+    predicted = fresh_curve(W, M_fit, k_fit, gamma_fit)
+    residuals = r - predicted
+    rmse = float(np.sqrt(np.mean(residuals**2)))
+
+    return CurveFit(
+        M=M_fit, k=k_fit, gamma=gamma_fit,
+        n_obs=n_obs, rmse=rmse,
+        max_observed_weight=float(np.max(W)),
+        fit_tier=tier, identifiability=ident,
     )
 
 
@@ -598,22 +754,25 @@ def detect_inflection(
     bodyweight_lb: float,
     max_entered_weight: float | None = None,
 ) -> InflectionResult:
-    """Check if per-set 1RM is declining (fatigue visible).
+    """Check if fatigue is visible or if we need more data past the inflection.
 
     Requires 3+ session sets.
     session_sets: [{"weight": float, "reps": int, "rpe": float}] (entered weights)
 
-    Computes a per-set 1RM estimate from each set's effective weight and
-    reps-to-failure using a standard Brzycki-style formula.  If the last
-    set's estimated 1RM is lower than the previous set's, fatigue is
-    showing (inflecting).  Otherwise the user still has headroom and
-    should do another set.
+    Two stopping criteria (either triggers exercise_complete):
+    1. **Fatigue inflection**: last set's Brzycki 1RM < previous set's → fatigue visible.
+    2. **Curve inflection**: last set weight > M*(γ+1)/2 → we're in the concave-down
+       region and γ is constrained. Only checked for allow_heavy exercises.
+
+    If neither criterion is met and allow_heavy, suggests a heavier set.
+    Non-heavy exercises always return inflecting=False with no suggestion.
     """
     if len(session_sets) < 3:
         return InflectionResult(inflecting=False, estimated_1rm=None, suggested_set4=None)
 
     # Compute per-set 1RM estimates from raw data (model-independent)
     set_1rms: list[float] = []
+    last_ew = 0.0
     for s in session_sets:
         ew = _entered_to_effective(exercise, s["weight"], bodyweight_lb)
         if ew <= 0:
@@ -621,20 +780,20 @@ def detect_inflection(
         rpe = s.get("rpe") or 7.0
         rir = 10.0 - rpe
         r_fail = s["reps"] + rir
-        # Brzycki: 1RM = W / (1 - r_fail / 37), clamped for safety
         denom = max(1.0 - r_fail / 37.0, 0.05)
         est_1rm = ew / denom
         set_1rms.append(est_1rm)
+        last_ew = ew
 
     if len(set_1rms) < 3:
         return InflectionResult(inflecting=False, estimated_1rm=None, suggested_set4=None)
 
-    # Inflecting = last set 1RM is lower than the second-to-last
-    last = set_1rms[-1]
-    prev = set_1rms[-2]
-    inflecting = last < prev
+    # Criterion 1: fatigue inflection (1RM declining)
+    last_1rm = set_1rms[-1]
+    prev_1rm = set_1rms[-2]
+    fatigue_inflecting = last_1rm < prev_1rm
 
-    if inflecting:
+    if fatigue_inflecting:
         avg_1rm = sum(set_1rms) / len(set_1rms)
         return InflectionResult(
             inflecting=True,
@@ -642,11 +801,24 @@ def detect_inflection(
             suggested_set4=None,
         )
 
-    # Not inflecting — suggest set 4 for heavy exercises
+    # Non-heavy exercises: no further escalation
     if not exercise.allow_heavy_loading:
         return InflectionResult(inflecting=False, estimated_1rm=None, suggested_set4=None)
 
-    # Target: half the reps of set 3, minimum 1 rep, RIR=1
+    # Criterion 2: curve inflection — is last set past M*(γ+1)/2?
+    inflection_w = fit.M * (fit.gamma + 1) / 2.0
+    past_inflection = last_ew > inflection_w
+
+    if past_inflection:
+        # We have data in the concave-down region — γ is constrained
+        avg_1rm = sum(set_1rms) / len(set_1rms)
+        return InflectionResult(
+            inflecting=True,
+            estimated_1rm=round(avg_1rm, 1),
+            suggested_set4=None,
+        )
+
+    # Not past either inflection — suggest heavier set
     last_set = session_sets[-1]
     set3_reps = last_set["reps"]
     target_actual = max(1, math.ceil(set3_reps / 2))
@@ -659,13 +831,12 @@ def detect_inflection(
         exercise, effective_weight_lb=ew, bodyweight_lb=bodyweight_lb
     )
 
-    # For set 4, ensure we go heavier than the last set (the whole point is to
-    # push past the plateau).  Only cap at machine limit if provided.
+    # Ensure we go heavier than the last set
     last_entered = last_set["weight"]
     if entered is not None and entered <= last_entered:
-        entered = last_entered * 1.1  # at least 10% heavier than last set
+        entered = last_entered * 1.1
     if entered is not None and max_entered_weight is not None:
-        entered = min(entered, max_entered_weight * 1.25)  # allow 25% above historical max
+        entered = min(entered, max_entered_weight * 1.25)
     if entered is not None:
         ew = _entered_to_effective(exercise, entered, bodyweight_lb)
         target_r_fail = predict_reps(ew, fit)
@@ -693,11 +864,13 @@ def prescribe_next_set(
     prior_sets: list[dict],
     bodyweight_lb: float,
     actual_weight: float | None = None,
+    training_mode: str = "volume",
 ) -> dict:
     """Prescribe the next set based on completed prior sets.
 
     prior_sets: [{"weight": float, "reps": int, "rpe": float}]
-    Returns dict with: has_curve, next_set, exercise_complete, inflection_detected, estimated_1rm
+    training_mode: "heavy" or "volume" (controls scheme + stopping)
+    Returns dict with: has_curve, next_set, exercise_complete, inflection_detected, estimated_1rm, training_mode
     """
     exercise = session.get(Exercise, exercise_id)
     if exercise is None:
@@ -721,11 +894,14 @@ def prescribe_next_set(
             },
         }
 
-    # Fit or refit curve
+    # Fit or refit curve — allow_heavy keyed off exercise capability (not mode)
+    # so volume mode on heavy exercises still gets a trained curve
+    allow_heavy = exercise.allow_heavy_loading
     if prior_sets:
-        fit = refit_with_observations(exercise_id, session, prior_sets)
+        fit = refit_with_observations(exercise_id, session, prior_sets,
+                                      allow_heavy=allow_heavy)
     else:
-        fit = fit_curve(exercise_id, session)
+        fit = fit_curve(exercise_id, session, allow_heavy=allow_heavy)
 
     if fit is None:
         last_weight = get_max_recent_entered_weight(exercise_id, session)
@@ -733,44 +909,63 @@ def prescribe_next_set(
             "has_curve": False,
             "fallback_weight": last_weight,
             "message": "Insufficient RPE data for curve fit.",
+            "training_mode": training_mode,
         }
 
     n_done = len(prior_sets)
-    scheme = HEAVY_SCHEME if exercise.allow_heavy_loading else LIGHT_SCHEME
+    is_heavy_mode = training_mode == "heavy" and exercise.allow_heavy_loading
+    if is_heavy_mode:
+        scheme = HEAVY_SCHEME
+    elif exercise.allow_heavy_loading:
+        scheme = VOLUME_SCHEME
+    else:
+        scheme = LIGHT_SCHEME
     max_weight = get_max_recent_entered_weight(exercise_id, session)
 
-    # After 3+ sets: check inflection
+    # After 3+ sets: only heavy mode gets inflection checks + set 4+
     if n_done >= 3:
-        inflection = detect_inflection(
-            fit, prior_sets, exercise, bodyweight_lb, max_weight
-        )
-        result = {
-            "has_curve": True,
-            "fit_tier": fit.fit_tier,
-            "n_obs": fit.n_obs,
-            "inflection_detected": inflection.inflecting,
-            "estimated_1rm": inflection.estimated_1rm,
-        }
-        if inflection.inflecting:
-            result["exercise_complete"] = True
-            result["next_set"] = None
-        elif inflection.suggested_set4:
-            result["exercise_complete"] = False
-            result["next_set"] = _set_prescription_dict(inflection.suggested_set4)
+        if is_heavy_mode:
+            inflection = detect_inflection(
+                fit, prior_sets, exercise, bodyweight_lb, max_weight
+            )
+            result = {
+                "has_curve": True,
+                "fit_tier": fit.fit_tier,
+                "n_obs": fit.n_obs,
+                "inflection_detected": inflection.inflecting,
+                "estimated_1rm": inflection.estimated_1rm,
+                "training_mode": training_mode,
+            }
+            if inflection.inflecting:
+                result["exercise_complete"] = True
+                result["next_set"] = None
+            elif inflection.suggested_set4:
+                result["exercise_complete"] = False
+                result["next_set"] = _set_prescription_dict(inflection.suggested_set4)
+            else:
+                result["exercise_complete"] = True
+                result["next_set"] = None
+            return result
         else:
-            result["exercise_complete"] = True
-            result["next_set"] = None
-        return result
+            # Volume/light mode: hard stop at 3 sets
+            return {
+                "has_curve": True,
+                "exercise_complete": True,
+                "inflection_detected": None,
+                "estimated_1rm": round(fit.M, 1),
+                "next_set": None,
+                "training_mode": training_mode,
+            }
 
     # Sets 1-3: prescribe from scheme
     if n_done >= len(scheme):
-        # Non-heavy exercises capped at 3 sets
         return {
             "has_curve": True,
             "exercise_complete": True,
             "inflection_detected": None,
             "estimated_1rm": round(fit.M, 1),
             "next_set": None,
+            "training_mode": training_mode,
         }
 
     set_idx = n_done  # 0-indexed
@@ -788,6 +983,7 @@ def prescribe_next_set(
             "inflection_detected": None,
             "estimated_1rm": None,
             "next_set": _set_prescription_dict(prescription),
+            "training_mode": training_mode,
         }
 
     # Standard prescription
@@ -853,6 +1049,7 @@ def prescribe_next_set(
         "inflection_detected": None,
         "estimated_1rm": None,
         "next_set": _set_prescription_dict(prescription),
+        "training_mode": training_mode,
     }
 
 
@@ -877,11 +1074,13 @@ def refit_with_observations(
     new_obs: list[dict],
     *,
     days: int = 30,
+    allow_heavy: bool = True,
 ) -> CurveFit | None:
     """Refit the curve incorporating in-session observations.
 
     new_obs: list of {"weight": float, "reps": int, "rpe": float}
     where weight is the entered weight (will be converted to effective).
+    When allow_heavy is False, forces tier2 (fixed gamma).
     """
     exercise, set_rows = _load_recent_sets(exercise_id, session, days)
     if exercise is None:
@@ -913,12 +1112,13 @@ def refit_with_observations(
         confidences.append(_rpe_confidence(ws.rpe))
         ages_days.append((today - ws_date).days)
 
-    # Filter stale sessions from historical data before merging with new obs
-    eff_weights, reps_to_failure, confidences, ages_days = _filter_stale_sessions(
-        eff_weights, reps_to_failure, confidences, ages_days,
-    )
-
-    # Add new in-session observations (age=0, high confidence since just performed)
+    # Add new in-session observations (age=0) BEFORE filtering so the
+    # t-test uses current session performance as the anchor.  This drops
+    # historical sessions whose strength level is statistically different
+    # from what we're doing right now (injury recovery, technique change,
+    # detraining, etc.).  After only 1 session set the t-test can't run
+    # (needs ≥2 in the anchor), so historical filtering still applies.
+    n_session = 0
     for obs in new_obs:
         if obs.get("rpe") is None or obs.get("reps") is None:
             continue
@@ -930,6 +1130,17 @@ def refit_with_observations(
         reps_to_failure.append(obs["reps"] + rir)
         confidences.append(_rpe_confidence(obs["rpe"]))
         ages_days.append(0.0)  # just happened
+        n_session += 1
+
+    # Filter stale sessions — with session data present (age=0) it becomes
+    # the anchor, so historical sessions that don't match current performance
+    # are dropped.  Without session data this falls back to historical-only
+    # filtering (most recent historical session as anchor).
+    eff_weights, reps_to_failure, confidences, ages_days, n_sessions_kept = (
+        _filter_stale_sessions(
+            eff_weights, reps_to_failure, confidences, ages_days,
+        )
+    )
 
     n_obs = len(eff_weights)
     if n_obs < MIN_SETS_TIER2:
@@ -941,9 +1152,9 @@ def refit_with_observations(
     recency = _recency_weights(ages_days)
     fit_w = conf * recency
 
-    # Session boost: scale same-day weights so they contribute TARGET share
-    n_session = sum(1 for obs in new_obs
-                    if obs.get("rpe") is not None and obs.get("reps") is not None)
+    # Session boost: scale same-day weights so they contribute TARGET share.
+    # Session data (anchor) is always kept by the filter, so n_session is
+    # unchanged.  n_prior may have shrunk if historical sessions were dropped.
     n_prior = n_obs - n_session
     if n_session > 0 and n_prior > 0:
         prior_total = float(np.sum(fit_w[:n_prior]))
@@ -954,24 +1165,24 @@ def refit_with_observations(
             boost = max(1.0, min(boost, 100.0))
             fit_w[n_prior:] *= boost
 
+    # Determine tier — non-heavy exercises always tier2; heavy need sufficient data
     distinct_w = len(set(round(w, 1) for w in eff_weights))
-    tier = "tier1" if n_obs >= MIN_SETS_TIER1 and distinct_w >= MIN_DISTINCT_WEIGHTS_TIER1 else "tier2"
+    tier = (
+        "tier1"
+        if (allow_heavy
+            and n_obs >= MIN_SETS_TIER1
+            and distinct_w >= MIN_DISTINCT_WEIGHTS_TIER1
+            and n_sessions_kept >= 2)
+        else "tier2"
+    )
 
     M_lower, M_upper, M_prior = _estimate_M_bounds(eff_weights, reps_to_failure)
     ident = _identifiability_score(eff_weights, reps_to_failure)
-    lambda_M = 10.0 + 20.0 * (1.0 - ident)
 
     fixed_gamma = DEFAULT_GAMMA if tier == "tier2" else None
     M_fit, k_fit, gamma_fit, success = _fit_params(
-        W, r, fit_w, M_lower, M_upper, M_prior, lambda_M, fixed_gamma
+        W, r, fit_w, M_lower, M_upper, M_prior, M_REG_LAMBDA, fixed_gamma
     )
-
-    # Auto-demote: if free gamma is unreasonably low, refit as tier 2
-    if tier == "tier1" and gamma_fit < GAMMA_DEMOTE_THRESHOLD:
-        tier = "tier2"
-        M_fit, k_fit, gamma_fit, success = _fit_params(
-            W, r, fit_w, M_lower, M_upper, M_prior, lambda_M, DEFAULT_GAMMA
-        )
 
     predicted = fresh_curve(W, M_fit, k_fit, gamma_fit)
     residuals = r - predicted
@@ -987,6 +1198,132 @@ def refit_with_observations(
         fit_tier=tier,
         identifiability=ident,
     )
+
+
+# ── Heavy availability checker ──
+
+# Limits for heavy-mode frequency
+HEAVY_PER_REGION_PER_SESSION = 1
+HEAVY_PER_REGION_PER_WEEK = 2
+HEAVY_EXERCISE_COOLDOWN_DAYS = 10
+
+
+def _get_exercise_regions(exercise_id: int, session: Session) -> list[str]:
+    """Return primary regions for an exercise via ExerciseTissue → Tissue."""
+    stmt = (
+        select(Tissue.region)
+        .join(ExerciseTissue, ExerciseTissue.tissue_id == Tissue.id)
+        .where(ExerciseTissue.exercise_id == exercise_id)
+    )
+    return list(set(session.exec(stmt).all()))
+
+
+def check_heavy_availability(
+    exercise_id: int,
+    session: Session,
+    current_session_id: int | None = None,
+) -> dict:
+    """Check if an exercise can run in heavy mode.
+
+    Rules:
+    1. Exercise must have allow_heavy_loading=True
+    2. ≤1 heavy exercise per region in current session
+    3. ≤2 heavy exercises per region in past 7 days
+    4. >10 days since this exercise was last done in heavy mode
+
+    Returns {available: bool, reason: str|None, regions: list[str]}
+    """
+    exercise = session.get(Exercise, exercise_id)
+    if exercise is None or not exercise.allow_heavy_loading:
+        return {"available": False, "reason": "Exercise does not allow heavy loading", "regions": []}
+
+    regions = _get_exercise_regions(exercise_id, session)
+    if not regions:
+        return {"available": False, "reason": "No tissue regions mapped", "regions": []}
+
+    today = user_today()
+
+    # Rule 4: exercise-specific cooldown (>10 days since last heavy)
+    cooldown_cutoff = today - timedelta(days=HEAVY_EXERCISE_COOLDOWN_DAYS)
+    last_heavy_stmt = (
+        select(WorkoutSession.date)
+        .join(WorkoutSet, WorkoutSet.session_id == WorkoutSession.id)
+        .where(
+            WorkoutSet.exercise_id == exercise_id,
+            WorkoutSet.training_mode == "heavy",
+            WorkoutSession.date >= cooldown_cutoff,
+        )
+        .order_by(WorkoutSession.date.desc())
+        .limit(1)
+    )
+    last_heavy_date = session.exec(last_heavy_stmt).first()
+    if last_heavy_date is not None:
+        days_since = (today - last_heavy_date).days
+        return {
+            "available": False,
+            "reason": f"Heavy {days_since}d ago (need {HEAVY_EXERCISE_COOLDOWN_DAYS}d)",
+            "regions": regions,
+        }
+
+    # Rule 2: ≤2 heavy per region per week (count distinct exercise exposures)
+    week_cutoff = today - timedelta(days=7)
+    for region in regions:
+        # Get exercise IDs that target this region
+        region_exercise_ids_stmt = (
+            select(ExerciseTissue.exercise_id)
+            .join(Tissue, Tissue.id == ExerciseTissue.tissue_id)
+            .where(Tissue.region == region)
+        )
+        region_ex_ids = list(session.exec(region_exercise_ids_stmt).all())
+
+        # Count distinct (session_id, exercise_id) with heavy mode in past week
+        weekly_stmt = (
+            select(WorkoutSet.session_id, WorkoutSet.exercise_id)
+            .join(WorkoutSession, WorkoutSession.id == WorkoutSet.session_id)
+            .where(
+                WorkoutSet.exercise_id.in_(region_ex_ids),
+                WorkoutSet.training_mode == "heavy",
+                WorkoutSession.date >= week_cutoff,
+            )
+            .distinct()
+        )
+        weekly_heavy = len(session.exec(weekly_stmt).all())
+        if weekly_heavy >= HEAVY_PER_REGION_PER_WEEK:
+            return {
+                "available": False,
+                "reason": f"{region}: {weekly_heavy} heavy this week (max {HEAVY_PER_REGION_PER_WEEK})",
+                "regions": regions,
+            }
+
+    # Rule 1: ≤1 heavy per region in current session
+    if current_session_id is not None:
+        for region in regions:
+            region_exercise_ids_stmt = (
+                select(ExerciseTissue.exercise_id)
+                .join(Tissue, Tissue.id == ExerciseTissue.tissue_id)
+                .where(Tissue.region == region)
+            )
+            region_ex_ids = list(session.exec(region_exercise_ids_stmt).all())
+
+            session_stmt = (
+                select(WorkoutSet.session_id, WorkoutSet.exercise_id)
+                .where(
+                    WorkoutSet.session_id == current_session_id,
+                    WorkoutSet.exercise_id.in_(region_ex_ids),
+                    WorkoutSet.exercise_id != exercise_id,
+                    WorkoutSet.training_mode == "heavy",
+                )
+                .distinct()
+            )
+            session_heavy = len(session.exec(session_stmt).all())
+            if session_heavy >= HEAVY_PER_REGION_PER_SESSION:
+                return {
+                    "available": False,
+                    "reason": f"{region}: already {session_heavy} heavy in session (max {HEAVY_PER_REGION_PER_SESSION})",
+                    "regions": regions,
+                }
+
+    return {"available": True, "reason": None, "regions": regions}
 
 
 # ── Exercise menu helpers ──
