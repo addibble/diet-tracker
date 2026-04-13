@@ -19,7 +19,9 @@ from app.strength_model import (
     _identifiability_score,
     _rpe_confidence,
     adjust_prescription,
+    detect_inflection,
     fit_curve,
+    fit_from_data,
     fresh_curve,
     get_bodyweight_suggestion,
     get_exercise_freshness,
@@ -351,6 +353,161 @@ class TestAdjustPrescription:
         assert p.entered_weight == 130
         assert p.target_reps > 0
         assert p.target_rpe == 7.0  # set 1 heavy scheme
+
+
+class TestAllowHeavyTierGating:
+    """Non-heavy exercises should always get tier2 (fixed gamma)."""
+
+    def test_fit_from_data_non_heavy_forces_tier2(self):
+        """Even with enough data for tier1, non-heavy gets tier2."""
+        # 6 obs across 2+ sessions, distinct weights — would be tier1 if heavy
+        weights = [100.0, 120.0, 140.0, 100.0, 120.0, 140.0]
+        reps = [20.0, 15.0, 10.0, 19.0, 14.0, 9.0]
+        confs = [1.0] * 6
+        ages = [7.0, 7.0, 7.0, 0.0, 0.0, 0.0]
+
+        fit_heavy = fit_from_data(weights, reps, confs, ages, allow_heavy=True)
+        fit_light = fit_from_data(weights, reps, confs, ages, allow_heavy=False)
+
+        assert fit_heavy is not None
+        assert fit_light is not None
+        assert fit_light.fit_tier == "tier2"
+        assert fit_light.gamma == DEFAULT_GAMMA
+
+    def test_fit_curve_non_heavy_forces_tier2(self, session):
+        """fit_curve with allow_heavy=False always returns tier2."""
+        ex = _make_exercise(session, name="Light Exercise", allow_heavy_loading=False)
+        # Seed enough varied data across 2 sessions for tier1 eligibility
+        ws1 = WorkoutSession(date=date.today() - timedelta(days=7))
+        session.add(ws1)
+        session.flush()
+        for w, r, rpe in [(80, 15, 7.0), (100, 12, 8.0), (120, 8, 9.0)]:
+            session.add(WorkoutSet(
+                session_id=ws1.id, exercise_id=ex.id, set_order=1,
+                reps=r, weight=w, rpe=rpe,
+            ))
+        ws2 = WorkoutSession(date=date.today())
+        session.add(ws2)
+        session.flush()
+        for w, r, rpe in [(80, 14, 7.0), (100, 11, 8.0), (120, 7, 9.0)]:
+            session.add(WorkoutSet(
+                session_id=ws2.id, exercise_id=ex.id, set_order=1,
+                reps=r, weight=w, rpe=rpe,
+            ))
+        session.flush()
+
+        fit = fit_curve(ex.id, session, allow_heavy=False)
+        assert fit is not None
+        assert fit.fit_tier == "tier2"
+        assert fit.gamma == DEFAULT_GAMMA
+
+
+class TestLightScheme:
+    """LIGHT_SCHEME should target 18+RIR3, 15+RIR2, 12+RIR1."""
+
+    def test_light_scheme_rep_targets(self):
+        fit = CurveFit(M=200, k=15, gamma=0.9, n_obs=10, rmse=1.0,
+                        max_observed_weight=150, fit_tier="tier2")
+        ex = Exercise(name="Lateral Raise", allow_heavy_loading=False,
+                      load_input_mode="external_weight",
+                      bodyweight_fraction=0.0, external_load_multiplier=1.0)
+        prescriptions = plan_progressive_sets(fit, ex, bodyweight_lb=180)
+        assert len(prescriptions) == 3
+        # RPE targets: 7, 8, 9
+        assert prescriptions[0].target_rpe == 7.0
+        assert prescriptions[1].target_rpe == 8.0
+        assert prescriptions[2].target_rpe == 9.0
+        # Reps should be in the 12-18 range (metabolic failure scheme)
+        assert prescriptions[0].target_reps >= 12
+        assert prescriptions[2].target_reps >= 8
+
+
+class TestDetectInflection:
+    """Tests for inflection-aware stopping logic."""
+
+    def _make_heavy_exercise(self):
+        return Exercise(name="Squat", allow_heavy_loading=True,
+                        load_input_mode="external_weight",
+                        bodyweight_fraction=0.0, external_load_multiplier=1.0)
+
+    def _make_light_exercise(self):
+        return Exercise(name="Cable Fly", allow_heavy_loading=False,
+                        load_input_mode="external_weight",
+                        bodyweight_fraction=0.0, external_load_multiplier=1.0)
+
+    def test_fatigue_inflection_detected(self):
+        """When per-set 1RM declines, fatigue inflection is detected."""
+        fit = CurveFit(M=200, k=20, gamma=0.7, n_obs=10, rmse=1.0,
+                        max_observed_weight=180, fit_tier="tier1")
+        ex = self._make_heavy_exercise()
+        # Set 3 shows declining 1RM (fatigue)
+        sets = [
+            {"weight": 100, "reps": 15, "rpe": 7.0},
+            {"weight": 140, "reps": 10, "rpe": 8.0},
+            {"weight": 170, "reps": 3, "rpe": 10.0},  # very fatigued
+        ]
+        result = detect_inflection(fit, sets, ex, bodyweight_lb=180)
+        assert result.inflecting is True
+        assert result.estimated_1rm is not None
+
+    def test_curve_inflection_past_inflection_point(self):
+        """When last set is past M*(γ+1)/2, curve inflection stops exercise."""
+        # gamma=0.7, M=200 → inflection at 200*(0.7+1)/2 = 170
+        fit = CurveFit(M=200, k=20, gamma=0.7, n_obs=10, rmse=1.0,
+                        max_observed_weight=190, fit_tier="tier1")
+        ex = self._make_heavy_exercise()
+        # Last set at 180 > inflection (170) — model is constrained
+        sets = [
+            {"weight": 100, "reps": 15, "rpe": 7.0},
+            {"weight": 140, "reps": 10, "rpe": 8.0},
+            {"weight": 180, "reps": 5, "rpe": 9.0},
+        ]
+        result = detect_inflection(fit, sets, ex, bodyweight_lb=180)
+        assert result.inflecting is True
+        assert result.suggested_set4 is None
+
+    def test_not_past_inflection_suggests_heavier(self):
+        """When last set is before inflection, suggests heavier set."""
+        # gamma=0.9, M=300 → inflection at 300*1.9/2 = 285
+        fit = CurveFit(M=300, k=20, gamma=0.9, n_obs=10, rmse=1.0,
+                        max_observed_weight=200, fit_tier="tier1")
+        ex = self._make_heavy_exercise()
+        # Last set at 200 < inflection (285)
+        sets = [
+            {"weight": 100, "reps": 20, "rpe": 7.0},
+            {"weight": 150, "reps": 14, "rpe": 8.0},
+            {"weight": 200, "reps": 8, "rpe": 9.0},
+        ]
+        result = detect_inflection(fit, sets, ex, bodyweight_lb=180)
+        assert result.inflecting is False
+        assert result.suggested_set4 is not None
+        assert result.suggested_set4.entered_weight > 200
+
+    def test_non_heavy_never_suggests_extra_set(self):
+        """Light exercises never get a set 4 suggestion even when not fatigued."""
+        fit = CurveFit(M=300, k=20, gamma=0.9, n_obs=10, rmse=1.0,
+                        max_observed_weight=200, fit_tier="tier2")
+        ex = self._make_light_exercise()
+        # Sets with non-declining Brzycki 1RM so fatigue isn't triggered
+        sets = [
+            {"weight": 50, "reps": 18, "rpe": 7.0},
+            {"weight": 70, "reps": 15, "rpe": 8.0},
+            {"weight": 90, "reps": 12, "rpe": 9.0},
+        ]
+        result = detect_inflection(fit, sets, ex, bodyweight_lb=180)
+        # Should not suggest a set 4 regardless of inflection status
+        assert result.suggested_set4 is None
+
+    def test_fewer_than_3_sets_returns_not_inflecting(self):
+        fit = CurveFit(M=200, k=20, gamma=0.7, n_obs=10, rmse=1.0,
+                        max_observed_weight=180, fit_tier="tier1")
+        ex = self._make_heavy_exercise()
+        result = detect_inflection(fit, [
+            {"weight": 100, "reps": 15, "rpe": 7.0},
+            {"weight": 140, "reps": 10, "rpe": 8.0},
+        ], ex, bodyweight_lb=180)
+        assert result.inflecting is False
+        assert result.suggested_set4 is None
 
 
 class TestRefitWithObservations:
