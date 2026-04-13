@@ -35,6 +35,9 @@ DEFAULT_GAMMA = 0.9
 GAMMA_PRIOR = 0.9
 GAMMA_REG_LAMBDA = 3.0  # per-observation strength (scaled by mean fit_weight)
 
+# M regularization: fixed strength (no longer scaled by identifiability)
+M_REG_LAMBDA = 15.0
+
 # Session refit: same-day observations get boosted to this share of total weight
 SESSION_TARGET_SHARE = 0.70
 
@@ -483,11 +486,10 @@ def fit_curve(
     # Bounds and regularization
     M_lower, M_upper, M_prior = _estimate_M_bounds(eff_weights, reps_to_failure)
     ident = _identifiability_score(eff_weights, reps_to_failure)
-    lambda_M = 10.0 + 20.0 * (1.0 - ident)
 
     fixed_gamma = DEFAULT_GAMMA if tier == "tier2" else None
     M_fit, k_fit, gamma_fit, success = _fit_params(
-        W, r, fit_w, M_lower, M_upper, M_prior, lambda_M, fixed_gamma
+        W, r, fit_w, M_lower, M_upper, M_prior, M_REG_LAMBDA, fixed_gamma
     )
 
     # Compute RMSE
@@ -504,6 +506,133 @@ def fit_curve(
         max_observed_weight=float(np.max(W)),
         fit_tier=tier,
         identifiability=ident,
+    )
+
+
+def fit_from_data(
+    eff_weights: list[float],
+    reps_to_failure: list[float],
+    confidences: list[float],
+    ages_days: list[float],
+) -> CurveFit | None:
+    """Fit a strength curve from raw observation arrays (no DB access).
+
+    Runs the full pipeline: t-test filter → tier determination → curve fit.
+    Useful for plotting and analysis without needing a DB session.
+    """
+    eff_weights, reps_to_failure, confidences, ages_days, n_sessions_kept = (
+        _filter_stale_sessions(eff_weights, reps_to_failure, confidences, ages_days)
+    )
+
+    n_obs = len(eff_weights)
+    if n_obs < MIN_SETS_TIER2:
+        return None
+
+    W = np.array(eff_weights)
+    r = np.array(reps_to_failure)
+    conf = np.array(confidences)
+    recency = _recency_weights(ages_days)
+    fit_w = conf * recency
+
+    distinct_w = len(set(round(w, 1) for w in eff_weights))
+    tier = (
+        "tier1"
+        if (n_obs >= MIN_SETS_TIER1
+            and distinct_w >= MIN_DISTINCT_WEIGHTS_TIER1
+            and n_sessions_kept >= 2)
+        else "tier2"
+    )
+
+    M_lower, M_upper, M_prior = _estimate_M_bounds(eff_weights, reps_to_failure)
+    ident = _identifiability_score(eff_weights, reps_to_failure)
+
+    fixed_gamma = DEFAULT_GAMMA if tier == "tier2" else None
+    M_fit, k_fit, gamma_fit, success = _fit_params(
+        W, r, fit_w, M_lower, M_upper, M_prior, M_REG_LAMBDA, fixed_gamma
+    )
+
+    predicted = fresh_curve(W, M_fit, k_fit, gamma_fit)
+    residuals = r - predicted
+    rmse = float(np.sqrt(np.mean(residuals**2)))
+
+    return CurveFit(
+        M=M_fit, k=k_fit, gamma=gamma_fit,
+        n_obs=n_obs, rmse=rmse,
+        max_observed_weight=float(np.max(W)),
+        fit_tier=tier, identifiability=ident,
+    )
+
+
+def refit_from_data(
+    hist_weights: list[float],
+    hist_reps: list[float],
+    hist_confs: list[float],
+    hist_ages: list[float],
+    session_weights: list[float],
+    session_reps: list[float],
+    session_confs: list[float],
+) -> CurveFit | None:
+    """Refit combining historical + session data with t-test and session boost.
+
+    Session data (age=0) becomes the t-test anchor. Historical sessions that
+    don't match current performance are dropped. No DB access needed.
+    """
+    all_w = hist_weights + session_weights
+    all_r = hist_reps + session_reps
+    all_c = hist_confs + session_confs
+    all_a = hist_ages + [0.0] * len(session_weights)
+
+    all_w, all_r, all_c, all_a, n_sessions_kept = _filter_stale_sessions(
+        all_w, all_r, all_c, all_a
+    )
+
+    n_obs = len(all_w)
+    if n_obs < MIN_SETS_TIER2:
+        return None
+
+    W = np.array(all_w)
+    r = np.array(all_r)
+    conf = np.array(all_c)
+    recency = _recency_weights(all_a)
+    fit_w = conf * recency
+
+    n_session = len(session_weights)
+    n_prior = n_obs - n_session
+    if n_session > 0 and n_prior > 0:
+        prior_total = float(np.sum(fit_w[:n_prior]))
+        session_total = float(np.sum(fit_w[n_prior:]))
+        if session_total > 0 and prior_total > 0:
+            target = SESSION_TARGET_SHARE
+            boost = (target * prior_total) / ((1 - target) * session_total)
+            boost = max(1.0, min(boost, 100.0))
+            fit_w[n_prior:] *= boost
+
+    distinct_w = len(set(round(w, 1) for w in all_w))
+    tier = (
+        "tier1"
+        if (n_obs >= MIN_SETS_TIER1
+            and distinct_w >= MIN_DISTINCT_WEIGHTS_TIER1
+            and n_sessions_kept >= 2)
+        else "tier2"
+    )
+
+    M_lower, M_upper, M_prior = _estimate_M_bounds(all_w, all_r)
+    ident = _identifiability_score(all_w, all_r)
+
+    fixed_gamma = DEFAULT_GAMMA if tier == "tier2" else None
+    M_fit, k_fit, gamma_fit, success = _fit_params(
+        W, r, fit_w, M_lower, M_upper, M_prior, M_REG_LAMBDA, fixed_gamma
+    )
+
+    predicted = fresh_curve(W, M_fit, k_fit, gamma_fit)
+    residuals = r - predicted
+    rmse = float(np.sqrt(np.mean(residuals**2)))
+
+    return CurveFit(
+        M=M_fit, k=k_fit, gamma=gamma_fit,
+        n_obs=n_obs, rmse=rmse,
+        max_observed_weight=float(np.max(W)),
+        fit_tier=tier, identifiability=ident,
     )
 
 
@@ -988,11 +1117,10 @@ def refit_with_observations(
 
     M_lower, M_upper, M_prior = _estimate_M_bounds(eff_weights, reps_to_failure)
     ident = _identifiability_score(eff_weights, reps_to_failure)
-    lambda_M = 10.0 + 20.0 * (1.0 - ident)
 
     fixed_gamma = DEFAULT_GAMMA if tier == "tier2" else None
     M_fit, k_fit, gamma_fit, success = _fit_params(
-        W, r, fit_w, M_lower, M_upper, M_prior, lambda_M, fixed_gamma
+        W, r, fit_w, M_lower, M_upper, M_prior, M_REG_LAMBDA, fixed_gamma
     )
 
     predicted = fresh_curve(W, M_fit, k_fit, gamma_fit)

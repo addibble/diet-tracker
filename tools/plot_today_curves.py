@@ -19,21 +19,12 @@ from matplotlib.lines import Line2D
 from datetime import date, timedelta
 
 from app.strength_model import (
-    CurveFit,
     fresh_curve,
-    DEFAULT_GAMMA,
     MIN_RPE_FOR_FIT,
-    MIN_SETS_TIER1,
-    MIN_SETS_TIER2,
-    MIN_DISTINCT_WEIGHTS_TIER1,
-    SESSION_TARGET_SHARE,
-    GAMMA_DEMOTE_THRESHOLD,
     _rpe_confidence,
-    _recency_weights,
     _filter_stale_sessions,
-    _estimate_M_bounds,
-    _identifiability_score,
-    _fit_params,
+    fit_from_data,
+    refit_from_data,
 )
 
 
@@ -102,117 +93,6 @@ def load_historical_sets(conn, exercise_id, days=30):
     return historical
 
 
-def fit_from_observations(weights, reps_fail, confidences, ages):
-    """Run our fitting pipeline on arrays of observations."""
-    if len(weights) < MIN_SETS_TIER2:
-        return None
-
-    W = np.array(weights)
-    r = np.array(reps_fail)
-    conf = np.array(confidences)
-    recency = _recency_weights(ages)
-    fit_w = conf * recency
-
-    distinct_w = len(set(round(w, 1) for w in weights))
-    n_obs = len(weights)
-    tier = "tier1" if n_obs >= MIN_SETS_TIER1 and distinct_w >= MIN_DISTINCT_WEIGHTS_TIER1 else "tier2"
-
-    M_lower, M_upper, M_prior = _estimate_M_bounds(weights, reps_fail)
-    ident = _identifiability_score(weights, reps_fail)
-    lambda_M = 10.0 + 20.0 * (1.0 - ident)
-
-    fixed_gamma = DEFAULT_GAMMA if tier == "tier2" else None
-    M_fit, k_fit, gamma_fit, success = _fit_params(
-        W, r, fit_w, M_lower, M_upper, M_prior, lambda_M, fixed_gamma
-    )
-
-    if tier == "tier1" and gamma_fit < GAMMA_DEMOTE_THRESHOLD:
-        tier = "tier2"
-        M_fit, k_fit, gamma_fit, success = _fit_params(
-            W, r, fit_w, M_lower, M_upper, M_prior, lambda_M, DEFAULT_GAMMA
-        )
-
-    predicted = fresh_curve(W, M_fit, k_fit, gamma_fit)
-    residuals = r - predicted
-    rmse = float(np.sqrt(np.mean(residuals**2)))
-
-    return CurveFit(
-        M=M_fit, k=k_fit, gamma=gamma_fit,
-        n_obs=n_obs, rmse=rmse,
-        max_observed_weight=float(np.max(W)),
-        fit_tier=tier, identifiability=ident,
-    )
-
-
-def refit_with_session_boost(hist_w, hist_r, hist_c, hist_a,
-                              new_w, new_r, new_c):
-    """Refit combining historical + new session sets with session boost.
-
-    Runs t-test with session data as anchor so historical sessions that
-    don't match current performance are dropped.
-    """
-    # Combine historical + session, then filter with session as anchor
-    all_w = hist_w + new_w
-    all_r = hist_r + new_r
-    all_c = hist_c + new_c
-    all_a = hist_a + [0.0] * len(new_w)
-
-    all_w, all_r, all_c, all_a = _filter_stale_sessions(
-        all_w, all_r, all_c, all_a
-    )
-
-    if len(all_w) < MIN_SETS_TIER2:
-        return None
-
-    W = np.array(all_w)
-    r = np.array(all_r)
-    conf = np.array(all_c)
-    recency = _recency_weights(all_a)
-    fit_w = conf * recency
-
-    # Session boost — session data (age=0) always kept as anchor
-    n_session = len(new_w)
-    n_prior = len(all_w) - n_session
-    if n_session > 0 and n_prior > 0:
-        prior_total = float(np.sum(fit_w[:n_prior]))
-        session_total = float(np.sum(fit_w[n_prior:]))
-        if session_total > 0 and prior_total > 0:
-            target = SESSION_TARGET_SHARE
-            boost = (target * prior_total) / ((1 - target) * session_total)
-            boost = max(1.0, min(boost, 100.0))
-            fit_w[n_prior:] *= boost
-
-    n_obs = len(all_w)
-    distinct_w = len(set(round(w, 1) for w in all_w))
-    tier = "tier1" if n_obs >= MIN_SETS_TIER1 and distinct_w >= MIN_DISTINCT_WEIGHTS_TIER1 else "tier2"
-
-    M_lower, M_upper, M_prior_est = _estimate_M_bounds(all_w, all_r)
-    ident = _identifiability_score(all_w, all_r)
-    lambda_M = 10.0 + 20.0 * (1.0 - ident)
-
-    fixed_gamma = DEFAULT_GAMMA if tier == "tier2" else None
-    M_fit, k_fit, gamma_fit, success = _fit_params(
-        W, r, fit_w, M_lower, M_upper, M_prior_est, lambda_M, fixed_gamma
-    )
-
-    if tier == "tier1" and gamma_fit < GAMMA_DEMOTE_THRESHOLD:
-        tier = "tier2"
-        M_fit, k_fit, gamma_fit, success = _fit_params(
-            W, r, fit_w, M_lower, M_upper, M_prior_est, lambda_M, DEFAULT_GAMMA
-        )
-
-    predicted = fresh_curve(W, M_fit, k_fit, gamma_fit)
-    residuals = r - predicted
-    rmse = float(np.sqrt(np.mean(residuals**2)))
-
-    return CurveFit(
-        M=M_fit, k=k_fit, gamma=gamma_fit,
-        n_obs=n_obs, rmse=rmse,
-        max_observed_weight=float(np.max(W)),
-        fit_tier=tier, identifiability=ident,
-    )
-
-
 def plot_exercise(ax, ex_data, conn):
     """Plot curves for one exercise on a given axes."""
     name = ex_data["name"]
@@ -226,7 +106,7 @@ def plot_exercise(ax, ex_data, conn):
     raw_hist_a = [float(h["age_days"]) for h in hist]
 
     # Filter historical for the historical-only fit (no session anchor)
-    hist_w, hist_r, hist_c, hist_a = _filter_stale_sessions(
+    hist_w, hist_r, hist_c, hist_a, _ = _filter_stale_sessions(
         raw_hist_w[:], raw_hist_r[:], raw_hist_c[:], raw_hist_a[:]
     )
 
@@ -245,7 +125,7 @@ def plot_exercise(ax, ex_data, conn):
     fits = []
 
     # Historical fit (no session sets, uses historical-only filter)
-    hist_fit = fit_from_observations(hist_w, hist_r, hist_c, hist_a)
+    hist_fit = fit_from_data(hist_w, hist_r, hist_c, hist_a)
     fits.append(("Historical", hist_fit, colors[0]))
 
     # Progressive refits after each set — pass RAW historical so the
@@ -258,7 +138,7 @@ def plot_exercise(ax, ex_data, conn):
         session_r.append(s["reps"] + rir)
         session_c.append(_rpe_confidence(rpe))
 
-        refit = refit_with_session_boost(
+        refit = refit_from_data(
             raw_hist_w[:], raw_hist_r[:], raw_hist_c[:], raw_hist_a[:],
             session_w[:], session_r[:], session_c[:]
         )
