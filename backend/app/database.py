@@ -253,6 +253,7 @@ def _migrate_add_columns():
                 "performed_side": "ALTER TABLE workout_sets ADD COLUMN performed_side TEXT",
                 "started_at": "ALTER TABLE workout_sets ADD COLUMN started_at TIMESTAMP",
                 "completed_at": "ALTER TABLE workout_sets ADD COLUMN completed_at TIMESTAMP",
+                "training_mode": "ALTER TABLE workout_sets ADD COLUMN training_mode TEXT",
             },
             insp,
         )

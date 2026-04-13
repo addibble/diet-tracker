@@ -145,7 +145,7 @@ export default function ActiveWorkoutCard({
               reps: s.reps ?? 0,
               rir: s.rpe != null ? Math.round(10 - s.rpe) : 3,
             }))
-          updated.push({ ...old, sets: mySets, prescription: null, prescribing: false })
+          updated.push({ ...old, sets: mySets, prescription: null, prescribing: false, complete: false })
         }
         return updated
       })
@@ -495,6 +495,10 @@ function ExerciseWorkout({
     const ri = parseFloat(rir)
     if (isNaN(w) || isNaN(r) || isNaN(ri)) return
 
+    // Derive rep_completion from prescription range
+    const minReps = rx?.next_set?.acceptable_rep_min
+    const repCompletion = minReps != null ? (r >= minReps ? 'full' : 'partial') : 'full'
+
     setLogging(true)
     try {
       const result = await addWorkoutSet(sessionId, {
@@ -503,6 +507,7 @@ function ExerciseWorkout({
         reps: r,
         rir: ri,
         training_mode: state.training_mode,
+        rep_completion: repCompletion,
       })
       onSetLogged({ id: result.id, weight: w, reps: r, rir: ri })
       // Clear fields for next set
