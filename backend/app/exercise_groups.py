@@ -1,9 +1,9 @@
-"""Cosine-centroid exercise group classifier and weekly schedule.
+"""Cosine-centroid exercise group classifier with freshness-based availability.
 
-Assigns every exercise to one of six training groups (Push, Pull, Legs,
-Shoulders, Arms, Core) based on the cosine similarity of its region-level
-load profile to predefined group centroids.  The weekly schedule maps each
-day of the week to a set of groups.
+Assigns every exercise to one of five training groups (Push, Pull, Legs,
+Shoulders, Core) based on the cosine similarity of its region-level
+load profile to predefined group centroids.  Groups become available when
+all exercises in the group were last trained >= a cooldown threshold ago.
 """
 
 from __future__ import annotations
@@ -22,11 +22,15 @@ from app.tissue_regions import canonicalize_region
 # ---------------------------------------------------------------------------
 # Group centroids — each group is an ideal region-weight vector.
 # Exercises are classified to whichever centroid they most closely resemble.
+#
+# Triceps-dominant exercises land in Push (triceps: 0.8).
+# Bicep/forearm exercises land in Pull (biceps: 0.7, forearms: 0.5).
+# Shrug/carry exercises land in Shoulders (upper_back: 0.5, forearms: 0.3).
 # ---------------------------------------------------------------------------
 
 GROUP_CENTROIDS: dict[str, dict[str, float]] = {
-    "Push": {"chest": 1.0, "triceps": 0.5, "shoulders": 0.3},
-    "Pull": {"upper_back": 1.0, "biceps": 0.4, "forearms": 0.3},
+    "Push": {"chest": 1.0, "triceps": 0.8, "shoulders": 0.3},
+    "Pull": {"upper_back": 1.0, "biceps": 0.7, "forearms": 0.5},
     "Legs": {
         "quads": 0.8,
         "hamstrings": 0.8,
@@ -36,18 +40,8 @@ GROUP_CENTROIDS: dict[str, dict[str, float]] = {
         "inner_leg_adductor": 0.3,
         "outer_leg_abductor": 0.3,
     },
-    "Shoulders": {"shoulders": 1.0, "upper_back": 0.2},
-    "Arms": {"biceps": 0.8, "forearms": 0.7, "triceps": 0.8},
+    "Shoulders": {"shoulders": 1.0, "upper_back": 0.5, "forearms": 0.3},
     "Core": {"core": 1.0, "lower_back": 0.7},
-}
-
-GROUP_LABELS: dict[str, str] = {
-    "Push": "Push",
-    "Pull": "Pull",
-    "Legs": "Legs",
-    "Shoulders": "Shoulders",
-    "Arms": "Arms",
-    "Core": "Core",
 }
 
 ALL_GROUPS = list(GROUP_CENTROIDS.keys())
@@ -59,20 +53,16 @@ _CENTROID_NORMS: dict[str, float] = {
 }
 
 # ---------------------------------------------------------------------------
-# Weekly schedule — maps Python weekday (Mon=0 … Sun=6) to group names.
-# Rest days have an empty list.
+# Freshness-based availability — groups are available when all exercises
+# in the group were last trained >= cooldown_days ago.
 # ---------------------------------------------------------------------------
 
-DAY_LABELS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-
-WEEKLY_SCHEDULE: dict[int, list[str]] = {
-    0: [],                              # Monday: REST
-    1: ["Push", "Core"],                # Tuesday
-    2: ["Legs"],                        # Wednesday
-    3: ["Pull", "Arms"],                # Thursday
-    4: [],                              # Friday: REST
-    5: ["Shoulders", "Push", "Core"],   # Saturday
-    6: ["Legs", "Arms"],                # Sunday
+GROUP_COOLDOWN_DAYS: dict[str, int] = {
+    "Push": 4,
+    "Pull": 4,
+    "Legs": 4,
+    "Shoulders": 3,
+    "Core": 3,
 }
 
 MIN_CONFIDENCE = 0.15  # below this, exercise is "Uncategorized"
@@ -150,26 +140,25 @@ def build_exercise_region_profile(
 # ---------------------------------------------------------------------------
 
 
-def get_weekly_exercise_menu(session: Session) -> dict:
-    """Return the full weekly exercise menu with group classifications.
+def get_group_exercise_menu(session: Session) -> dict:
+    """Return exercises grouped by training group with freshness-based availability.
 
     Response shape::
 
         {
-            "days": [
+            "groups": [
                 {
-                    "day_index": 0,
-                    "day_label": "Mon",
-                    "groups": [],
-                    "exercises": [],
+                    "name": "Push",
+                    "available": true,
+                    "cooldown_days": 4,
+                    "days_since_freshest": 5,
+                    "exercises": [...]
                 },
                 ...
-            ],
-            "today_index": <int>,
+            ]
         }
     """
     today = user_today()
-    today_index = today.weekday()  # Mon=0 … Sun=6
 
     # 1. Load all exercises
     exercises = session.exec(select(Exercise)).all()
@@ -207,12 +196,14 @@ def get_weekly_exercise_menu(session: Session) -> dict:
         exercise_groups[ex_id] = (group, confidence)
 
     # 5. Batch-load freshness: last trained date per exercise
+    #    Only count sets that were actually completed (not abandoned plans).
     last_trained_stmt = (
         select(
             WorkoutSet.exercise_id,
             func.max(WorkoutSession.date).label("last_date"),
         )
         .join(WorkoutSession, WorkoutSet.session_id == WorkoutSession.id)
+        .where(WorkoutSet.completed_at.is_not(None))
         .group_by(WorkoutSet.exercise_id)
     )
     last_trained_rows = session.exec(last_trained_stmt).all()
@@ -240,11 +231,11 @@ def get_weekly_exercise_menu(session: Session) -> dict:
     rpe_rows = session.exec(rpe_stmt).all()
     rpe_map: dict[int, int] = {ex_id: cnt for ex_id, cnt in rpe_rows}
 
-    # 7. Build per-exercise dicts
+    # 7. Build per-exercise dicts and group them
     bodyweight_modes = {"bodyweight", "assisted_bodyweight"}
     min_sets_curve = 6  # minimum RPE sets for a curve fit
 
-    all_exercise_items: dict[int, dict] = {}
+    exercises_by_group: dict[str, list[dict]] = defaultdict(list)
     for ex_id, ex in exercise_by_id.items():
         group, confidence = exercise_groups.get(ex_id, ("Uncategorized", 0.0))
         is_bw = (ex.load_input_mode or "external_weight") in bodyweight_modes
@@ -252,7 +243,7 @@ def get_weekly_exercise_menu(session: Session) -> dict:
         rpe_count = rpe_map.get(ex_id, 0)
         has_curve = not is_bw and rpe_count >= min_sets_curve
 
-        all_exercise_items[ex_id] = {
+        exercises_by_group[group].append({
             "exercise_id": ex_id,
             "name": ex.name,
             "group": group,
@@ -263,9 +254,9 @@ def get_weekly_exercise_menu(session: Session) -> dict:
             "is_bodyweight": is_bw,
             "recent_rpe_sets": rpe_count,
             "has_curve_fit": has_curve,
-        }
+        })
 
-    # 8. Build per-day response
+    # 8. Compute per-group availability and build response
     def _sort_key(item: dict) -> tuple:
         """Sort: recently done first, never-trained last."""
         dst = item["days_since_trained"]
@@ -273,23 +264,41 @@ def get_weekly_exercise_menu(session: Session) -> dict:
             return (1, 0)  # never-trained → bottom
         return (0, dst)  # lower days_since → higher in list
 
-    days = []
-    for day_idx in range(7):
-        scheduled_groups = WEEKLY_SCHEDULE.get(day_idx, [])
-        day_exercises = [
-            item
-            for item in all_exercise_items.values()
-            if item["group"] in scheduled_groups
+    groups = []
+    for group_name in ALL_GROUPS:
+        group_exercises = exercises_by_group.get(group_name, [])
+        group_exercises.sort(key=_sort_key)
+        cooldown = GROUP_COOLDOWN_DAYS.get(group_name, 4)
+
+        # Freshest (most recently trained) exercise in the group
+        trained_days = [
+            e["days_since_trained"] for e in group_exercises
+            if e["days_since_trained"] is not None
         ]
-        day_exercises.sort(key=_sort_key)
-        days.append({
-            "day_index": day_idx,
-            "day_label": DAY_LABELS[day_idx],
-            "groups": scheduled_groups,
-            "exercises": day_exercises,
+        days_since_freshest = min(trained_days) if trained_days else None
+
+        # Available if ALL trained exercises are past cooldown
+        # (never-trained exercises don't block availability)
+        available = days_since_freshest is None or days_since_freshest >= cooldown
+
+        groups.append({
+            "name": group_name,
+            "available": available,
+            "cooldown_days": cooldown,
+            "days_since_freshest": days_since_freshest,
+            "exercises": group_exercises,
         })
 
-    return {
-        "days": days,
-        "today_index": today_index,
-    }
+    # Also include Uncategorized if any exist
+    uncategorized = exercises_by_group.get("Uncategorized", [])
+    if uncategorized:
+        uncategorized.sort(key=_sort_key)
+        groups.append({
+            "name": "Uncategorized",
+            "available": True,
+            "cooldown_days": 0,
+            "days_since_freshest": None,
+            "exercises": uncategorized,
+        })
+
+    return {"groups": groups}

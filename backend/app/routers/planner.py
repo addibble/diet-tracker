@@ -9,7 +9,7 @@ from sqlmodel import Session, select
 from app.auth import get_current_user
 from app.config import user_today
 from app.database import get_session
-from app.exercise_groups import get_weekly_exercise_menu
+from app.exercise_groups import get_group_exercise_menu
 from app.exercise_loads import bodyweight_by_date, latest_bodyweight
 from app.models import (
     Exercise,
@@ -206,8 +206,8 @@ def weekly_menu(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    """Return exercises grouped by training day and classified into groups."""
-    return get_weekly_exercise_menu(session)
+    """Return exercises grouped by training group with freshness-based availability."""
+    return get_group_exercise_menu(session)
 
 
 class PrescribeRequest(BaseModel):
