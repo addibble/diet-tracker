@@ -30,7 +30,7 @@ from app.tissue_regions import canonicalize_region
 
 GROUP_CENTROIDS: dict[str, dict[str, float]] = {
     "Push": {"chest": 1.0, "triceps": 0.8, "shoulders": 0.3},
-    "Pull": {"upper_back": 1.0, "biceps": 0.7, "forearms": 0.5},
+    "Pull": {"upper_back": 0.8, "biceps": 0.7, "lower_back": 0.7, "forearms": 0.5},
     "Legs": {
         "quads": 0.8,
         "hamstrings": 0.8,
@@ -40,8 +40,8 @@ GROUP_CENTROIDS: dict[str, dict[str, float]] = {
         "inner_leg_adductor": 0.3,
         "outer_leg_abductor": 0.3,
     },
-    "Shoulders": {"shoulders": 1.0, "upper_back": 0.5, "forearms": 0.3},
-    "Core": {"core": 1.0, "lower_back": 0.7},
+    "Shoulders": {"shoulders": 1.0, "upper_back": 0.7, "forearms": 0.3},
+    "Core": {"core": 1.0, "lower_back": 0.3},
 }
 
 ALL_GROUPS = list(GROUP_CENTROIDS.keys())

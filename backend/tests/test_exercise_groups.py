@@ -61,7 +61,7 @@ def test_classify_chest_dominant_as_push():
 def test_classify_upper_back_dominant_as_pull():
     group, conf = classify_exercise({"upper_back": 1.0, "biceps": 0.5})
     assert group == "Pull"
-    assert conf > 0.8
+    assert conf > 0.7
 
 
 def test_classify_quad_dominant_as_legs():
