@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   getWeeklyMenu,
   type ExerciseMenuItem,
+  type GroupMenuResponse,
   type WeeklyExerciseItem,
-  type WeeklyMenuResponse,
 } from '../api'
 
 interface StrengthPlannerCardProps {
@@ -19,34 +19,32 @@ export interface SelectedExercise {
   load_input_mode: string
 }
 
-const DAY_BUTTONS = ['M', 'T', 'W', 'Th', 'F', 'Sa', 'Su'] as const
-
-const GROUP_COLORS: Record<string, { bg: string; text: string; border: string }> = {
-  Push:      { bg: 'bg-red-50',    text: 'text-red-700',    border: 'border-red-200' },
-  Pull:      { bg: 'bg-blue-50',   text: 'text-blue-700',   border: 'border-blue-200' },
-  Legs:      { bg: 'bg-amber-50',  text: 'text-amber-700',  border: 'border-amber-200' },
-  Shoulders: { bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200' },
-  Arms:      { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
-  Core:      { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
+const GROUP_COLORS: Record<string, { bg: string; text: string; border: string; badge: string }> = {
+  Push:      { bg: 'bg-red-50',    text: 'text-red-700',    border: 'border-red-200',    badge: 'bg-red-100' },
+  Pull:      { bg: 'bg-blue-50',   text: 'text-blue-700',   border: 'border-blue-200',   badge: 'bg-blue-100' },
+  Legs:      { bg: 'bg-amber-50',  text: 'text-amber-700',  border: 'border-amber-200',  badge: 'bg-amber-100' },
+  Shoulders: { bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200', badge: 'bg-purple-100' },
+  Core:      { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200', badge: 'bg-orange-100' },
 }
+
+const MAX_GROUPS = 2
 
 export default function StrengthPlannerCard({
   onStart,
   disabled,
 }: StrengthPlannerCardProps) {
-  const [weeklyData, setWeeklyData] = useState<WeeklyMenuResponse | null>(null)
+  const [menuData, setMenuData] = useState<GroupMenuResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set())
   const [expanded, setExpanded] = useState(!disabled)
   const [starting, setStarting] = useState(false)
-  const [selectedDay, setSelectedDay] = useState<number>(0)
+  const [selectedGroups, setSelectedGroups] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     let cancelled = false
     getWeeklyMenu().then(data => {
       if (cancelled) return
-      setWeeklyData(data)
-      setSelectedDay(data.today_index)
+      setMenuData(data)
       setLoading(false)
     }).catch(() => {
       if (!cancelled) setLoading(false)
@@ -54,62 +52,59 @@ export default function StrengthPlannerCard({
     return () => { cancelled = true }
   }, [])
 
-  // Global exercise map across all days (for cross-day selection)
+  // Global exercise map for lookups
   const exerciseById = useMemo(() => {
-    if (!weeklyData) return new Map<number, WeeklyExerciseItem>()
+    if (!menuData) return new Map<number, WeeklyExerciseItem>()
     const map = new Map<number, WeeklyExerciseItem>()
-    for (const day of weeklyData.days) {
-      for (const ex of day.exercises) {
-        if (!map.has(ex.exercise_id)) {
-          map.set(ex.exercise_id, ex)
-        }
+    for (const group of menuData.groups) {
+      for (const ex of group.exercises) {
+        if (!map.has(ex.exercise_id)) map.set(ex.exercise_id, ex)
       }
     }
     return map
-  }, [weeklyData])
+  }, [menuData])
 
-  const currentDay = weeklyData?.days[selectedDay]
-  const isRestDay = currentDay?.groups.length === 0
+  // Groups sorted: available first, then unavailable
+  const sortedGroups = useMemo(() => {
+    if (!menuData) return []
+    return [...menuData.groups].sort((a, b) => {
+      if (a.available !== b.available) return a.available ? -1 : 1
+      return 0
+    })
+  }, [menuData])
 
-  // Group exercises for the selected day by their group
-  const groupedExercises = useMemo(() => {
-    if (!currentDay) return []
-    const groups: { name: string; exercises: WeeklyExerciseItem[] }[] = []
-    for (const groupName of currentDay.groups) {
-      const exercises = currentDay.exercises.filter(ex => ex.group === groupName)
-      if (exercises.length > 0) {
-        groups.push({ name: groupName, exercises })
+  const toggleGroup = (groupName: string) => {
+    setSelectedGroups(prev => {
+      const next = new Set(prev)
+      if (next.has(groupName)) {
+        next.delete(groupName)
+        // Uncheck all exercises in this group
+        const groupExIds = new Set(
+          menuData?.groups.find(g => g.name === groupName)?.exercises.map(e => e.exercise_id) ?? []
+        )
+        setCheckedIds(prevIds => {
+          const nextIds = new Set(prevIds)
+          for (const id of groupExIds) nextIds.delete(id)
+          return nextIds
+        })
+      } else if (next.size < MAX_GROUPS) {
+        next.add(groupName)
       }
-    }
-    return groups
-  }, [currentDay])
-
-  // Count selections from other days (cross-day picks)
-  const crossDayCount = useMemo(() => {
-    if (!currentDay) return 0
-    const currentExIds = new Set(currentDay.exercises.map(e => e.exercise_id))
-    let count = 0
-    for (const id of checkedIds) {
-      if (!currentExIds.has(id)) count++
-    }
-    return count
-  }, [checkedIds, currentDay])
+      return next
+    })
+  }
 
   const toggleExercise = (exerciseId: number) => {
     setCheckedIds(prev => {
       const next = new Set(prev)
-      if (next.has(exerciseId)) {
-        next.delete(exerciseId)
-      } else {
-        next.add(exerciseId)
-      }
+      if (next.has(exerciseId)) next.delete(exerciseId)
+      else next.add(exerciseId)
       return next
     })
   }
 
   const handleStart = async () => {
     setStarting(true)
-    // Build selected exercises from the global map (supports cross-day picks)
     const selectedExercises: ExerciseMenuItem[] = []
     const selectedIds: number[] = []
     for (const id of checkedIds) {
@@ -136,7 +131,7 @@ export default function StrengthPlannerCard({
     )
   }
 
-  if (!weeklyData) {
+  if (!menuData) {
     return (
       <div className="rounded-2xl border border-gray-200 bg-white p-5">
         <h3 className="text-sm font-semibold text-gray-900">Strength Planner</h3>
@@ -146,6 +141,8 @@ export default function StrengthPlannerCard({
       </div>
     )
   }
+
+  const availableCount = sortedGroups.filter(g => g.available).length
 
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-5">
@@ -160,13 +157,17 @@ export default function StrengthPlannerCard({
             )}
           </div>
           <p className="mt-0.5 text-xs text-gray-500">
-            Select a day to see suggested exercises.
+            {availableCount === 0
+              ? 'All groups on cooldown. Rest day!'
+              : `${availableCount} group${availableCount !== 1 ? 's' : ''} available — pick up to ${MAX_GROUPS}.`}
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <span className="rounded-lg bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
-            {checkedIds.size} selected
-          </span>
+          {checkedIds.size > 0 && (
+            <span className="rounded-lg bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
+              {checkedIds.size} selected
+            </span>
+          )}
           <button
             type="button"
             onClick={() => setExpanded(v => !v)}
@@ -177,98 +178,74 @@ export default function StrengthPlannerCard({
         </div>
       </div>
 
-      {/* Day-of-week selector */}
-      <div className="mt-3 flex gap-1">
-        {DAY_BUTTONS.map((label, idx) => {
-          const dayData = weeklyData.days[idx]
-          const isRest = dayData.groups.length === 0
-          const isToday = idx === weeklyData.today_index
-          const isSelected = idx === selectedDay
+      {/* Group selector */}
+      <div className="mt-3 flex flex-wrap gap-1.5">
+        {sortedGroups.map(group => {
+          const colors = GROUP_COLORS[group.name] || { bg: 'bg-gray-50', text: 'text-gray-600', border: 'border-gray-200', badge: 'bg-gray-100' }
+          const isSelected = selectedGroups.has(group.name)
+          const canSelect = group.available && (isSelected || selectedGroups.size < MAX_GROUPS)
           return (
             <button
-              key={idx}
+              key={group.name}
               type="button"
-              onClick={() => setSelectedDay(idx)}
-              className={`flex-1 rounded-lg py-1.5 text-xs font-medium transition-all ${
+              onClick={() => canSelect && toggleGroup(group.name)}
+              disabled={!canSelect && !isSelected}
+              className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-all ${
                 isSelected
-                  ? 'bg-gray-900 text-white shadow-sm'
-                  : isRest
-                    ? 'bg-gray-50 text-gray-300'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              } ${isToday && !isSelected ? 'ring-1 ring-gray-400 ring-offset-1' : ''}`}
+                  ? `${colors.bg} ${colors.text} ${colors.border} ring-2 ring-offset-1 ring-gray-400`
+                  : group.available
+                    ? `border-gray-200 bg-white text-gray-700 hover:${colors.border} hover:${colors.bg}`
+                    : 'border-gray-100 bg-gray-50 text-gray-300'
+              }`}
             >
-              {label}
+              <span>{group.name}</span>
+              <span className="ml-1.5 text-[10px] font-normal opacity-70">
+                {group.days_since_freshest === null
+                  ? '—'
+                  : group.available
+                    ? `${group.days_since_freshest}d`
+                    : `${group.cooldown_days - group.days_since_freshest}d left`}
+              </span>
             </button>
           )
         })}
       </div>
 
-      {/* Group badges for selected day */}
-      {currentDay && currentDay.groups.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {currentDay.groups.map(group => {
-            const colors = GROUP_COLORS[group] || { bg: 'bg-gray-50', text: 'text-gray-600', border: 'border-gray-200' }
-            return (
-              <span
-                key={group}
-                className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${colors.bg} ${colors.text} ${colors.border}`}
-              >
-                {group}
-              </span>
-            )
-          })}
-        </div>
-      )}
-
-      {!expanded && (
+      {!expanded && selectedGroups.size > 0 && (
         <div className="mt-3 text-xs text-gray-500">
           {disabled
             ? 'Workout in progress. Expand to review exercise list.'
-            : isRestDay
-              ? 'Rest day — no exercises scheduled.'
-              : `${checkedIds.size} exercises selected. Expand to review.`}
+            : `${checkedIds.size} exercises selected. Expand to review.`}
         </div>
       )}
 
-      {expanded && (
+      {expanded && selectedGroups.size > 0 && (
         <>
-          {isRestDay ? (
-            <div className="mt-4 rounded-xl border border-gray-100 bg-gray-50/60 p-4 text-center">
-              <p className="text-sm font-medium text-gray-500">Rest Day</p>
-              <p className="mt-1 text-xs text-gray-400">
-                No exercises scheduled. Recovery is part of the plan.
-              </p>
-            </div>
-          ) : (
-            <>
-              {groupedExercises.map(({ name: groupName, exercises }) => {
-                const colors = GROUP_COLORS[groupName] || { bg: 'bg-gray-50', text: 'text-gray-600', border: 'border-gray-200' }
-                return (
-                  <div key={groupName} className="mt-4">
-                    <h4 className={`mb-2 text-xs font-semibold uppercase tracking-wide ${colors.text}`}>
-                      {groupName}
-                    </h4>
-                    <div className="space-y-1.5">
-                      {exercises.map(ex => (
-                        <ExerciseMenuRow
-                          key={ex.exercise_id}
-                          item={ex}
-                          checked={checkedIds.has(ex.exercise_id)}
-                          onToggle={() => toggleExercise(ex.exercise_id)}
-                        />
-                      ))}
-                    </div>
+          {sortedGroups
+            .filter(g => selectedGroups.has(g.name))
+            .map(group => {
+              const colors = GROUP_COLORS[group.name] || { bg: 'bg-gray-50', text: 'text-gray-600', border: 'border-gray-200', badge: 'bg-gray-100' }
+              return (
+                <div key={group.name} className="mt-4">
+                  <h4 className={`mb-2 text-xs font-semibold uppercase tracking-wide ${colors.text}`}>
+                    {group.name}
+                    <span className="ml-2 text-[10px] font-normal normal-case text-gray-400">
+                      {group.exercises.length} exercises
+                    </span>
+                  </h4>
+                  <div className="space-y-1.5">
+                    {group.exercises.map(ex => (
+                      <ExerciseMenuRow
+                        key={ex.exercise_id}
+                        item={ex}
+                        checked={checkedIds.has(ex.exercise_id)}
+                        onToggle={() => toggleExercise(ex.exercise_id)}
+                      />
+                    ))}
                   </div>
-                )
-              })}
-            </>
-          )}
-
-          {crossDayCount > 0 && (
-            <div className="mt-3 rounded-lg bg-blue-50 px-3 py-1.5 text-[11px] text-blue-700">
-              +{crossDayCount} exercise{crossDayCount !== 1 ? 's' : ''} selected from other days
-            </div>
-          )}
+                </div>
+              )
+            })}
 
           <div className="mt-4 flex items-center justify-between">
             <p className={`text-xs ${
@@ -295,6 +272,19 @@ export default function StrengthPlannerCard({
               : `Start Workout (${checkedIds.size} exercise${checkedIds.size !== 1 ? 's' : ''})`}
           </button>
         </>
+      )}
+
+      {expanded && selectedGroups.size === 0 && (
+        <div className="mt-4 rounded-xl border border-gray-100 bg-gray-50/60 p-4 text-center">
+          <p className="text-sm font-medium text-gray-500">
+            {availableCount === 0 ? 'Rest Day' : 'Select a group to get started'}
+          </p>
+          <p className="mt-1 text-xs text-gray-400">
+            {availableCount === 0
+              ? 'All groups are on cooldown. Recovery is part of the plan.'
+              : 'Tap an available group above to see exercises.'}
+          </p>
+        </div>
       )}
     </div>
   )

@@ -1529,20 +1529,20 @@ export interface WeeklyExerciseItem extends ExerciseMenuItem {
   confidence: number;
 }
 
-export interface WeeklyMenuDay {
-  day_index: number;
-  day_label: string;
-  groups: string[];
+export interface GroupMenuEntry {
+  name: string;
+  available: boolean;
+  cooldown_days: number;
+  days_since_freshest: number | null;
   exercises: WeeklyExerciseItem[];
 }
 
-export interface WeeklyMenuResponse {
-  days: WeeklyMenuDay[];
-  today_index: number;
+export interface GroupMenuResponse {
+  groups: GroupMenuEntry[];
 }
 
 export const getWeeklyMenu = () =>
-  request<WeeklyMenuResponse>('/planner/weekly-menu');
+  request<GroupMenuResponse>('/planner/weekly-menu');
 
 export const prescribeSet = (data: {
   exercise_id: number;
