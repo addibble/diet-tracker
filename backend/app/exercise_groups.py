@@ -58,11 +58,11 @@ _CENTROID_NORMS: dict[str, float] = {
 # ---------------------------------------------------------------------------
 
 GROUP_COOLDOWN_DAYS: dict[str, int] = {
-    "Push": 4,
-    "Pull": 4,
-    "Legs": 4,
-    "Shoulders": 3,
-    "Core": 3,
+    "Push": 3,
+    "Pull": 3,
+    "Legs": 3,
+    "Shoulders": 2,
+    "Core": 2,
 }
 
 MIN_CONFIDENCE = 0.15  # below this, exercise is "Uncategorized"
@@ -300,5 +300,15 @@ def get_group_exercise_menu(session: Session) -> dict:
             "days_since_freshest": None,
             "exercises": uncategorized,
         })
+
+    # Sort groups: least recently worked first (highest days_since_freshest),
+    # never-trained groups at the end.
+    def _group_sort_key(g: dict) -> tuple:
+        dsf = g["days_since_freshest"]
+        if dsf is None:
+            return (1, 0)  # never trained → end
+        return (0, -dsf)  # higher days_since → earlier
+
+    groups.sort(key=_group_sort_key)
 
     return {"groups": groups}
