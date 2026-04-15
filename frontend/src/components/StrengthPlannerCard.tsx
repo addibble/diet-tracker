@@ -64,12 +64,12 @@ export default function StrengthPlannerCard({
     return map
   }, [menuData])
 
-  // Groups sorted: available first, then unavailable
+  // Groups sorted: available first, then unavailable; within each, keep backend order (least recently worked first)
   const sortedGroups = useMemo(() => {
     if (!menuData) return []
     return [...menuData.groups].sort((a, b) => {
       if (a.available !== b.available) return a.available ? -1 : 1
-      return 0
+      return 0 // preserve backend ordering (least recently worked first)
     })
   }, [menuData])
 
