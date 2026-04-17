@@ -536,6 +536,9 @@ def _serialize_saved_plan(session: Session, planned: PlannedSession) -> dict:
             "load_input_mode": (
                 exercise.load_input_mode if exercise else "external_weight"
             ),
+            "set_metric_mode": (
+                exercise.set_metric_mode if exercise else "reps"
+            ) or "reps",
             "laterality": exercise.laterality if exercise else "bilateral",
             "target_sets": pde.target_sets,
             "target_rep_min": pde.target_rep_min,

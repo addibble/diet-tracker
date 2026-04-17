@@ -1376,6 +1376,7 @@ def get_exercise_freshness(
             "days_since_trained": days_since,
             "allow_heavy_loading": ex.allow_heavy_loading,
             "load_input_mode": ex.load_input_mode or "external_weight",
+            "set_metric_mode": ex.set_metric_mode or "reps",
             "is_bodyweight": is_bw,
             "recent_rpe_sets": rpe_count,
             "has_curve_fit": has_curve,

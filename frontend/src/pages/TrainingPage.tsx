@@ -45,14 +45,16 @@ export default function TrainingPage() {
         const exercises: ExerciseMenuItem[] = (plan.exercises || []).map(ex => ({
           exercise_id: ex.exercise_id,
           name: ex.exercise_name,
+          days_since_trained: 0,
           allow_heavy_loading: ex.allow_heavy_loading ?? true,
           is_bodyweight: ex.load_input_mode === 'bodyweight',
           load_input_mode: ex.load_input_mode || 'external_weight',
+          set_metric_mode: ex.set_metric_mode ?? 'reps',
           has_curve_fit: false,
-          days_since_trained: 0,
           recent_rpe_sets: 0,
           heavy_available: ex.heavy_available ?? false,
           heavy_blocked_reason: ex.heavy_blocked_reason ?? null,
+          target_sets: ex.target_sets ?? 3,
         }))
         setActiveExercises(exercises)
         setLoading(false)

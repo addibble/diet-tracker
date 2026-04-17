@@ -18,6 +18,44 @@ function today() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 }
 
+// ── Skip persistence (per workout session) ──
+
+function skippedKey(sessionId: number) {
+  return `workout:${sessionId}:skipped`
+}
+
+function loadSkipped(sessionId: number): Set<number> {
+  try {
+    const raw = localStorage.getItem(skippedKey(sessionId))
+    if (!raw) return new Set()
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) return new Set(parsed.filter((n): n is number => typeof n === 'number'))
+  } catch { /* ignore */ }
+  return new Set()
+}
+
+function saveSkipped(sessionId: number, skipped: Set<number>) {
+  try {
+    if (skipped.size === 0) localStorage.removeItem(skippedKey(sessionId))
+    else localStorage.setItem(skippedKey(sessionId), JSON.stringify([...skipped]))
+  } catch { /* ignore */ }
+}
+
+function addSkipped(sessionId: number, exerciseId: number) {
+  const s = loadSkipped(sessionId)
+  s.add(exerciseId)
+  saveSkipped(sessionId, s)
+}
+
+function removeSkipped(sessionId: number, exerciseId: number) {
+  const s = loadSkipped(sessionId)
+  if (s.delete(exerciseId)) saveSkipped(sessionId, s)
+}
+
+function clearSkipped(sessionId: number) {
+  try { localStorage.removeItem(skippedKey(sessionId)) } catch { /* ignore */ }
+}
+
 // ── Types ──
 
 interface LoggedSet {
@@ -25,6 +63,7 @@ interface LoggedSet {
   weight: number
   reps: number
   rir: number
+  duration_secs: number | null
 }
 
 interface ExerciseState {
@@ -34,6 +73,9 @@ interface ExerciseState {
   is_bodyweight: boolean
   heavy_available: boolean
   heavy_blocked_reason: string | null
+  load_input_mode: string
+  set_metric_mode: string
+  target_sets: number
   training_mode: 'heavy' | 'volume'
   sets: LoggedSet[]
   prescription: PrescribeNextResponse | null
@@ -74,6 +116,7 @@ export default function ActiveWorkoutCard({
     initRef.current = true
 
     const init = async () => {
+      const skipped = loadSkipped(sessionId)
       // Load existing session sets (for resume after refresh)
       let existingSets: WkSetDetail[] = []
       try {
@@ -90,12 +133,16 @@ export default function ActiveWorkoutCard({
             weight: s.weight ?? 0,
             reps: s.reps ?? 0,
             rir: s.rpe != null ? Math.round(10 - s.rpe) : 3,
+            duration_secs: s.duration_secs,
           }))
 
         // Resume mode from saved sets, or default to volume
         const savedMode = existingSets.find(
           s => s.exercise_id === ex.exercise_id && s.training_mode
         )?.training_mode as 'heavy' | 'volume' | undefined
+
+        const targetSets = ex.target_sets ?? 3
+        const isComplete = mySets.length >= targetSets || skipped.has(ex.exercise_id)
 
         return {
           exercise_id: ex.exercise_id,
@@ -104,11 +151,14 @@ export default function ActiveWorkoutCard({
           is_bodyweight: ex.is_bodyweight,
           heavy_available: ex.heavy_available ?? false,
           heavy_blocked_reason: ex.heavy_blocked_reason ?? null,
+          load_input_mode: ex.load_input_mode || 'external_weight',
+          set_metric_mode: ex.set_metric_mode || 'reps',
+          target_sets: targetSets,
           training_mode: savedMode ?? 'volume',
           sets: mySets,
           prescription: null,
           prescribing: false,
-          complete: false,
+          complete: isComplete,
           inflection_detected: null,
           estimated_1rm: null,
         }
@@ -127,13 +177,8 @@ export default function ActiveWorkoutCard({
     try {
       const session = await getWorkoutSession(sessionId)
       const freshSets = session.sets || []
+      const skipped = loadSkipped(sessionId)
       setExStates(prev => {
-        // Preserve exercise order; update sets and clear prescription
-        const exerciseIds = new Set(prev.map(s => s.exercise_id))
-        // Also pick up any exercises added via the editor
-        for (const s of freshSets) {
-          if (!exerciseIds.has(s.exercise_id)) exerciseIds.add(s.exercise_id)
-        }
         const updated: ExerciseState[] = []
         for (const old of prev) {
           const mySets = freshSets
@@ -144,8 +189,17 @@ export default function ActiveWorkoutCard({
               weight: s.weight ?? 0,
               reps: s.reps ?? 0,
               rir: s.rpe != null ? Math.round(10 - s.rpe) : 3,
+              duration_secs: s.duration_secs,
             }))
-          updated.push({ ...old, sets: mySets, prescription: null, prescribing: false, complete: false })
+          const isComplete =
+            mySets.length >= old.target_sets || skipped.has(old.exercise_id)
+          updated.push({
+            ...old,
+            sets: mySets,
+            prescription: null,
+            prescribing: false,
+            complete: isComplete,
+          })
         }
         return updated
       })
@@ -158,6 +212,8 @@ export default function ActiveWorkoutCard({
   const fetchPrescription = (idx: number, states: typeof exStates) => {
     const ex = states[idx]
     if (!ex || ex.complete || ex.prescription) return
+    // Non-rep metric exercises have no strength curve; skip prescription.
+    if (ex.set_metric_mode && ex.set_metric_mode !== 'reps' && ex.set_metric_mode !== 'hybrid') return
     if (fetchingRef.current === ex.exercise_id) return
 
     fetchingRef.current = ex.exercise_id
@@ -215,6 +271,9 @@ export default function ActiveWorkoutCard({
           is_bodyweight: chosen.is_bodyweight ?? false,
           heavy_available: chosen.heavy_available ?? false,
           heavy_blocked_reason: chosen.heavy_blocked_reason ?? null,
+          load_input_mode: chosen.load_input_mode || 'external_weight',
+          set_metric_mode: chosen.set_metric_mode || 'reps',
+          target_sets: chosen.target_sets ?? 3,
           training_mode: 'volume',
           sets: [],
           prescription: null,
@@ -252,6 +311,7 @@ export default function ActiveWorkoutCard({
     try {
       await completePlan(today())
     } catch { /* may not have a planned session record */ }
+    clearSkipped(sessionId)
     onFinish()
   }
 
@@ -260,6 +320,7 @@ export default function ActiveWorkoutCard({
     try {
       await deleteWorkoutSession(sessionId)
     } catch { /* best effort */ }
+    clearSkipped(sessionId)
     onCancel()
   }
 
@@ -376,12 +437,22 @@ export default function ActiveWorkoutCard({
               state={exStates[activeIdx]}
               onSetLogged={(loggedSet) => {
                 const idx = activeIdx
+                // Logging a new set un-skips this exercise
+                removeSkipped(sessionId, exStates[idx].exercise_id)
                 setExStates(prev => prev.map((s, i) => {
                   if (i !== idx) return s
-                  return { ...s, sets: [...s.sets, loggedSet], prescription: null }
+                  const nextSets = [...s.sets, loggedSet]
+                  return {
+                    ...s,
+                    sets: nextSets,
+                    prescription: null,
+                    complete: nextSets.length >= s.target_sets,
+                  }
                 }))
               }}
               onMarkComplete={() => {
+                const ex = exStates[activeIdx]
+                if (ex) addSkipped(sessionId, ex.exercise_id)
                 setExStates(prev => prev.map((s, i) =>
                   i === activeIdx ? { ...s, complete: true } : s
                 ))
@@ -431,29 +502,48 @@ function ExerciseWorkout({
   onMarkComplete: () => void
   onModeChange: (mode: 'heavy' | 'volume') => void
 }) {
+  const metricMode = state.set_metric_mode || 'reps'
+  const loadMode = state.load_input_mode || 'external_weight'
+  const showSecs = metricMode === 'duration' || metricMode === 'hybrid'
+  const showReps = metricMode === 'reps' || metricMode === 'hybrid'
+  const showWeight = loadMode !== 'bodyweight'
+  const repsOnlyMode = metricMode === 'reps'
+
   const [weight, setWeight] = useState('')
   const [reps, setReps] = useState('')
+  const [secs, setSecs] = useState('')
   const [rir, setRir] = useState('')
   const [logging, setLogging] = useState(false)
   const [adjusting, setAdjusting] = useState(false)
   const adjustTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Pre-fill from prescription
+  // Pre-fill from prescription (reps-based curve only)
   useEffect(() => {
+    if (!repsOnlyMode) return
     if (state.prescription?.next_set) {
       const ns = state.prescription.next_set
       if (ns.proposed_weight != null) setWeight(String(Math.round(ns.proposed_weight)))
       if (ns.target_reps != null) setReps(String(ns.target_reps))
       if (ns.target_rir != null) setRir(String(ns.target_rir))
     }
-  }, [state.prescription])
+  }, [state.prescription, repsOnlyMode])
+
+  // Pre-fill secs from the last logged set (simple "repeat last" hint)
+  useEffect(() => {
+    if (!showSecs) return
+    const last = state.sets[state.sets.length - 1]
+    if (last?.duration_secs != null && last.duration_secs > 0) {
+      setSecs(prev => prev === '' ? String(last.duration_secs) : prev)
+    }
+  }, [state.sets, showSecs])
 
   // Clean up debounce timer on unmount
   useEffect(() => () => { if (adjustTimer.current) clearTimeout(adjustTimer.current) }, [])
 
-  // Re-prescribe when user enters a different weight
+  // Re-prescribe when user enters a different weight (reps-only exercises)
   const handleWeightChange = (value: string) => {
     setWeight(value)
+    if (!repsOnlyMode) return
 
     const rx = state.prescription
     if (!rx?.has_curve || !rx?.next_set) return
@@ -490,29 +580,44 @@ function ExerciseWorkout({
   }
 
   const handleLogSet = async () => {
-    const w = parseFloat(weight)
-    const r = parseInt(reps, 10)
+    const w = showWeight ? parseFloat(weight) : 0
+    const r = showReps ? parseInt(reps, 10) : 0
+    const d = showSecs ? parseInt(secs, 10) : null
     const ri = parseFloat(rir)
-    if (isNaN(w) || isNaN(r) || isNaN(ri)) return
+    if (showWeight && isNaN(w)) return
+    if (showReps && isNaN(r)) return
+    if (showSecs && (d == null || isNaN(d))) return
+    if (isNaN(ri)) return
 
-    // Derive rep_completion from prescription range
+    // Derive rep_completion from prescription range (reps-based only)
     const minReps = rx?.next_set?.acceptable_rep_min
-    const repCompletion = minReps != null ? (r >= minReps ? 'full' : 'partial') : 'full'
+    const repCompletion = repsOnlyMode && minReps != null
+      ? (r >= minReps ? 'full' : 'partial')
+      : 'full'
 
     setLogging(true)
     try {
-      const result = await addWorkoutSet(sessionId, {
+      const payload: Parameters<typeof addWorkoutSet>[1] = {
         exercise_id: state.exercise_id,
-        weight: w,
-        reps: r,
+        weight: showWeight ? w : null,
+        reps: showReps ? r : null,
+        duration_secs: showSecs ? d : null,
         rir: ri,
         training_mode: state.training_mode,
         rep_completion: repCompletion,
+      }
+      const result = await addWorkoutSet(sessionId, payload)
+      onSetLogged({
+        id: result.id,
+        weight: showWeight ? w : 0,
+        reps: showReps ? r : 0,
+        rir: ri,
+        duration_secs: showSecs ? d : null,
       })
-      onSetLogged({ id: result.id, weight: w, reps: r, rir: ri })
       // Clear fields for next set
       setWeight('')
       setReps('')
+      setSecs('')
       setRir('')
     } catch {
       // TODO: show error
@@ -523,6 +628,12 @@ function ExerciseWorkout({
 
   const rx = state.prescription
   const canToggleMode = state.allow_heavy_loading && state.sets.length === 0
+  const canLog =
+    !logging
+    && (!showWeight || weight !== '')
+    && (!showReps || reps !== '')
+    && (!showSecs || secs !== '')
+    && rir !== ''
 
   return (
     <div className="space-y-3">
@@ -575,13 +686,19 @@ function ExerciseWorkout({
       {/* Logged sets summary */}
       {state.sets.length > 0 && (
         <div className="space-y-1">
-          {state.sets.map((s, i) => (
-            <div key={s.id} className="flex items-center gap-3 rounded-lg bg-gray-50 px-3 py-1.5 text-xs text-gray-700">
-              <span className="font-medium text-gray-500">Set {i + 1}</span>
-              <span>{s.weight} lb × {s.reps} reps</span>
-              <span className="text-gray-400">RIR {s.rir}</span>
-            </div>
-          ))}
+          {state.sets.map((s, i) => {
+            const parts: string[] = []
+            if (showWeight && s.weight > 0) parts.push(`${s.weight} lb`)
+            if (showSecs && s.duration_secs != null && s.duration_secs > 0) parts.push(`${s.duration_secs}s`)
+            if (showReps && s.reps > 0) parts.push(`${s.reps} reps`)
+            return (
+              <div key={s.id} className="flex items-center gap-3 rounded-lg bg-gray-50 px-3 py-1.5 text-xs text-gray-700">
+                <span className="font-medium text-gray-500">Set {i + 1}</span>
+                <span>{parts.join(' × ') || '—'}</span>
+                <span className="text-gray-400">RIR {s.rir}</span>
+              </div>
+            )
+          })}
         </div>
       )}
 
@@ -614,7 +731,7 @@ function ExerciseWorkout({
             </div>
           )}
 
-          {rx && !state.prescribing && rx.next_set && !rx.is_bodyweight && (
+          {rx && !state.prescribing && rx.next_set && !rx.is_bodyweight && repsOnlyMode && (
             <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
               <div className="flex items-center justify-between">
                 <p className="text-xs font-medium text-blue-800">
@@ -633,7 +750,7 @@ function ExerciseWorkout({
             </div>
           )}
 
-          {rx && !state.prescribing && !rx.has_curve && !rx.is_bodyweight && (
+          {rx && !state.prescribing && !rx.has_curve && !rx.is_bodyweight && repsOnlyMode && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
               <p className="text-xs text-amber-800">
                 {rx.message || 'No curve data available.'}
@@ -642,7 +759,7 @@ function ExerciseWorkout({
             </div>
           )}
 
-          {rx && rx.is_bodyweight && rx.suggestion && !rx.exercise_complete && (
+          {rx && rx.is_bodyweight && rx.suggestion && !rx.exercise_complete && repsOnlyMode && (
             <div className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3">
               <p className="text-xs font-medium text-sky-800">
                 Bodyweight — Set {state.sets.length + 1} of {rx.suggestion.sets}
@@ -653,34 +770,61 @@ function ExerciseWorkout({
             </div>
           )}
 
+          {!repsOnlyMode && (
+            <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
+              <p className="text-xs text-gray-700">
+                {metricMode === 'duration'
+                  ? `Timed exercise — Set ${state.sets.length + 1} of ${state.target_sets}. Log duration in seconds.`
+                  : `Set ${state.sets.length + 1} of ${state.target_sets}.`}
+              </p>
+            </div>
+          )}
+
           {/* Input fields */}
           <div className="flex items-end gap-2">
-            <div className="flex-1">
-              <label className="block text-[10px] font-medium text-gray-500">Weight (lb)</label>
-              <input
-                type="number"
-                inputMode="decimal"
-                value={weight}
-                onChange={e => handleWeightChange(e.target.value)}
-                className="mt-0.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400"
-                placeholder="0"
-              />
-            </div>
-            <div className="w-20">
-              <label className="block text-[10px] font-medium text-gray-500">
-                Reps{adjusting && <span className="ml-1 text-blue-400">…</span>}
-              </label>
-              <input
-                type="number"
-                inputMode="numeric"
-                value={reps}
-                onChange={e => setReps(e.target.value)}
-                className={`mt-0.5 w-full rounded-lg border px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400 ${
-                  adjusting ? 'border-blue-300 bg-blue-50' : 'border-gray-300'
-                }`}
-                placeholder="0"
-              />
-            </div>
+            {showWeight && (
+              <div className="flex-1">
+                <label className="block text-[10px] font-medium text-gray-500">Weight (lb)</label>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  value={weight}
+                  onChange={e => handleWeightChange(e.target.value)}
+                  className="mt-0.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400"
+                  placeholder="0"
+                />
+              </div>
+            )}
+            {showSecs && (
+              <div className="w-20">
+                <label className="block text-[10px] font-medium text-gray-500">Secs</label>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  value={secs}
+                  onChange={e => setSecs(e.target.value)}
+                  className="mt-0.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400"
+                  placeholder="0"
+                />
+              </div>
+            )}
+            {showReps && (
+              <div className="w-20">
+                <label className="block text-[10px] font-medium text-gray-500">
+                  Reps{adjusting && <span className="ml-1 text-blue-400">…</span>}
+                </label>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  value={reps}
+                  onChange={e => setReps(e.target.value)}
+                  className={`mt-0.5 w-full rounded-lg border px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400 ${
+                    adjusting ? 'border-blue-300 bg-blue-50' : 'border-gray-300'
+                  }`}
+                  placeholder="0"
+                />
+              </div>
+            )}
             <div className="w-16">
               <label className="block text-[10px] font-medium text-gray-500">
                 RIR{adjusting && <span className="ml-1 text-blue-400">…</span>}
@@ -701,7 +845,7 @@ function ExerciseWorkout({
             <button
               type="button"
               onClick={handleLogSet}
-              disabled={logging || !weight || !reps || rir === ''}
+              disabled={!canLog}
               className="rounded-lg bg-gray-900 px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-gray-800 disabled:opacity-40"
             >
               {logging ? '...' : 'Log'}

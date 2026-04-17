@@ -551,6 +551,7 @@ export interface WkSession {
   notes: string | null;
   created_at: string;
   sets: WkSetDetail[];
+  effective_volume?: number;
 }
 
 export interface WkTissue {
@@ -1430,6 +1431,7 @@ export interface SavedPlanExercise {
   heavy_available?: boolean;
   heavy_blocked_reason?: string | null;
   load_input_mode: string;
+  set_metric_mode?: string;
   laterality?: 'bilateral' | 'unilateral' | 'either';
   target_sets: number;
   target_rep_min: number | null;
@@ -1471,11 +1473,13 @@ export interface ExerciseMenuItem {
   days_since_trained: number | null;
   allow_heavy_loading: boolean;
   load_input_mode: string;
+  set_metric_mode?: string;
   is_bodyweight: boolean;
   recent_rpe_sets: number;
   has_curve_fit: boolean;
   heavy_available?: boolean;
   heavy_blocked_reason?: string | null;
+  target_sets?: number;
 }
 
 export interface PrescribedSet {

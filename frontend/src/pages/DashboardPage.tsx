@@ -609,7 +609,7 @@ function RecentSessionsCard({
       .map(([date, daySessions]) => {
         const allSets = daySessions.flatMap(s => s.sets)
         const exerciseMap = groupSetsByExercise(allSets)
-        const totalVolume = allSets.reduce((sum, s) => sum + (s.reps || 0) * (s.weight || 0), 0)
+        const totalVolume = daySessions.reduce((sum, s) => sum + (s.effective_volume ?? 0), 0)
         const rpeMissingCount = allSets.filter(s => s.rpe == null).length
         const notes = daySessions.map(s => s.notes).filter(Boolean).join(' · ')
 
@@ -693,7 +693,7 @@ function RecentSessionsCard({
                   ) : (
                     <p className="text-xs text-gray-500">
                       {exerciseMap.size} exercise{exerciseMap.size !== 1 ? 's' : ''}
-                      {totalVolume > 0 && ` · ${Math.round(totalVolume).toLocaleString()} lbs vol`}
+                      {totalVolume > 0 && ` · ${Math.round(totalVolume).toLocaleString()} vol`}
                       <span
                         className={
                           rpeMissingCount > 0 ? 'font-medium text-amber-700' : 'text-emerald-700'
