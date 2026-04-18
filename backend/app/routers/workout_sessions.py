@@ -13,7 +13,6 @@ from app.exercise_loads import (
     bodyweight_by_date,
     effective_set_load,
     effective_weight,
-    exercise_routing_multipliers,
 )
 from app.models import (
     Exercise,
@@ -80,9 +79,11 @@ def _build_session_response(ws: WorkoutSession, session: Session) -> dict:
     weight_lookup = bodyweight_by_date(
         list(session.exec(select(WeightLog).order_by(WeightLog.logged_at)).all())
     )
-    routing_multipliers = exercise_routing_multipliers(
-        session, exercise_ids=exercise_ids
-    ) if exercise_ids else {}
+    # Per-session "effective_volume" sums each set's effective_set_load directly.
+    # This matches the dashboard volume-by-region normalization (each set
+    # contributes a fixed work budget across regions summing to 1.0), so the
+    # session total isn't inflated by the per-tissue fan-out that previously
+    # multiplied each set by Σ routing_factor across mapped tissues.
     effective_volume = 0.0
     set_details = []
     for s in sets:
@@ -90,8 +91,7 @@ def _build_session_response(ws: WorkoutSession, session: Session) -> dict:
         if exercise is not None:
             set_w = effective_weight(exercise, s, weight_lookup, ws.date)
             load = effective_set_load(exercise, s, set_w)
-            multiplier = routing_multipliers.get(s.exercise_id, 0.0)
-            effective_volume += load * multiplier
+            effective_volume += load
         set_details.append({
             "id": s.id,
             "exercise_id": s.exercise_id,

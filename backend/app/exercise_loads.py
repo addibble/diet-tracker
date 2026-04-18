@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
 from datetime import date
 
-from sqlmodel import Session, col, select
-
-from app.models import Exercise, ExerciseTissue, WeightLog, WorkoutSet
+from app.models import Exercise, WeightLog, WorkoutSet
 
 REP_COMPLETION_FACTORS = {
     "full": 1.0,
@@ -144,49 +141,3 @@ def supports_strength_estimate(exercise: Exercise, workout_set: WorkoutSet) -> b
     if workout_set.distance_steps is not None and metric_mode != "hybrid":
         return False
     return (exercise.load_input_mode or "external_weight") != "carry"
-
-
-def exercise_routing_multipliers(
-    session: Session,
-    *,
-    exercise_ids: Iterable[int] | None = None,
-) -> dict[int, float]:
-    """Per-exercise routing multiplier matching the daily total of
-    /training-model/volume-by-region.
-
-    For each ExerciseTissue row (primary/secondary) whose tissue has >=1 region,
-    the by-region endpoint adds ``effective_set_load * routing`` once per region,
-    with ``routing = (routing_factor or loading_factor or 1.0) / len(regions)``.
-    Summed across regions that equals ``(routing_factor or loading_factor or 1.0)``
-    per tissue, so the per-exercise multiplier is the sum over primary+secondary
-    tissues with mapped regions.
-    """
-    from app.tissue_regions import load_tissue_regions  # local import to avoid cycles
-
-    stmt = select(
-        ExerciseTissue.exercise_id,
-        ExerciseTissue.tissue_id,
-        ExerciseTissue.routing_factor,
-        ExerciseTissue.loading_factor,
-    ).where(col(ExerciseTissue.role).in_(["primary", "secondary"]))
-    if exercise_ids is not None:
-        id_list = [int(eid) for eid in exercise_ids]
-        if not id_list:
-            return {}
-        stmt = stmt.where(col(ExerciseTissue.exercise_id).in_(id_list))
-
-    rows = session.exec(stmt).all()
-    if not rows:
-        return {}
-
-    regions_by_tissue = load_tissue_regions(
-        session,
-        tissue_ids={tissue_id for _, tissue_id, _, _ in rows},
-    )
-    multipliers: dict[int, float] = {}
-    for ex_id, tissue_id, routing, loading in rows:
-        if not regions_by_tissue.get(tissue_id):
-            continue
-        factor = routing or loading or 1.0
-        multipliers[ex_id] = multipliers.get(ex_id, 0.0) + float(factor)
-    return multipliers
