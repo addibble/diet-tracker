@@ -1,0 +1,195 @@
+import { request } from './_request';
+import type { ExerciseSchemeHistory } from './workouts';
+
+// Helper: append ?as_of=... query param when provided
+const plannerQ = (path: string, asOf?: string) =>
+  asOf ? `${path}${path.includes('?') ? '&' : '?'}as_of=${asOf}` : path;
+
+export interface SavedPlan {
+  id: number;
+  date: string;
+  status: string;
+  day_label: string;
+  target_regions: string[];
+  workout_session_id: number | null;
+  exercises: SavedPlanExercise[];
+}
+
+export interface SavedPlanExercise {
+  pde_id: number;
+  exercise_id: number;
+  exercise_name: string;
+  equipment: string | null;
+  allow_heavy_loading?: boolean;
+  heavy_available?: boolean;
+  heavy_blocked_reason?: string | null;
+  load_input_mode: string;
+  set_metric_mode?: string;
+  laterality?: 'bilateral' | 'unilateral' | 'either';
+  target_sets: number;
+  target_rep_min: number | null;
+  target_rep_max: number | null;
+  rep_scheme: string | null;
+  target_weight: number | null;
+  performed_side?: 'left' | 'right' | 'center' | 'bilateral' | null;
+  side_explanation?: string | null;
+  selection_note?: string | null;
+  blocked_variant?: string | null;
+  protected_tissues?: string[];
+  workflow_role?: 'group' | 'rehab' | 'accessory' | null;
+  group_label?: string | null;
+  scheme_history?: ExerciseSchemeHistory;
+  completed_sets: {
+    id: number;
+    set_order: number;
+    performed_side?: 'left' | 'right' | 'center' | 'bilateral' | null;
+    reps: number | null;
+    weight: number | null;
+    duration_secs: number | null;
+    distance_steps: number | null;
+    started_at: string | null;
+    completed_at: string | null;
+    rpe: number | null;
+    rep_completion: string | null;
+    notes: string | null;
+  }[];
+  sets_done: number;
+  done: boolean;
+}
+
+export interface ExerciseMenuItem {
+  exercise_id: number;
+  name: string;
+  days_since_trained: number | null;
+  allow_heavy_loading: boolean;
+  load_input_mode: string;
+  set_metric_mode?: string;
+  is_bodyweight: boolean;
+  recent_rpe_sets: number;
+  has_curve_fit: boolean;
+  heavy_available?: boolean;
+  heavy_blocked_reason?: string | null;
+  target_sets?: number;
+}
+
+export interface WeeklyExerciseItem extends ExerciseMenuItem {
+  group: string;
+  confidence: number;
+}
+
+export interface GroupMenuEntry {
+  name: string;
+  available: boolean;
+  cooldown_days: number;
+  days_since_freshest: number | null;
+  exercises: WeeklyExerciseItem[];
+}
+
+export interface GroupMenuResponse {
+  groups: GroupMenuEntry[];
+}
+
+export interface PrescribeNextRequest {
+  exercise_id: number;
+  prior_sets: { weight: number; reps: number; rpe: number }[];
+  actual_weight?: number | null;
+  training_mode?: 'heavy' | 'volume';
+}
+
+export interface PrescribeNextResponse {
+  has_curve: boolean;
+  fit_tier?: string;
+  n_obs?: number;
+  exercise_complete?: boolean;
+  inflection_detected?: boolean | null;
+  estimated_1rm?: number | null;
+  training_mode?: 'heavy' | 'volume';
+  next_set?: {
+    set_number: number;
+    proposed_weight: number | null;
+    effective_weight: number;
+    target_reps: number;
+    target_rpe: number;
+    target_rir: number;
+    r_fail: number;
+    acceptable_rep_min: number;
+    acceptable_rep_max: number;
+  } | null;
+  // Fallback / bodyweight
+  fallback_weight?: number | null;
+  message?: string;
+  is_bodyweight?: boolean;
+  suggestion?: { sets: number; reps_per_set: number; notes: string };
+}
+
+export interface QuickStartResponse {
+  workout_session_id: number;
+  exercise_ids: number[];
+  exercise_names: string[];
+  date: string;
+}
+
+export const getActivePlan = (asOf?: string) =>
+  request<SavedPlan>(plannerQ('/planner/active', asOf)).catch(() => null);
+
+export const deletePlan = (asOf?: string) =>
+  request<void>(plannerQ('/planner/active', asOf), { method: 'DELETE' });
+
+export const addPlanExercise = (
+  exercises: {
+    exercise_id: number; target_sets?: number; target_reps?: string;
+    target_weight?: number | null; rep_scheme?: string;
+  }[],
+  asOf?: string,
+) =>
+  request<SavedPlan>(plannerQ('/planner/active/exercises', asOf), {
+    method: 'POST', body: JSON.stringify({ exercises }),
+  });
+
+export const removePlanExercise = (exerciseId: number, asOf?: string) =>
+  request<SavedPlan>(plannerQ(`/planner/active/exercises/${exerciseId}`, asOf), {
+    method: 'DELETE',
+  });
+
+export const reorderPlanExercises = (pdeIds: number[], asOf?: string) =>
+  request<SavedPlan>(plannerQ('/planner/active/reorder', asOf), {
+    method: 'PATCH', body: JSON.stringify({ pde_ids: pdeIds }),
+  });
+
+export const updateProgramDayExercise = (pdeId: number, data: {
+  target_sets?: number;
+  target_rep_min?: number | null;
+  target_rep_max?: number | null;
+  target_weight?: number | null;
+  rep_scheme?: string | null;
+  performed_side?: 'left' | 'right' | 'center' | 'bilateral' | null;
+  side_explanation?: string | null;
+  sort_order?: number;
+}) =>
+  request<SavedPlanExercise>(`/program-day-exercises/${pdeId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+
+export const getExerciseMenu = (workoutSessionId?: number) => {
+  const params = workoutSessionId ? `?workout_session_id=${workoutSessionId}` : '';
+  return request<ExerciseMenuItem[]>(`/planner/exercise-menu${params}`);
+};
+
+export const getWeeklyMenu = () =>
+  request<GroupMenuResponse>('/planner/weekly-menu');
+
+export const prescribeNext = (data: PrescribeNextRequest) =>
+  request<PrescribeNextResponse>('/planner/prescribe-next', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+
+export const quickStart = (exerciseIds: number[], date?: string) =>
+  request<QuickStartResponse>('/planner/quick-start', {
+    method: 'POST',
+    body: JSON.stringify({
+      exercise_ids: exerciseIds,
+      ...(date ? { date } : {}),
+    }),
+  });
