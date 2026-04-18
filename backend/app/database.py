@@ -149,6 +149,28 @@ def _runtime_db_needs_manual_updates() -> bool:
         )
         return True
 
+    # Trigger the seed pipeline whenever any tissue carries a non-canonical
+    # region value. This catches cases where the canonical set in
+    # tissue_regions.py has been refined (regions consolidated/renamed) but
+    # the DB still holds the old values. The seed functions are idempotent
+    # and cheap, so running them on each such boot is safe.
+    from app.tissue_regions import CANONICAL_REGION_ORDER
+
+    with engine.connect() as conn:
+        distinct_regions = {
+            row[0]
+            for row in conn.execute(
+                text("SELECT DISTINCT region FROM tissues WHERE region IS NOT NULL")
+            )
+        }
+    non_canonical = distinct_regions - set(CANONICAL_REGION_ORDER)
+    if non_canonical:
+        logger.info(
+            "Database has non-canonical tissue regions: %s",
+            ", ".join(sorted(non_canonical)),
+        )
+        return True
+
     return False
 
 
