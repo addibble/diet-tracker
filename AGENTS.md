@@ -22,11 +22,11 @@ backend/           # FastAPI application
     macros.py      # Shared macro field definitions and helpers
     llm.py         # OpenRouter API client, chat loop, tool dispatch
     usda.py        # USDA FoodData Central API client
-    llm_tools/     # Table-driven LLM tool system (22 tools)
+    llm_tools/     # Table-driven LLM tool system (20 tools)
       __init__.py  # Tool registries, domain-family selection
       shared.py    # Fuzzy matching, filters, response builders
       nutrition.py # 10 tools: foods, recipes, meal_logs, weight_logs, macro_targets
-      workout.py   # 12 tools: exercises, tissues, tissue_conditions, etc.
+      workout.py   # 10 tools: exercises, tissues, workout_sessions, workout_sets, etc.
     routers/       # API route handlers (foods, recipes, meals, daily, parse)
   tests/           # pytest tests
   requirements.txt
@@ -144,7 +144,7 @@ Do not use `--no-verify` to skip the hook. Commit locally at the end of each dev
 
 ## LLM Tool System
 
-The backend exposes 22 tools (11 get/set pairs) to the LLM via OpenRouter function calling. All tools follow a table-driven contract inspired by SQL and JSON:API.
+The backend exposes 20 tools (10 get/set pairs) to the LLM via OpenRouter function calling. All tools follow a table-driven contract inspired by SQL and JSON:API.
 
 ### Tool naming
 
@@ -187,9 +187,9 @@ Filter operators: `eq`, `in`, `gte`, `lte`, `gt`, `lt`, `contains`, `is_null`, `
 ### Domain-family tool selection
 
 `select_tools(messages)` in `llm_tools/__init__.py` inspects the latest user message with regex patterns to route:
-- Workout keywords → 12 workout tools only
+- Workout keywords → 10 workout tools only
 - Nutrition keywords → 10 nutrition tools only
-- Mixed/ambiguous → all 22 tools
+- Mixed/ambiguous → all 20 tools
 
 ### Adding a new tool
 
@@ -207,6 +207,32 @@ Filter operators: `eq`, `in`, `gte`, `lte`, `gt`, `lt`, `contains`, `is_null`, `
 - `resolve_match()` — resolve a setter `match` clause to DB records
 - `getter_response()` / `setter_response()` / `error_response()` — response envelope builders
 - `record_to_dict()` — SQLModel record → plain dict with date serialization
+
+## Database Seed
+
+Fresh DBs are bootstrapped from `backend/app/seed_data.sql`, a SQL dump of
+catalog tables (tissues, tracked_tissues, exercises, exercise_tissues,
+tissue_model_configs, training_exclusion_windows) taken from the latest prod
+backup. `load_seed_sql()` in `backend/app/seed_tissues.py` loads it on a fresh
+DB; existing manual seed helpers then run as idempotent fixups to populate
+`tissue_region_links` and `tissue_relationships`.
+
+To refresh the seed from a new prod backup:
+
+```bash
+# 1. Download latest prod DB (places production_backup_YYYY-MM-DD_hhmmss.db in repo root)
+./download_production_db.ps1   # or: python download_production_db.py
+
+# 2. Regenerate the SQL dump (picks the newest production_backup_*.db)
+python tools/gen_seed_sql.py
+
+# 3. Commit backend/app/seed_data.sql
+```
+
+`tools/gen_seed_sql.py` filters to columns present in the current ORM and
+synthesizes defaults for NOT NULL columns missing from older prod schemas
+(see the `DEFAULTS` dict in the script). Update the script's `ALLOWED` /
+`DEFAULTS` when adding new catalog-table columns.
 
 ## Lessons Learned
 
