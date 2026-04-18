@@ -3,8 +3,6 @@ const REGION_LABELS: Record<string, string> = {
   shins: 'Shins',
   hamstrings: 'Hamstrings',
   quads: 'Quads',
-  inner_leg_adductor: 'Inner Leg (Adductor)',
-  outer_leg_abductor: 'Outer Leg (Abductor)',
   glutes: 'Glutes',
   core: 'Core',
   lower_back: 'Lower Back',
@@ -14,9 +12,6 @@ const REGION_LABELS: Record<string, string> = {
   biceps: 'Biceps',
   forearms: 'Forearms',
   shoulders: 'Shoulders',
-  neck: 'Neck',
-  hands: 'Hands',
-  feet: 'Feet',
   unmapped: 'Unmapped',
 }
 

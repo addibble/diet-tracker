@@ -935,8 +935,9 @@ const OKABE_ITO = [
 ] as const
 
 // Explicit per-region colors. Anchored on the Okabe-Ito colorblind-safe
-// palette and extended with shifted variants so each of the 16 regions
-// present in the seed/prod DB gets a stable, intentional color.
+// palette and extended with shifted variants so each canonical region gets
+// a stable, intentional color. The set matches CANONICAL_REGION_ORDER in
+// backend/app/tissue_regions.py.
 const REGION_COLORS: Record<string, string> = {
   // upper body
   chest: '#E69F00',       // orange
@@ -944,19 +945,15 @@ const REGION_COLORS: Record<string, string> = {
   triceps: '#D55E00',     // vermillion
   biceps: '#0072B2',      // blue
   forearms: '#999999',    // grey
-  upper_back: '#56B4E9',  // sky blue
+  upper_back: '#56B4E9',  // sky blue (now also includes neck stabilizers)
   lower_back: '#2A4D7A',  // dark blue
-  core: '#444444',        // dark grey (rectus, obliques, TVA, diaphragm)
+  core: '#444444',        // dark grey
   // lower body
-  quads: '#009E73',       // green
+  quads: '#009E73',       // green (now also includes adductors)
   hamstrings: '#CC79A7',  // reddish purple
-  glutes: '#7C4DA0',      // purple
-  hips: '#B07AA1',        // mauve  (adductors, psoas, TFL, sartorius)
-  calves: '#5A8F3C',      // olive green (gastroc/soleus)
-  tibs: '#8FBC5C',        // light green (tibialis ant/post, peroneals)
-  // misc
-  neck: '#C0C0C0',
-  other: '#DDDDDD',
+  glutes: '#7C4DA0',      // purple (now also includes abductors / TFL)
+  calves: '#5A8F3C',      // olive green
+  shins: '#8FBC5C',       // light green
 }
 
 function regionColor(region: string, index: number): string {

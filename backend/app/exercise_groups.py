@@ -47,8 +47,6 @@ GROUP_CENTROIDS: dict[str, dict[str, float]] = {
         "glutes": 0.8,
         "calves": 0.4,
         "shins": 0.3,
-        "inner_leg_adductor": 0.3,
-        "outer_leg_abductor": 0.3,
     },
     "Shoulders": {"shoulders": 1.0, "upper_back": 0.7, "forearms": 0.3},
     "Core": {"core": 1.0, "lower_back": 0.3},
