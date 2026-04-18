@@ -346,6 +346,7 @@ def _backfill_rep_completion():
 def _seed_data():
     """Seed reference data after table creation."""
     from app.seed_tissues import (
+        load_seed_sql,
         seed_default_training_exclusion_windows,
         seed_exercise_laterality_defaults,
         seed_exercise_tissue_model_defaults,
@@ -361,6 +362,14 @@ def _seed_data():
     )
 
     with Session(engine) as session:
+        # Bulk-load catalog rows from production snapshot (idempotent,
+        # only runs on fresh DB). Provides the bulk of tissues, exercises,
+        # mappings, and model configs without running the large hardcoded
+        # Python seeds.
+        load_seed_sql(session)
+        # Fixups and rows for tables not captured by the SQL dump
+        # (tissue_region_links, tissue_relationships). All functions are
+        # idempotent upserts.
         seed_tissues(session)
         seed_tissue_regions(session)
         seed_tissue_region_links(session)

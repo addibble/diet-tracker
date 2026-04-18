@@ -1,7 +1,9 @@
 """Seed the tissue table with the complete human musculoskeletal system."""
 
 from datetime import date
+from pathlib import Path
 
+from sqlalchemy import text
 from sqlmodel import Session, select
 
 from app.exercise_laterality import (
@@ -29,6 +31,37 @@ from app.tissue_regions import (
     primary_region_for_tissue,
     regions_for_tissue,
 )
+
+SEED_DATA_SQL = Path(__file__).parent / "seed_data.sql"
+
+
+def load_seed_sql(session: Session) -> None:
+    """Bulk-load catalog rows from seed_data.sql (idempotent INSERT OR IGNORE).
+
+    Runs first on a fresh DB to populate tissues, tracked_tissues, exercises,
+    exercise_tissues, tissue_model_configs, and training_exclusion_windows from
+    a production snapshot. Subsequent seed functions perform fixups and add
+    rows for tables not captured in the SQL dump (tissue_region_links,
+    tissue_relationships).
+    """
+    if not SEED_DATA_SQL.exists():
+        return
+    # Only load if the tissues table is empty — avoids clobbering live data
+    # and keeps boot idempotent.
+    existing = session.exec(select(Tissue).limit(1)).first()
+    if existing is not None:
+        return
+    sql = SEED_DATA_SQL.read_text(encoding="utf-8")
+    # Split on semicolons at end of line; executescript is simpler but does
+    # not handle per-statement IGNORE errors. Use the raw connection.
+    raw = session.connection()
+    for stmt in sql.split(";\n"):
+        stmt = stmt.strip()
+        if not stmt or stmt.startswith("--"):
+            continue
+        raw.execute(text(stmt))
+    session.commit()
+
 
 # Flat tissue list: {name: {type, recovery_hours, display_name?}}
 # display_name is auto-generated from name if not provided.
