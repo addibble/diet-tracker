@@ -148,10 +148,15 @@ export default function ActiveWorkoutCard({
             duration_secs: s.duration_secs,
           }))
 
-        // Resume mode from saved sets, or default to volume
+        // Resume mode from saved sets; otherwise default to heavy when it's
+        // available (so the user doesn't miss the opportunity), else volume.
         const savedMode = existingSets.find(
           s => s.exercise_id === ex.exercise_id && s.training_mode
         )?.training_mode as 'heavy' | 'volume' | undefined
+
+        const heavyAvailable = ex.heavy_available ?? false
+        const defaultMode: 'heavy' | 'volume' =
+          savedMode ?? (heavyAvailable && ex.allow_heavy_loading ? 'heavy' : 'volume')
 
         const targetSets = ex.target_sets ?? 3
         const isComplete = mySets.length >= targetSets || skipped.has(ex.exercise_id)
@@ -161,12 +166,12 @@ export default function ActiveWorkoutCard({
           name: ex.name,
           allow_heavy_loading: ex.allow_heavy_loading,
           is_bodyweight: ex.is_bodyweight,
-          heavy_available: ex.heavy_available ?? false,
+          heavy_available: heavyAvailable,
           heavy_blocked_reason: ex.heavy_blocked_reason ?? null,
           load_input_mode: ex.load_input_mode || 'external_weight',
           set_metric_mode: ex.set_metric_mode || 'reps',
           target_sets: targetSets,
-          training_mode: savedMode ?? 'volume',
+          training_mode: defaultMode,
           sets: mySets,
           prescription: null,
           prescribing: false,
@@ -276,17 +281,18 @@ export default function ActiveWorkoutCard({
       await addPlanExercise([{ exercise_id: exerciseId }], today())
       const chosen = availableExercises.find(e => e.exercise_id === exerciseId)
       if (chosen) {
+        const heavyAvailable = chosen.heavy_available ?? false
         const newState: ExerciseState = {
           exercise_id: chosen.exercise_id,
           name: chosen.name,
           allow_heavy_loading: chosen.allow_heavy_loading,
           is_bodyweight: chosen.is_bodyweight ?? false,
-          heavy_available: chosen.heavy_available ?? false,
+          heavy_available: heavyAvailable,
           heavy_blocked_reason: chosen.heavy_blocked_reason ?? null,
           load_input_mode: chosen.load_input_mode || 'external_weight',
           set_metric_mode: chosen.set_metric_mode || 'reps',
           target_sets: chosen.target_sets ?? 3,
-          training_mode: 'volume',
+          training_mode: heavyAvailable && chosen.allow_heavy_loading ? 'heavy' : 'volume',
           sets: [],
           prescription: null,
           prescribing: false,
@@ -314,17 +320,33 @@ export default function ActiveWorkoutCard({
         getExerciseMenu(sessionId),
       ])
       const currentIds = new Set(exStates.map(s => s.exercise_id))
-      // Only exercises in groups currently active (past cooldown) today.
-      const activeGroupExerciseIds = new Set<number>()
+
+      // Build exercise_id -> group lookup from the weekly menu.
+      const groupByExerciseId = new Map<number, string>()
       for (const g of weekly.groups) {
-        if (!g.available) continue
-        for (const ex of g.exercises) activeGroupExerciseIds.add(ex.exercise_id)
+        for (const ex of g.exercises) groupByExerciseId.set(ex.exercise_id, g.name)
       }
+
+      // Only suggest exercises from groups represented in the *current* session,
+      // so an in-progress Pull/Legs day won't surface Shoulder/Core exercises.
+      const activeSessionGroups = new Set<string>()
+      for (const ex of exStates) {
+        const g = groupByExerciseId.get(ex.exercise_id)
+        if (g) activeSessionGroups.add(g)
+      }
+
       // Merge heavy_available/target_sets from fullMenu into weekly items so
       // the add-exercise click has the same fields as the quick-start path.
       const fullById = new Map(fullMenu.map(e => [e.exercise_id, e]))
       const filtered = fullMenu
-        .filter(e => !currentIds.has(e.exercise_id) && activeGroupExerciseIds.has(e.exercise_id))
+        .filter(e => {
+          if (currentIds.has(e.exercise_id)) return false
+          const g = groupByExerciseId.get(e.exercise_id)
+          // If the current session has no recognizable groups yet (edge case),
+          // fall back to showing everything rather than an empty list.
+          if (activeSessionGroups.size === 0) return true
+          return g != null && activeSessionGroups.has(g)
+        })
         .map(e => ({ ...fullById.get(e.exercise_id), ...e }))
       // Sort by days since last trained, ascending; never-trained last.
       filtered.sort((a, b) => {
@@ -449,7 +471,12 @@ export default function ActiveWorkoutCard({
                     disabled={addingExercise}
                     className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs text-gray-700 transition-colors hover:bg-white disabled:opacity-50"
                   >
-                    <span className="font-medium">{ex.name}</span>
+                    <span className="flex items-center gap-1.5 font-medium">
+                      {ex.name}
+                      {ex.heavy_available && (
+                        <span className="text-[11px]" title="Heavy available">🔥</span>
+                      )}
+                    </span>
                     <span className="text-[10px] text-gray-400">
                       {ex.days_since_trained != null
                         ? `${ex.days_since_trained}d ago`
