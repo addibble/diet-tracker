@@ -934,20 +934,29 @@ const OKABE_ITO = [
   '#999999', // grey
 ] as const
 
+// Explicit per-region colors. Anchored on the Okabe-Ito colorblind-safe
+// palette and extended with shifted variants so each of the 16 regions
+// present in the seed/prod DB gets a stable, intentional color.
 const REGION_COLORS: Record<string, string> = {
-  chest: '#E69F00',
-  shoulders: '#F0E442',
-  triceps: '#D55E00',
-  upper_back: '#56B4E9',
-  biceps: '#0072B2',
-  forearms: '#999999',
-  quads: '#009E73',
-  hams: '#CC79A7',
-  glutes: '#7C4DA0', // outside palette, distinct from hams
-  calves: '#5A8F3C', // green-shifted
-  lower_back: '#2A7AB0', // blue-shifted
-  abs: '#444444',
-  core: '#000000',
+  // upper body
+  chest: '#E69F00',       // orange
+  shoulders: '#F0E442',   // yellow
+  triceps: '#D55E00',     // vermillion
+  biceps: '#0072B2',      // blue
+  forearms: '#999999',    // grey
+  upper_back: '#56B4E9',  // sky blue
+  lower_back: '#2A4D7A',  // dark blue
+  core: '#444444',        // dark grey (rectus, obliques, TVA, diaphragm)
+  // lower body
+  quads: '#009E73',       // green
+  hamstrings: '#CC79A7',  // reddish purple
+  glutes: '#7C4DA0',      // purple
+  hips: '#B07AA1',        // mauve  (adductors, psoas, TFL, sartorius)
+  calves: '#5A8F3C',      // olive green (gastroc/soleus)
+  tibs: '#8FBC5C',        // light green (tibialis ant/post, peroneals)
+  // misc
+  neck: '#C0C0C0',
+  other: '#DDDDDD',
 }
 
 function regionColor(region: string, index: number): string {
