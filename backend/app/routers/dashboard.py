@@ -350,9 +350,18 @@ def get_volume_by_region(
 ):
     """Daily training volume per tissue region for the trailing `days` window.
 
-    Volume per set = ``weight × reps × loading_factor``, summed across primary
-    and secondary tissue mappings. Sets with null weight or reps contribute
-    zero (bodyweight/timed work is not weighted in this view).
+    Each set contributes a fixed work budget of ``weight × reps`` distributed
+    across regions in proportion to the exercise's normalized tissue loading
+    factors (raw factors divided by their per-exercise sum across primary and
+    secondary tissues, so they total 1.0). This means:
+
+    * Sum across all regions for a given set always equals ``weight × reps``.
+    * Regions can't be inflated by having more tissue subdivisions in the map.
+    * Secondary contributions are still captured (e.g., bench press → chest +
+      triceps + shoulders), weighted by relative emphasis.
+
+    Sets with null weight or reps contribute zero (bodyweight/timed work is
+    not weighted in this view).
 
     Returns:
         {
@@ -369,6 +378,7 @@ def get_volume_by_region(
     rows = session.exec(
         select(
             WorkoutSession.date,
+            Exercise.id,
             Tissue.region,
             WorkoutSet.weight,
             WorkoutSet.reps,
@@ -383,17 +393,39 @@ def get_volume_by_region(
         .where(ExerciseTissue.role.in_(_VOLUME_ROLES))
     ).all()
 
+    # Pre-compute the per-exercise loading-factor totals across primary and
+    # secondary tissues so we can normalize each contribution to sum to 1.0
+    # per exercise. Restricting to exercise IDs we actually saw keeps the
+    # query small.
+    exercise_ids = {row[1] for row in rows if row[1] is not None}
+    lf_totals: dict[int, float] = {}
+    if exercise_ids:
+        totals_rows = session.exec(
+            select(
+                ExerciseTissue.exercise_id,
+                ExerciseTissue.loading_factor,
+            )
+            .where(ExerciseTissue.exercise_id.in_(exercise_ids))
+            .where(ExerciseTissue.role.in_(_VOLUME_ROLES))
+        ).all()
+        for ex_id, lf in totals_rows:
+            lf_totals[ex_id] = lf_totals.get(ex_id, 0.0) + float(lf or 0.0)
+
     # region → date_index → volume
     daily: dict[str, list[float]] = {}
     totals: dict[str, float] = {}
     date_index = {d: i for i, d in enumerate(dates)}
     for row in rows:
-        wo_date, region, weight, reps, loading_factor = row
+        wo_date, exercise_id, region, weight, reps, loading_factor = row
         if region is None or wo_date not in date_index:
             continue
         if weight is None or reps is None or weight <= 0 or reps <= 0:
             continue
-        vol = float(weight) * float(reps) * float(loading_factor or 0.0)
+        lf_total = lf_totals.get(exercise_id, 0.0)
+        if lf_total <= 0:
+            continue
+        normalized_lf = float(loading_factor or 0.0) / lf_total
+        vol = float(weight) * float(reps) * normalized_lf
         if vol <= 0:
             continue
         bucket = daily.setdefault(region, [0.0] * days)
