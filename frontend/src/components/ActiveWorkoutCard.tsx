@@ -4,6 +4,7 @@ import WorkoutSetEditor from './WorkoutSetEditor'
 import {
   addPlanExercise,
   addWorkoutSet,
+  completeActivePlan,
   deleteWorkoutSession,
   getExerciseMenu,
   getWeeklyMenu,
@@ -365,6 +366,12 @@ export default function ActiveWorkoutCard({
 
   const handleFinish = async () => {
     setCompleting(true)
+    // Mark the plan as completed on the backend so that a tab switch or
+    // refresh doesn't re-restore this (partially-skipped) session. If the
+    // call fails we still clear local state — the user's intent is clear.
+    try {
+      await completeActivePlan(today())
+    } catch { /* best effort */ }
     clearSkipped(sessionId)
     onFinish()
   }

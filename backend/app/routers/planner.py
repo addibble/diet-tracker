@@ -35,6 +35,7 @@ from app.models import (
 )
 from app.planner_state import (
     add_exercises_to_plan,
+    complete_plan,
     delete_plan,
     get_saved_plan,
     remove_exercises_from_plan,
@@ -74,6 +75,23 @@ def delete_active(
     plan_date = as_of or user_today()
     try:
         delete_plan(session, plan_date)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/active/complete", status_code=200)
+def complete_active(
+    as_of: datetime.date | None = Query(default=None),
+    session: Session = Depends(get_session),
+    _user: str = Depends(get_current_user),
+):
+    """Mark the latest plan for ``as_of`` as completed. Exercises the user
+    skipped without logging sets are accepted as intentionally skipped —
+    completion does not require every exercise to have logged sets.
+    """
+    plan_date = as_of or user_today()
+    try:
+        return complete_plan(session, plan_date)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

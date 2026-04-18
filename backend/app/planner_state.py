@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from datetime import date
+from datetime import UTC, date, datetime
 
 from sqlmodel import Session, col, select
 
@@ -20,9 +20,36 @@ from app.models import (
     PlannedSession,
     ProgramDay,
     ProgramDayExercise,
+    WorkoutSession,
     WorkoutSet,
 )
 from app.strength_model import check_heavy_availability
+
+
+def complete_plan(session: Session, plan_date: date) -> dict:
+    """Mark the latest plan for ``plan_date`` as completed and stamp the
+    associated WorkoutSession's finished_at timestamp. Idempotent — calling
+    it on an already-completed plan is a no-op.
+    """
+    planned = _latest_planned_session(session, plan_date)
+    if not planned:
+        raise ValueError(f"No saved plan for {plan_date}")
+
+    now = datetime.now(UTC)
+
+    if planned.status != "completed":
+        planned.status = "completed"
+        session.add(planned)
+
+    if planned.workout_session_id is not None:
+        ws = session.get(WorkoutSession, planned.workout_session_id)
+        if ws is not None and ws.finished_at is None:
+            ws.finished_at = now
+            session.add(ws)
+
+    session.commit()
+    session.refresh(planned)
+    return _serialize_saved_plan(session, planned)
 
 
 def get_saved_plan(session: Session, plan_date: date) -> dict | None:

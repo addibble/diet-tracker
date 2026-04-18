@@ -135,6 +135,11 @@ export const getActivePlan = (asOf?: string) =>
 export const deletePlan = (asOf?: string) =>
   request<void>(plannerQ('/planner/active', asOf), { method: 'DELETE' });
 
+export const completeActivePlan = (asOf?: string) =>
+  request<SavedPlan>(plannerQ('/planner/active/complete', asOf), {
+    method: 'POST',
+  });
+
 export const addPlanExercise = (
   exercises: {
     exercise_id: number; target_sets?: number; target_reps?: string;
