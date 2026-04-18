@@ -6,6 +6,7 @@ import {
   completePlan,
   deleteWorkoutSession,
   getExerciseMenu,
+  getWeeklyMenu,
   getWorkoutSession,
   prescribeNext,
   type ExerciseMenuItem,
@@ -297,10 +298,33 @@ export default function ActiveWorkoutCard({
     }
     setShowAddExercise(true)
     try {
-      const menu = await getExerciseMenu(sessionId)
-      // Filter out exercises already in this session
+      const [weekly, fullMenu] = await Promise.all([
+        getWeeklyMenu(),
+        getExerciseMenu(sessionId),
+      ])
       const currentIds = new Set(exStates.map(s => s.exercise_id))
-      setAvailableExercises(menu.filter(e => !currentIds.has(e.exercise_id)))
+      // Only exercises in groups currently active (past cooldown) today.
+      const activeGroupExerciseIds = new Set<number>()
+      for (const g of weekly.groups) {
+        if (!g.available) continue
+        for (const ex of g.exercises) activeGroupExerciseIds.add(ex.exercise_id)
+      }
+      // Merge heavy_available/target_sets from fullMenu into weekly items so
+      // the add-exercise click has the same fields as the quick-start path.
+      const fullById = new Map(fullMenu.map(e => [e.exercise_id, e]))
+      const filtered = fullMenu
+        .filter(e => !currentIds.has(e.exercise_id) && activeGroupExerciseIds.has(e.exercise_id))
+        .map(e => ({ ...fullById.get(e.exercise_id), ...e }))
+      // Sort by days since last trained, ascending; never-trained last.
+      filtered.sort((a, b) => {
+        const ad = a.days_since_trained
+        const bd = b.days_since_trained
+        if (ad == null && bd == null) return 0
+        if (ad == null) return 1
+        if (bd == null) return -1
+        return ad - bd
+      })
+      setAvailableExercises(filtered)
     } catch {
       setAvailableExercises([])
     }
