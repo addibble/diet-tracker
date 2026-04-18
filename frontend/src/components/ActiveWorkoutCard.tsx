@@ -1,3 +1,4 @@
+import type { FocusEvent } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import WorkoutSetEditor from './WorkoutSetEditor'
 import {
@@ -55,6 +56,17 @@ function removeSkipped(sessionId: number, exerciseId: number) {
 
 function clearSkipped(sessionId: number) {
   try { localStorage.removeItem(skippedKey(sessionId)) } catch { /* ignore */ }
+}
+
+// Move the caret to the end of the current value on focus. Using rAF avoids
+// mobile browsers (iOS Safari, Android Chrome) overriding the selection when
+// they auto-select all text on first tap of a text input.
+function moveCursorToEnd(e: FocusEvent<HTMLInputElement>) {
+  const input = e.currentTarget
+  const len = input.value.length
+  requestAnimationFrame(() => {
+    try { input.setSelectionRange(len, len) } catch { /* ignore */ }
+  })
 }
 
 // ── Types ──
@@ -810,10 +822,12 @@ function ExerciseWorkout({
               <div className="flex-1">
                 <label className="block text-[10px] font-medium text-gray-500">Weight (lb)</label>
                 <input
-                  type="number"
+                  type="text"
                   inputMode="decimal"
+                  pattern="[0-9]*\.?[0-9]*"
                   value={weight}
                   onChange={e => handleWeightChange(e.target.value)}
+                  onFocus={moveCursorToEnd}
                   className="mt-0.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400"
                   placeholder="0"
                 />
@@ -823,10 +837,12 @@ function ExerciseWorkout({
               <div className="w-20">
                 <label className="block text-[10px] font-medium text-gray-500">Secs</label>
                 <input
-                  type="number"
+                  type="text"
                   inputMode="numeric"
+                  pattern="[0-9]*"
                   value={secs}
                   onChange={e => setSecs(e.target.value)}
+                  onFocus={moveCursorToEnd}
                   className="mt-0.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400"
                   placeholder="0"
                 />
@@ -838,10 +854,12 @@ function ExerciseWorkout({
                   Reps{adjusting && <span className="ml-1 text-blue-400">…</span>}
                 </label>
                 <input
-                  type="number"
+                  type="text"
                   inputMode="numeric"
+                  pattern="[0-9]*"
                   value={reps}
                   onChange={e => setReps(e.target.value)}
+                  onFocus={moveCursorToEnd}
                   className={`mt-0.5 w-full rounded-lg border px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400 ${
                     adjusting ? 'border-blue-300 bg-blue-50' : 'border-gray-300'
                   }`}
@@ -854,12 +872,12 @@ function ExerciseWorkout({
                 RIR{adjusting && <span className="ml-1 text-blue-400">…</span>}
               </label>
               <input
-                type="number"
+                type="text"
                 inputMode="numeric"
+                pattern="[0-9]*"
                 value={rir}
                 onChange={e => setRir(e.target.value)}
-                min={0}
-                max={5}
+                onFocus={moveCursorToEnd}
                 className={`mt-0.5 w-full rounded-lg border px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400 ${
                   adjusting ? 'border-blue-300 bg-blue-50' : 'border-gray-300'
                 }`}
