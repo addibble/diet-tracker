@@ -490,18 +490,13 @@ function LogEditor({
 
   const handleUpdateSet = useCallback(
     async (setId: number, patch: SetPatch) => {
-      // Build optimistic patch excluding tissue_feedback (different types vs WkSetDetail)
-      const displayPatch: Record<string, unknown> = {}
-      for (const [k, v] of Object.entries(patch)) {
-        if (k !== 'tissue_feedback') displayPatch[k] = v
-      }
       setSession((prev) => {
         if (!prev) return prev
         return {
           ...prev,
           sets: prev.sets.map((s) =>
             s.id === setId
-              ? { ...s, ...displayPatch }
+              ? { ...s, ...patch }
               : s,
           ),
         }

@@ -4,7 +4,6 @@ import WorkoutSetEditor from './WorkoutSetEditor'
 import {
   addPlanExercise,
   addWorkoutSet,
-  completePlan,
   deleteWorkoutSession,
   getExerciseMenu,
   getWeeklyMenu,
@@ -344,9 +343,6 @@ export default function ActiveWorkoutCard({
 
   const handleFinish = async () => {
     setCompleting(true)
-    try {
-      await completePlan(today())
-    } catch { /* may not have a planned session record */ }
     clearSkipped(sessionId)
     onFinish()
   }

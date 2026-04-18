@@ -540,7 +540,6 @@ export interface WkSetDetail {
   notes: string | null;
   training_mode: 'heavy' | 'volume' | null;
   scheme_history?: ExerciseSchemeHistory;
-  tissue_feedback: WkSetTissueFeedback[];
 }
 
 export interface WkSession {
@@ -579,140 +578,6 @@ export interface WkTissueModelConfig {
   collapse_drop_threshold: number;
   ramp_sensitivity: number;
   risk_sensitivity: number;
-}
-
-export interface WkTissueCondition {
-  status: string;
-  severity: number;
-  max_loading_factor: number | null;
-  recovery_hours_override: number | null;
-}
-
-export interface TrackedTissueCondition {
-  id: number;
-  status: 'healthy' | 'tender' | 'injured' | 'rehabbing';
-  severity: number;
-  max_loading_factor: number | null;
-  recovery_hours_override: number | null;
-  rehab_protocol: string | null;
-  notes: string | null;
-  updated_at: string;
-}
-
-export interface RehabProtocolStage {
-  id: string;
-  label: string;
-  focus: string;
-}
-
-export interface RehabProtocol {
-  id: string;
-  title: string;
-  category: string;
-  summary: string;
-  default_pain_monitoring_threshold: number;
-  default_max_next_day_flare: number;
-  stages: RehabProtocolStage[];
-}
-
-export interface RehabPlanSummary {
-  id: number;
-  protocol_id: string;
-  protocol_title: string;
-  stage_id: string;
-  stage_label: string;
-  status: 'active' | 'paused' | 'completed';
-  pain_monitoring_threshold: number;
-  max_next_day_flare: number;
-  sessions_per_week_target: number | null;
-  max_weekly_set_progression: number | null;
-  max_load_progression_pct: number | null;
-  notes: string | null;
-  started_at?: string;
-  updated_at?: string;
-  tracked_tissue_id?: number;
-  tracked_tissue_display_name?: string | null;
-  tissue_id?: number | null;
-  tissue_name?: string | null;
-}
-
-export interface RehabCheckInSummary {
-  id: number;
-  rehab_plan_id: number | null;
-  pain_0_10: number;
-  stiffness_0_10: number;
-  weakness_0_10: number;
-  neural_symptoms_0_10: number;
-  during_load_pain_0_10: number;
-  next_day_flare: number;
-  confidence_0_10: number;
-  notes: string | null;
-  recorded_at: string;
-}
-
-export interface WkTissueReadiness {
-  tissue: WkTissue;
-  condition: WkTissueCondition | null;
-  last_trained: string | null;
-  hours_since: number | null;
-  effective_recovery_hours: number;
-  recovery_pct: number;
-  ready: boolean;
-  volume_7d: number;
-  exercises_available: {
-    exercise_id: number;
-    exercise_name: string;
-    role: string;
-    target_sets: number;
-    target_rep_min: number | null;
-    target_rep_max: number | null;
-  }[];
-}
-
-export interface TrackedTissueReadiness {
-  tracked_tissue: {
-    id: number;
-    tissue_id: number;
-    tissue_name: string;
-    tissue_display_name: string;
-    tissue_type: string;
-    region: string;
-    side: 'left' | 'right' | 'center';
-    display_name: string;
-    tracking_mode: 'paired' | 'center';
-    active: boolean;
-  };
-  condition: TrackedTissueCondition | null;
-  active_rehab_plan: RehabPlanSummary | null;
-  latest_rehab_check_in: RehabCheckInSummary | null;
-  last_trained: string | null;
-  hours_since: number | null;
-  effective_recovery_hours: number;
-  recovery_pct: number;
-  protected: boolean;
-  ready: boolean;
-  volume_7d: number;
-  cross_education_7d: number;
-  exercises_available: {
-    exercise_id: number;
-    exercise_name: string;
-    laterality: 'bilateral' | 'unilateral' | 'either';
-    laterality_mode: 'bilateral_equal' | 'selected_side_only' | 'selected_side_primary' | 'contralateral_carryover';
-    role: string;
-    target_sets: number;
-    target_rep_min: number | null;
-    target_rep_max: number | null;
-  }[];
-}
-
-export interface WkSetTissueFeedback {
-  id?: number;
-  tracked_tissue_id: number;
-  tracked_tissue_display_name?: string;
-  pain_0_10: number;
-  symptom_note: string | null;
-  recorded_at?: string;
-  above_threshold?: boolean;
 }
 
 export interface WkExerciseHistory {
@@ -755,328 +620,7 @@ export interface ExerciseSchemeHistory {
   volume: ExerciseSchemeHistoryEntry | null;
 }
 
-export interface TrainingModelWindow {
-  id: number;
-  start_date: string;
-  end_date: string;
-  kind: string;
-  notes: string | null;
-  exclude_from_model: boolean;
-}
-
-export interface TrainingModelTissueSummary {
-  tissue: WkTissue & Required<Pick<WkTissue, 'model_config'>>;
-  current_capacity: number;
-  baseline_capacity: number;
-  capacity_trend_30d_pct: number;
-  normalized_load: number;
-  acute_fatigue: number;
-  chronic_load: number;
-  recovery_estimate: number;
-  learned_recovery_days: number;
-  ramp_ratio: number;
-  risk_7d: number;
-  risk_14d: number;
-  collapse_count: number;
-  contributors: string[];
-  current_condition: {
-    status: string;
-    severity: number;
-    notes: string | null;
-    updated_at: string;
-  } | null;
-  recent_collapses: string[];
-  fatigue_input: number;
-  current_soreness: number;
-  volume_rebound: number;
-  subjective_days: number | null;
-  overworked: 'good' | 'caution' | 'avoid';
-  tissue_region: string | null;
-  tissue_regions: string[];
-  last_trained_date: string | null;
-  raw_load: number;
-  condition_severity: number;
-  prior_event_signal: number;
-  failure_count: number;
-  last_failure_date: string | null;
-  prior_acute_fatigue: number;
-  fatigue_load: number;
-  strain_load: number;
-  recent_7d_load: number;
-  recent_28d_load: number;
-  recovery_seed_days: number;
-  median_rebound_days: number | null;
-  risk_features_7d: {
-    normalized_load: number;
-    acute_ratio: number;
-    ramp_ratio: number;
-    condition: number;
-    prior: number;
-    failures: number;
-    soreness: number;
-  } | null;
-}
-
-export interface TrainingModelExerciseInsight {
-  id: number;
-  name: string;
-  equipment: string | null;
-  load_input_mode: string;
-  laterality: 'bilateral' | 'unilateral' | 'either';
-  bodyweight_fraction: number;
-  external_load_multiplier: number;
-  variant_group: string | null;
-  grip_style: string;
-  grip_width: string;
-  support_style: string;
-  set_metric_mode: string;
-  estimated_minutes_per_set: number;
-  in_active_program: boolean;
-  weighted_risk_7d: number;
-  weighted_risk_14d: number;
-  max_tissue_risk_7d: number;
-  weighted_normalized_load: number;
-  suitability_score: number;
-  recommendation: 'avoid' | 'caution' | 'good';
-  recommendation_reason: string;
-  recommendation_details: string[];
-  blocked_tissues: string[];
-  favored_tissues: string[];
-  current_e1rm: number | null;
-  peak_e1rm: number | null;
-  tissues: {
-    tissue_id: number;
-    tissue_name: string;
-    tissue_display_name: string;
-    tissue_type: string;
-    routing_factor: number;
-    tissue_risk_7d: number;
-    tissue_risk_14d: number;
-    tissue_normalized_load: number;
-    recovery_state: number;
-    confidence: number;
-    trouble_association: number;
-  }[];
-}
-
-export interface TrainingModelSummary {
-  as_of: string;
-  overview: {
-    at_risk_count: number;
-    recovering_count: number;
-    tracked_tissues: number;
-    excluded_windows: TrainingModelWindow[];
-  };
-  tissues: TrainingModelTissueSummary[];
-  exercises: TrainingModelExerciseInsight[];
-}
-
-export interface TrainingModelHistoryPoint {
-  date: string;
-  raw_load: number;
-  normalized_load: number;
-  capacity_state: number;
-  acute_fatigue: number;
-  chronic_load: number;
-  recovery_state: number;
-  ramp_ratio: number;
-  risk_7d: number;
-  risk_14d: number;
-  collapse_flag: boolean;
-  contributors: string[];
-  fatigue_input: number;
-  current_soreness: number;
-}
-
-export interface TrainingModelTissueHistory {
-  tissue: WkTissue & Required<Pick<WkTissue, 'model_config'>>;
-  as_of: string;
-  learned_recovery_days: number;
-  baseline_capacity: number;
-  capacity_trend_30d_pct: number;
-  collapse_dates: string[];
-  overload_dates: string[];
-  history: TrainingModelHistoryPoint[];
-}
-
-// ── Recovery Check-in Types ──
-
-export interface TissuePainCheckIn {
-  id: number;
-  date: string;
-  region: string;
-  tracked_tissue_id: number | null;
-  check_in_kind: 'pain';
-  target_kind: 'tracked_tissue' | 'region';
-  target_key: string;
-  target_label: string;
-  tracked_tissue: RecoveryCheckInTrackedTissue | null;
-  pain_0_10: number;
-  notes: string | null;
-}
-
-export interface RegionSorenessCheckIn {
-  id: number;
-  date: string;
-  region: string;
-  tracked_tissue_id: null;
-  check_in_kind: 'soreness';
-  target_kind: 'region';
-  target_key: string;
-  target_label: string;
-  tracked_tissue: null;
-  soreness_0_10: number;
-  notes: string | null;
-}
-
-export type RecoveryCheckIn = TissuePainCheckIn | RegionSorenessCheckIn;
-
-export interface RecoveryCheckInTrackedTissue {
-  id: number;
-  tissue_id: number;
-  tissue_name: string;
-  tissue_display_name: string;
-  tissue_type: string;
-  region: string;
-  side: 'left' | 'right' | 'center';
-  display_name: string;
-  tracking_mode: 'paired' | 'center';
-  active: boolean;
-}
-
-export interface RecoveryCheckInTarget {
-  target_key: string;
-  check_in_kind: 'pain' | 'soreness';
-  target_kind: 'tracked_tissue' | 'region';
-  region: string;
-  tracked_tissue_id: number | null;
-  target_label: string;
-  tracked_tissue: RecoveryCheckInTrackedTissue | null;
-  reasons?: { code: string; label: string }[];
-  existing_check_in?: RecoveryCheckIn | null;
-}
-
-export interface RecoveryCheckInTargetsResponse {
-  date: string;
-  targets: RecoveryCheckInTarget[];
-  pain_targets: RecoveryCheckInTarget[];
-  soreness_targets: RecoveryCheckInTarget[];
-  today_check_ins: RecoveryCheckIn[];
-  today_pain_check_ins: TissuePainCheckIn[];
-  today_soreness_check_ins: RegionSorenessCheckIn[];
-  other_options: {
-    regions: RecoveryCheckInTarget[];
-    tracked_tissues: RecoveryCheckInTarget[];
-    soreness_regions: RecoveryCheckInTarget[];
-    pain_tracked_tissues: RecoveryCheckInTarget[];
-  };
-}
-
-export interface RegionInfo {
-  region: string;
-  label: string;
-  tissues: {
-    id: number;
-    name: string;
-    display_name: string;
-    type: string;
-    regions: string[];
-    is_primary: boolean;
-  }[];
-}
-
-// ── Exercise Strength Types ──
-
-export interface ExerciseStrength {
-  exercise_id: number;
-  exercise_name: string;
-  as_of: string;
-  current_e1rm: number;
-  peak_e1rm: number;
-  trend: 'rising' | 'stable' | 'falling';
-  trend_pct: number;
-  history: { date: string; e1rm: number }[];
-}
-
 // ── Planner Types ──
-
-export interface PlannerExercisePrescription {
-  exercise_id: number;
-  exercise_name: string;
-  equipment: string | null;
-  laterality?: 'bilateral' | 'unilateral' | 'either';
-  performed_side?: 'left' | 'right' | 'center' | 'bilateral' | null;
-  rep_scheme: RepScheme;
-  target_sets: number;
-  target_reps: string;
-  target_weight: number | null;
-  rationale: string;
-  overload_note: string | null;
-  weight_adjustment_note?: string | null;
-  side_explanation?: string | null;
-  selection_note?: string | null;
-  blocked_variant?: string | null;
-  protected_tissues?: string[];
-  workflow_role?: 'group' | 'rehab' | 'accessory' | null;
-  group_label?: string | null;
-  selected: boolean;
-  selectable?: boolean;
-  planner_status?: 'ready' | 'overworked' | 'blocked';
-  planner_reason?: string;
-  ready_tomorrow?: boolean;
-  ready_tomorrow_reason?: string | null;
-  readiness_score?: number;
-  days_since_last?: number;
-  recommendation?: 'good' | 'caution' | 'avoid';
-  last_performance: {
-    date: string;
-    rep_scheme: RepScheme;
-    sets: ExerciseHistorySet[];
-  } | null;
-  scheme_history: ExerciseSchemeHistory;
-}
-
-export interface PlannerDayPlan {
-  group_id: string;
-  day_label: string;
-  readiness_score: number;
-  days_since_last: number | null;
-  target_regions: string[];
-  exercise_count: number;
-  core_exercise_count: number;
-  exercises: PlannerExercisePrescription[];
-  rationale: string;
-}
-
-export interface PlannerGroupBrief {
-  group_id: string;
-  day_label: string;
-  target_regions: string[];
-  exercise_count: number;
-  available_count: number;
-  ready_tomorrow_count: number;
-  days_since_last: number;
-  readiness_score: number;
-  rationale: string;
-  exercises: PlannerExercisePrescription[];
-}
-
-export interface PlannerFilteredTissue {
-  tracked_tissue_id: number;
-  tissue_id: number;
-  target_label: string;
-  status: string;
-  reason: string;
-}
-
-export interface PlannerTodayResponse {
-  as_of: string;
-  today_plan: PlannerDayPlan | null;
-  tomorrow_plan: PlannerDayPlan | null;
-  groups: PlannerGroupBrief[];
-  filtered_tissues: PlannerFilteredTissue[];
-  message: string | null;
-}
 
 // Workout API functions
 export const getExercises = (search?: string) =>
@@ -1135,12 +679,6 @@ export const getWorkoutSession = (id: number) =>
   request<WkSession>(`/workout-sessions/${id}`);
 
 // Individual workout set CRUD
-export interface WkSetTissueFeedbackInput {
-  tracked_tissue_id: number;
-  pain_0_10: number;
-  symptom_note?: string | null;
-}
-
 export interface WorkoutSetUpdateInput {
   performed_side?: 'left' | 'right' | 'center' | 'bilateral' | null;
   reps?: number | null;
@@ -1154,7 +692,6 @@ export interface WorkoutSetUpdateInput {
   rep_completion?: string | null;
   notes?: string | null;
   training_mode?: 'heavy' | 'volume' | null;
-  tissue_feedback?: WkSetTissueFeedbackInput[];
 }
 
 export interface WorkoutSetCreateInput extends WorkoutSetUpdateInput {
@@ -1196,177 +733,17 @@ export const updateProgramDayExercise = (pdeId: number, data: {
     body: JSON.stringify(data),
   });
 
-export const getTissueReadiness = () =>
-  request<WkTissueReadiness[]>('/tissue-readiness');
-
-export const getTrackedTissueReadiness = () =>
-  request<TrackedTissueReadiness[]>('/tissue-readiness/tracked');
-
 export const getExerciseHistory = (id: number, limit?: number) =>
   request<WkExerciseHistory>(`/exercises/${id}/history${limit ? `?limit=${limit}` : ''}`);
 
 export const getTissues = () =>
   request<WkTissue[]>('/tissues');
 
-export const getRehabProtocols = () =>
-  request<RehabProtocol[]>('/tissues/rehab-protocols');
-
-export const createTissueCondition = (data: {
-  tissue_id?: number | null;
-  tracked_tissue_id?: number | null;
-  status: 'healthy' | 'tender' | 'injured' | 'rehabbing';
-  severity?: number;
-  max_loading_factor?: number | null;
-  recovery_hours_override?: number | null;
-  rehab_protocol?: string | null;
-  notes?: string | null;
-}) =>
-  request<TrackedTissueCondition & {
-    tissue_id: number;
-    tracked_tissue_id: number | null;
-    tracked_tissue_display_name: string | null;
-  }>('/tissues/conditions', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  });
-
-export const createRehabPlan = (data: {
-  tracked_tissue_id: number;
-  protocol_id: string;
-  stage_id: string;
-  status?: 'active' | 'paused' | 'completed';
-  pain_monitoring_threshold?: number | null;
-  max_next_day_flare?: number | null;
-  sessions_per_week_target?: number | null;
-  max_weekly_set_progression?: number | null;
-  max_load_progression_pct?: number | null;
-  notes?: string | null;
-}) =>
-  request<RehabPlanSummary>('/tissues/rehab-plans', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  });
-
-export const updateRehabPlan = (
-  rehabPlanId: number,
-  data: {
-    protocol_id?: string;
-    stage_id?: string;
-    status?: 'active' | 'paused' | 'completed';
-    pain_monitoring_threshold?: number | null;
-    max_next_day_flare?: number | null;
-    sessions_per_week_target?: number | null;
-    max_weekly_set_progression?: number | null;
-    max_load_progression_pct?: number | null;
-    notes?: string | null;
-  },
-) =>
-  request<RehabPlanSummary>(`/tissues/rehab-plans/${rehabPlanId}`, {
-    method: 'PATCH',
-    body: JSON.stringify(data),
-  });
-
-export const getTrainingModelSummary = (asOf?: string, includeExercises = false) => {
-  const query = new URLSearchParams();
-  if (asOf) query.set('as_of', asOf);
-  if (includeExercises) query.set('include_exercises', 'true');
-  const suffix = query.size ? `?${query.toString()}` : '';
-  return request<TrainingModelSummary>(`/training-model/summary${suffix}`);
-};
-
-export const getTrainingModelExercises = (
-  params?: {
-    asOf?: string;
-    sortBy?: 'risk_7d' | 'risk_14d' | 'suitability' | 'normalized_load';
-    direction?: 'asc' | 'desc';
-    limit?: number;
-    recommendation?: 'avoid' | 'caution' | 'good';
-  },
-) => {
-  const query = new URLSearchParams();
-  if (params?.asOf) query.set('as_of', params.asOf);
-  if (params?.sortBy) query.set('sort_by', params.sortBy);
-  if (params?.direction) query.set('direction', params.direction);
-  if (params?.limit) query.set('limit', String(params.limit));
-  if (params?.recommendation) query.set('recommendation', params.recommendation);
-  const suffix = query.size ? `?${query.toString()}` : '';
-  return request<TrainingModelExerciseInsight[]>(`/training-model/exercises${suffix}`);
-};
-
-export const getTrainingModelTissueHistory = (tissueId: number, days = 90, asOf?: string) => {
-  const params = [`days=${days}`];
-  if (asOf) params.push(`as_of=${asOf}`);
-  return request<TrainingModelTissueHistory>(
-    `/training-model/tissues/${tissueId}/history?${params.join('&')}`,
-  );
-};
-
-// ── Exercise Strength ──
-
-export const getExerciseStrength = (exerciseId: number, days = 90, asOf?: string) => {
-  const params = [`days=${days}`];
-  if (asOf) params.push(`as_of=${asOf}`);
-  return request<ExerciseStrength>(
-    `/training-model/exercises/${exerciseId}/strength?${params.join('&')}`,
-  );
-};
-
-// ── Recovery Check-ins ──
-
-export const createRecoveryCheckIn = (data: {
-  date: string;
-  region?: string;
-  tracked_tissue_id?: number;
-  soreness_0_10?: number;
-  pain_0_10?: number;
-  notes?: string;
-}) =>
-  request<RecoveryCheckIn>('/training-model/check-in', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  });
-
-export const getRecoveryCheckIns = (date?: string, startDate?: string, endDate?: string) => {
-  const params: string[] = [];
-  if (date) params.push(`date=${date}`);
-  if (startDate) params.push(`start_date=${startDate}`);
-  if (endDate) params.push(`end_date=${endDate}`);
-  return request<RecoveryCheckIn[]>(
-    `/training-model/check-ins${params.length ? `?${params.join('&')}` : ''}`,
-  );
-};
-
-export const getRecoveryCheckInTargets = (date?: string) =>
-  request<RecoveryCheckInTargetsResponse>(
-    `/training-model/check-in-targets${date ? `?date=${date}` : ''}`,
-  );
-
-export const getRegions = () =>
-  request<RegionInfo[]>('/training-model/regions');
-
 // ── Planner ──
 
 // Helper: append ?as_of=... query param when provided
 const plannerQ = (path: string, asOf?: string) =>
   asOf ? `${path}${path.includes('?') ? '&' : '?'}as_of=${asOf}` : path;
-
-export const getPlannerToday = (asOf?: string) =>
-  request<PlannerTodayResponse>(plannerQ('/planner/today', asOf));
-
-export const savePlan = (
-  dayLabel: string,
-  targetRegions: string[],
-  exercises: PlannerExercisePrescription[],
-  asOf?: string,
-) =>
-  request<SavedPlan>(plannerQ('/planner/save', asOf), {
-    method: 'POST',
-    body: JSON.stringify({
-      day_label: dayLabel,
-      target_regions: targetRegions,
-      exercises,
-    }),
-  });
 
 export const getActivePlan = (asOf?: string) =>
   request<SavedPlan>(plannerQ('/planner/active', asOf)).catch(() => null);
@@ -1394,23 +771,6 @@ export const reorderPlanExercises = (pdeIds: number[], asOf?: string) =>
   request<SavedPlan>(plannerQ('/planner/active/reorder', asOf), {
     method: 'PATCH', body: JSON.stringify({ pde_ids: pdeIds }),
   });
-
-export interface VolumeByRegion {
-  dates: string[];
-  regions: string[];
-  daily: Record<string, Record<string, number>>;
-  totals: Record<string, number>;
-  region_labels: Record<string, string>;
-}
-
-export const getVolumeByRegion = (days = 7, asOf?: string) =>
-  request<VolumeByRegion>(plannerQ(`/training-model/volume-by-region?days=${days}`, asOf));
-
-export const startPlan = (asOf?: string) =>
-  request<{ workout_session_id: number }>(plannerQ('/planner/start', asOf), { method: 'POST' });
-
-export const completePlan = (asOf?: string) =>
-  request<{ id: number; status: string }>(plannerQ('/planner/complete', asOf), { method: 'POST' });
 
 export interface SavedPlan {
   id: number;
@@ -1459,7 +819,6 @@ export interface SavedPlanExercise {
     rpe: number | null;
     rep_completion: string | null;
     notes: string | null;
-    tissue_feedback: WkSetTissueFeedback[];
   }[];
   sets_done: number;
   done: boolean;
@@ -1480,45 +839,6 @@ export interface ExerciseMenuItem {
   heavy_available?: boolean;
   heavy_blocked_reason?: string | null;
   target_sets?: number;
-}
-
-export interface PrescribedSet {
-  set_number: number;
-  proposed_weight: number | null;
-  effective_weight: number;
-  target_reps: number;
-  target_rpe: number;
-  r_fail: number;
-  acceptable_rep_min: number;
-  acceptable_rep_max: number;
-}
-
-export interface PrescribeResponse {
-  has_curve: boolean;
-  fit_tier?: string;
-  fit_quality?: number;
-  n_obs?: number;
-  set?: PrescribedSet;
-  all_sets?: PrescribedSet[];
-  // Fallback when no curve
-  fallback_weight?: number | null;
-  message?: string;
-  // Bodyweight
-  is_bodyweight?: boolean;
-  suggestion?: { sets: number; reps_per_set: number; notes: string };
-}
-
-export interface PrescribeAllResponse {
-  has_curve: boolean;
-  fit_tier?: string;
-  fit_quality?: number;
-  n_obs?: number;
-  sets?: PrescribedSet[];
-  // Fallback
-  fallback_weight?: number | null;
-  message?: string;
-  is_bodyweight?: boolean;
-  suggestion?: { sets: number; reps_per_set: number; notes: string };
 }
 
 export const getExerciseMenu = (workoutSessionId?: number) => {
@@ -1547,27 +867,6 @@ export interface GroupMenuResponse {
 
 export const getWeeklyMenu = () =>
   request<GroupMenuResponse>('/planner/weekly-menu');
-
-export const prescribeSet = (data: {
-  exercise_id: number;
-  set_number: number;
-  actual_weight?: number | null;
-  prior_sets?: { weight: number; reps: number; rpe: number }[];
-}) =>
-  request<PrescribeResponse>('/planner/prescribe', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  });
-
-export const prescribeAllSets = (data: {
-  exercise_id: number;
-  set_number: number;
-  prior_sets?: { weight: number; reps: number; rpe: number }[];
-}) =>
-  request<PrescribeAllResponse>('/planner/prescribe-all', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  });
 
 // ── Prescribe-next (set-by-set guidance) ──
 

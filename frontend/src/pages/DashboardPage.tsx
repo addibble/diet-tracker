@@ -5,7 +5,6 @@ import {
   getDashboardTrends,
   getWorkouts,
   getWorkoutSessions,
-  getVolumeByRegion,
   deleteWorkoutSession,
   putTodayWeight,
   deleteMeal,
@@ -19,7 +18,6 @@ import {
   type DashboardTrends,
   type Workout,
   type WkSession,
-  type VolumeByRegion,
   type FoodSearchResult,
 } from '../api'
 import MealItemEditor from '../components/MealItemEditor'
@@ -827,117 +825,6 @@ function RecentSessionsCard({
   )
 }
 
-// ── Muscle Volume Chart ──
-
-const REGION_COLORS: Record<string, string> = {
-  chest: '#f97316', shoulders: '#fb923c', triceps: '#fcd34d',
-  upper_back: '#1d4ed8', biceps: '#3b82f6', forearms: '#93c5fd',
-  quads: '#15803d', hamstrings: '#22c55e', glutes: '#4ade80', calves: '#86efac', shins: '#d1fae5',
-  core: '#7c3aed', lower_back: '#a855f7', hips: '#d8b4fe',
-  neck: '#6b7280', other: '#9ca3af',
-}
-
-function fmtVol(v: number) {
-  return v >= 10000 ? `${(v / 1000).toFixed(0)}k` : v >= 1000 ? `${(v / 1000).toFixed(1)}k` : Math.round(v).toString()
-}
-
-function MuscleVolumeCard({ data }: { data: VolumeByRegion }) {
-  const { dates, regions, daily, totals } = data
-
-  const dayLabels = dates.map(d => new Date(d + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short' }))
-
-  // Compute max total volume across days for chart scaling
-  const dayTotals = dates.map(d => Object.values(daily[d] || {}).reduce((s, v) => s + v, 0))
-  const maxDayVol = Math.max(...dayTotals, 1)
-  const maxTotal = Math.max(...Object.values(totals), 1)
-
-  // SVG stacked bar chart
-  const svgW = 340, svgH = 140
-  const ml = 36, mr = 8, mt = 8, mb = 24
-  const plotW = svgW - ml - mr
-  const plotH = svgH - mt - mb
-  const barW = Math.max(4, plotW / dates.length - 4)
-  const step = plotW / dates.length
-
-  const yGuides = [0, 0.5, 1].map(f => ({
-    y: mt + (1 - f) * plotH,
-    label: fmtVol(f * maxDayVol),
-  }))
-
-  return (
-    <section className="bg-white border border-gray-200 rounded-2xl p-5">
-      <div className="mb-3">
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">Muscle Volume</p>
-        <h2 className="text-xl font-semibold text-gray-900 mt-1">Last 7 days by region</h2>
-      </div>
-
-      {regions.length === 0 ? (
-        <p className="text-sm text-gray-400">No workout volume logged in the last 7 days.</p>
-      ) : (
-        <>
-          {/* Stacked bar chart */}
-          <svg viewBox={`0 0 ${svgW} ${svgH}`} className="w-full h-36 mb-4">
-            {yGuides.map((g, i) => (
-              <g key={i}>
-                <line x1={ml} x2={svgW - mr} y1={g.y} y2={g.y} stroke="#e5e7eb" strokeDasharray="3 3" />
-                <text x={ml - 3} y={g.y + 3} textAnchor="end" fontSize="9" fill="#9ca3af">{g.label}</text>
-              </g>
-            ))}
-            {dates.map((d, di) => {
-              const dayVol = dayTotals[di]
-              if (dayVol === 0) return null
-              const barH = (dayVol / maxDayVol) * plotH
-              const x = ml + di * step + (step - barW) / 2
-              let yOff = 0
-              return (
-                <g key={d}>
-                  {regions.map(r => {
-                    const vol = (daily[d] || {})[r] || 0
-                    if (vol === 0) return null
-                    const segH = (vol / maxDayVol) * plotH
-                    const y = mt + plotH - barH + yOff
-                    yOff += segH
-                    return <rect key={r} x={x} y={y} width={barW} height={segH} rx={1} fill={REGION_COLORS[r] || '#9ca3af'} />
-                  })}
-                  <text x={x + barW / 2} y={svgH - 4} textAnchor="middle" fontSize="9" fill="#6b7280">{dayLabels[di]}</text>
-                </g>
-              )
-            })}
-          </svg>
-
-          {/* Legend */}
-          <div className="flex flex-wrap gap-x-3 gap-y-1 mb-4">
-            {regions.map(r => (
-              <span key={r} className="flex items-center gap-1 text-[10px] text-gray-600">
-                <span className="w-2 h-2 rounded-full inline-block" style={{ background: REGION_COLORS[r] || '#9ca3af' }} />
-                {r.replace(/_/g, ' ')}
-              </span>
-            ))}
-          </div>
-
-          {/* 7-day totals horizontal bars */}
-          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-400 mb-2">7-Day Totals</p>
-          <div className="space-y-1.5">
-            {regions.map(r => {
-              const vol = totals[r] || 0
-              const pct = (vol / maxTotal) * 100
-              return (
-                <div key={r} className="flex items-center gap-2">
-                  <span className="text-xs text-gray-600 w-20 truncate shrink-0">{r.replace(/_/g, ' ')}</span>
-                  <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
-                    <div className="h-full rounded-full" style={{ width: `${pct}%`, background: REGION_COLORS[r] || '#9ca3af' }} />
-                  </div>
-                  <span className="text-[11px] text-gray-500 tabular-nums w-10 text-right shrink-0">{fmtVol(vol)}</span>
-                </div>
-              )
-            })}
-          </div>
-        </>
-      )}
-    </section>
-  )
-}
-
 const MEAL_TYPES = ['breakfast', 'lunch', 'dinner', 'snack'] as const
 
 function QuickAddMeal({ date, onAdded }: { date: string; onAdded: () => void }) {
@@ -1038,7 +925,6 @@ export default function DashboardPage() {
   const [workouts, setWorkouts] = useState<Workout[]>([])
   const [loading, setLoading] = useState(true)
   const [sessions, setSessions] = useState<WkSession[]>([])
-  const [volumeByRegion, setVolumeByRegion] = useState<VolumeByRegion | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
   const [editingMeals, setEditingMeals] = useState<Set<number>>(new Set())
 
@@ -1078,13 +964,9 @@ export default function DashboardPage() {
   }, [date, refreshKey])
 
   useEffect(() => {
-    Promise.all([
-      getWorkoutSessions(undefined, undefined, 10).catch(() => []),
-      getVolumeByRegion(7, today()).catch(() => null),
-    ]).then(([s, v]) => {
-      setSessions(s as WkSession[])
-      setVolumeByRegion(v as VolumeByRegion | null)
-    })
+    getWorkoutSessions(undefined, undefined, 10)
+      .then((s) => setSessions(s as WkSession[]))
+      .catch(() => setSessions([]))
   }, [])
 
   const activeTarget = summary?.active_macro_target ?? null
@@ -1257,7 +1139,6 @@ export default function DashboardPage() {
 
           <TargetNormalizedMacroTrendsCard trends={trends} />
 
-          {volumeByRegion && <MuscleVolumeCard data={volumeByRegion} />}
           <RecentSessionsCard sessions={sessions} onSessionChanged={refreshSessions} />
 
           {workouts.length > 0 && (
