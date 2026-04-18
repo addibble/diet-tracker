@@ -10,13 +10,18 @@ from app.config import user_today
 from app.database import get_session
 from app.macros import compute_food_macros
 from app.models import (
+    Exercise,
+    ExerciseTissue,
     Food,
     MacroTarget,
     MealItem,
     MealLog,
     Recipe,
     RecipeComponent,
+    Tissue,
     WeightLog,
+    WorkoutSession,
+    WorkoutSet,
 )
 from app.routers.daily import build_daily_summary
 
@@ -324,4 +329,83 @@ def put_today_weight(
         "id": existing.id,
         "weight_lb": round(existing.weight_lb, 2),
         "logged_at": existing.logged_at.isoformat(),
+    }
+
+# ── Volume by tissue region ─────────────────────────────────────────────
+
+
+# Roles that contribute to "muscle work" volume. Stabilizers excluded.
+_VOLUME_ROLES = ("primary", "secondary")
+# Cap per-day per-region values from a single set so the chart is dominated
+# by training volume, not by huge weight outliers from compound lifts.
+_MAX_DAYS_WINDOW = 90
+
+
+@router.get("/volume-by-region")
+def get_volume_by_region(
+    days: int = Query(10, ge=1, le=_MAX_DAYS_WINDOW),
+    end_date: date | None = Query(None),
+    session: Session = Depends(get_session),
+    user: str = Depends(get_current_user),
+):
+    """Daily training volume per tissue region for the trailing `days` window.
+
+    Volume per set = ``weight × reps × loading_factor``, summed across primary
+    and secondary tissue mappings. Sets with null weight or reps contribute
+    zero (bodyweight/timed work is not weighted in this view).
+
+    Returns:
+        {
+            "dates": ["YYYY-MM-DD", ...],          # length = days, oldest → newest
+            "regions": ["chest", ...],             # regions present in the window
+            "daily":   { region: [vol_day0, vol_day1, ...] },
+            "totals":  { region: total_lb },
+        }
+    """
+    end = end_date or user_today()
+    start = end - timedelta(days=days - 1)
+    dates = [start + timedelta(days=i) for i in range(days)]
+
+    rows = session.exec(
+        select(
+            WorkoutSession.date,
+            Tissue.region,
+            WorkoutSet.weight,
+            WorkoutSet.reps,
+            ExerciseTissue.loading_factor,
+        )
+        .join(WorkoutSet, WorkoutSet.session_id == WorkoutSession.id)
+        .join(Exercise, Exercise.id == WorkoutSet.exercise_id)
+        .join(ExerciseTissue, ExerciseTissue.exercise_id == Exercise.id)
+        .join(Tissue, Tissue.id == ExerciseTissue.tissue_id)
+        .where(WorkoutSession.date >= start)
+        .where(WorkoutSession.date <= end)
+        .where(ExerciseTissue.role.in_(_VOLUME_ROLES))
+    ).all()
+
+    # region → date_index → volume
+    daily: dict[str, list[float]] = {}
+    totals: dict[str, float] = {}
+    date_index = {d: i for i, d in enumerate(dates)}
+    for row in rows:
+        wo_date, region, weight, reps, loading_factor = row
+        if region is None or wo_date not in date_index:
+            continue
+        if weight is None or reps is None or weight <= 0 or reps <= 0:
+            continue
+        vol = float(weight) * float(reps) * float(loading_factor or 0.0)
+        if vol <= 0:
+            continue
+        bucket = daily.setdefault(region, [0.0] * days)
+        bucket[date_index[wo_date]] += vol
+        totals[region] = totals.get(region, 0.0) + vol
+
+    # Sort regions by total descending so the legend / stacking is stable.
+    regions = sorted(daily.keys(), key=lambda r: totals[r], reverse=True)
+
+    return {
+        "dates": [d.isoformat() for d in dates],
+        "regions": regions,
+        "daily": {r: [round(v, 1) for v in daily[r]] for r in regions},
+        "totals": {r: round(totals[r], 1) for r in regions},
     }

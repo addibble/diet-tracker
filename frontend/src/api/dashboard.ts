@@ -80,6 +80,19 @@ export const getWorkouts = (date: string) =>
 export const getDashboardTrends = (endDate: string) =>
   request<DashboardTrends>(`/dashboard/trends?end_date=${encodeURIComponent(endDate)}`);
 
+export interface VolumeByRegion {
+  dates: string[];
+  regions: string[];
+  daily: Record<string, number[]>;
+  totals: Record<string, number>;
+}
+
+export const getVolumeByRegion = (days = 10, endDate?: string) => {
+  const params = new URLSearchParams({ days: String(days) });
+  if (endDate) params.set('end_date', endDate);
+  return request<VolumeByRegion>(`/dashboard/volume-by-region?${params.toString()}`);
+};
+
 export const putTodayWeight = (weightLb: number) =>
   request<{ id: number; weight_lb: number; logged_at: string }>('/dashboard/weight', {
     method: 'PUT',
