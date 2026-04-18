@@ -2,19 +2,15 @@
 import json
 
 import pytest
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from app.models import (
     Exercise,
     ProgramDay,
     ProgramDayExercise,
-    RehabPlan,
-    Tissue,
-    TrackedTissue,
     TrainingProgram,
     WorkoutSession,
     WorkoutSet,
-    WorkoutSetTissueFeedback,
 )
 
 
@@ -90,73 +86,15 @@ def test_update_set_partial(client, workout_set):
     assert data["weight"] == 135.0  # unchanged
 
 
-def test_update_set_persists_tissue_feedback(client, session: Session, workout_set: WorkoutSet):
-    tissue = Tissue(
-        name="biceps_long_head",
-        display_name="Biceps Long Head",
-        type="muscle",
-        recovery_hours=48.0,
-    )
-    session.add(tissue)
-    session.commit()
-    session.refresh(tissue)
-
-    tracked = TrackedTissue(
-        tissue_id=tissue.id,
-        side="left",
-        display_name="Left Biceps Long Head",
-        active=True,
-    )
-    session.add(tracked)
-    session.commit()
-    session.refresh(tracked)
-
-    first = client.patch(
+def test_update_set_persists_tissue_feedback_removed(client, session: Session, workout_set: WorkoutSet):
+    """Placeholder — tissue_feedback subsystem removed; endpoint silently ignores the field."""
+    resp = client.patch(
         f"/api/workout-sets/{workout_set.id}",
-        json={
-            "tissue_feedback": [
-                {
-                    "tracked_tissue_id": tracked.id,
-                    "pain_0_10": 5,
-                    "symptom_note": "moderate pulling",
-                }
-            ]
-        },
+        json={"reps": 12},
     )
-    assert first.status_code == 200
-    first_payload = first.json()
-    assert len(first_payload["tissue_feedback"]) == 1
-    assert first_payload["tissue_feedback"][0]["tracked_tissue_id"] == tracked.id
-    assert first_payload["tissue_feedback"][0]["pain_0_10"] == 5
-    assert first_payload["tissue_feedback"][0]["symptom_note"] == "moderate pulling"
-
-    second = client.patch(
-        f"/api/workout-sets/{workout_set.id}",
-        json={
-            "tissue_feedback": [
-                {
-                    "tracked_tissue_id": tracked.id,
-                    "pain_0_10": 2,
-                    "symptom_note": "mild after reset",
-                }
-            ]
-        },
-    )
-    assert second.status_code == 200
-    second_payload = second.json()
-    assert len(second_payload["tissue_feedback"]) == 1
-    assert second_payload["tissue_feedback"][0]["pain_0_10"] == 2
-    assert second_payload["tissue_feedback"][0]["symptom_note"] == "mild after reset"
-
-    rows = session.exec(
-        select(WorkoutSetTissueFeedback).where(
-            WorkoutSetTissueFeedback.workout_set_id == workout_set.id
-        )
-    ).all()
-    assert len(rows) == 1
-    assert rows[0].tracked_tissue_id == tracked.id
-    assert rows[0].pain_0_10 == 2
-    assert rows[0].symptom_note == "mild after reset"
+    assert resp.status_code == 200
+    assert resp.json()["reps"] == 12
+    assert "tissue_feedback" not in resp.json()
 
 
 # ── POST /api/workout-sessions/{session_id}/sets ──────────────────────
@@ -230,38 +168,15 @@ def test_add_set_keeps_explicit_unilateral_side(client, session: Session, workou
     assert resp.json()["performed_side"] == "left"
 
 
-def test_add_set_response_includes_timestamps_and_tissue_feedback(client, session: Session, workout_session: WorkoutSession):
-    tissue = Tissue(name="biceps_long_head", display_name="Biceps Long Head", type="muscle", recovery_hours=48.0)
+def test_add_set_response_includes_timestamps(client, session: Session, workout_session: WorkoutSession):
     exercise = Exercise(
         name="Single-Arm Cable Curl",
         load_input_mode="external_weight",
         laterality="unilateral",
     )
-    session.add(tissue)
     session.add(exercise)
     session.commit()
-    session.refresh(tissue)
     session.refresh(exercise)
-
-    tracked = TrackedTissue(
-        tissue_id=tissue.id,
-        side="left",
-        display_name="Left Biceps Long Head",
-        active=True,
-    )
-    session.add(tracked)
-    session.commit()
-    session.refresh(tracked)
-
-    session.add(
-        RehabPlan(
-            tracked_tissue_id=tracked.id,
-            protocol_id="cervical-radiculopathy-deltoid",
-            stage_id="strength-rebuild",
-            pain_monitoring_threshold=2,
-        )
-    )
-    session.commit()
 
     resp = client.post(
         f"/api/workout-sessions/{workout_session.id}/sets",
@@ -269,13 +184,6 @@ def test_add_set_response_includes_timestamps_and_tissue_feedback(client, sessio
             "exercise_id": exercise.id,
             "reps": 10,
             "performed_side": "left",
-            "tissue_feedback": [
-                {
-                    "tracked_tissue_id": tracked.id,
-                    "pain_0_10": 4,
-                    "symptom_note": "pulling at distal tendon",
-                }
-            ],
         },
     )
     assert resp.status_code == 201
@@ -283,10 +191,6 @@ def test_add_set_response_includes_timestamps_and_tissue_feedback(client, sessio
     # Auto-timestamped because reps are provided
     assert data["started_at"] is not None
     assert data["completed_at"] is not None
-    assert len(data["tissue_feedback"]) == 1
-    assert data["tissue_feedback"][0]["tracked_tissue_id"] == tracked.id
-    assert data["tissue_feedback"][0]["pain_0_10"] == 4
-    assert data["tissue_feedback"][0]["above_threshold"] is True
 
 
 def test_update_set_sets_completed_at_and_reorders_session(client, session: Session, exercise: Exercise, workout_session: WorkoutSession):

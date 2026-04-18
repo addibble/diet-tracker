@@ -8,6 +8,7 @@ from sqlmodel import Session, col, select
 from app.auth import get_current_user
 from app.database import get_session
 from app.exercise_history import empty_scheme_history, get_exercise_scheme_history_map
+from app.exercise_laterality import default_performed_side
 from app.exercise_loads import (
     bodyweight_by_date,
     effective_set_load,
@@ -16,13 +17,10 @@ from app.exercise_loads import (
 )
 from app.models import (
     Exercise,
-    TrackedTissue,
     WeightLog,
     WorkoutSession,
     WorkoutSet,
-    WorkoutSetTissueFeedback,
 )
-from app.tracked_tissues import default_performed_side, get_active_rehab_plans_by_tracked_tissue
 
 router = APIRouter(prefix="/api/workout-sessions", tags=["workout-sessions"])
 
@@ -63,15 +61,6 @@ def _build_session_response(ws: WorkoutSession, session: Session) -> dict:
         .where(WorkoutSet.session_id == ws.id)
         .order_by(WorkoutSet.set_order)
     ).all()
-    feedback_rows = session.exec(select(WorkoutSetTissueFeedback)).all()
-    feedback_by_set: dict[int, list[WorkoutSetTissueFeedback]] = {}
-    for row in feedback_rows:
-        feedback_by_set.setdefault(row.workout_set_id, []).append(row)
-    tracked_rows = {
-        row.id: row
-        for row in session.exec(select(TrackedTissue)).all()
-    }
-    active_rehab_plans = get_active_rehab_plans_by_tracked_tissue(session)
     scheme_history_by_exercise = get_exercise_scheme_history_map(
         session,
         {workout_set.exercise_id for workout_set in sets},
@@ -122,23 +111,6 @@ def _build_session_response(ws: WorkoutSession, session: Session) -> dict:
                 s.exercise_id,
                 empty_scheme_history(),
             ),
-            "tissue_feedback": [
-                {
-                    "id": row.id,
-                    "tracked_tissue_id": row.tracked_tissue_id,
-                    "tracked_tissue_display_name": tracked_rows.get(row.tracked_tissue_id).display_name
-                    if tracked_rows.get(row.tracked_tissue_id)
-                    else "unknown",
-                    "pain_0_10": row.pain_0_10,
-                    "symptom_note": row.symptom_note,
-                    "recorded_at": row.recorded_at,
-                    "above_threshold": (
-                        active_rehab_plans.get(row.tracked_tissue_id) is not None
-                        and row.pain_0_10 > active_rehab_plans[row.tracked_tissue_id].pain_monitoring_threshold
-                    ),
-                }
-                for row in feedback_by_set.get(s.id or 0, [])
-            ],
         })
     return {
         "id": ws.id,

@@ -49,13 +49,7 @@ _AB_NAME_KEYWORDS = (
 )
 
 RUNTIME_REQUIRED_TABLES = {
-    "tracked_tissues",
-    "rehab_plans",
-    "rehab_check_ins",
-    "region_soreness_check_ins",
     "tissue_region_links",
-    "tissue_relationships",
-    "workout_set_tissue_feedback",
 }
 
 RUNTIME_REQUIRED_COLUMNS = {
@@ -149,7 +143,6 @@ def apply_db_updates():
     _backfill_special_workout_sets()
     _backfill_historical_bodyweight_anchor()
     _backfill_progression_rep_completion()
-    _backfill_tracked_tissue_foundation()
 
 
 def _runtime_db_needs_manual_updates() -> bool:
@@ -182,7 +175,6 @@ def _runtime_db_needs_manual_updates() -> bool:
     with engine.connect() as conn:
         exercise_count = conn.execute(text("SELECT COUNT(*) FROM exercises")).scalar() or 0
         tissue_count = conn.execute(text("SELECT COUNT(*) FROM tissues")).scalar() or 0
-        tracked_tissue_count = conn.execute(text("SELECT COUNT(*) FROM tracked_tissues")).scalar() or 0
 
     if exercise_count == 0 or tissue_count == 0:
         logger.info(
@@ -190,10 +182,6 @@ def _runtime_db_needs_manual_updates() -> bool:
             exercise_count,
             tissue_count,
         )
-        return True
-
-    if tissue_count > 0 and tracked_tissue_count == 0:
-        logger.info("Database missing tracked-tissue backfill")
         return True
 
     return False
@@ -660,19 +648,5 @@ def _backfill_progression_rep_completion():
 
 
 def _backfill_tracked_tissue_foundation():
-    from sqlmodel import Session
-
-    from app.tracked_tissues import (
-        backfill_tissue_conditions_to_tracked_tissues,
-        backfill_workout_set_performed_side,
-        seed_exercise_laterality,
-        seed_exercise_tissue_laterality_modes,
-        seed_tracked_tissues,
-    )
-
-    with Session(engine) as session:
-        seed_tracked_tissues(session, force_inferred_mode=True)
-        seed_exercise_laterality(session)
-        seed_exercise_tissue_laterality_modes(session)
-        backfill_workout_set_performed_side(session)
-        backfill_tissue_conditions_to_tracked_tissues(session)
+    """Deprecated: rehab subsystem removed. Kept as no-op for safety."""
+    return

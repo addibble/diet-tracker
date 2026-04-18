@@ -1,3 +1,16 @@
+"""Thin planner router: active-plan CRUD + strength-curve prescription.
+
+After the auto-planner removal, this router exposes only the endpoints
+still used by the WorkoutSetEditor/TrainingPage UI:
+
+- ``GET /active`` / ``DELETE /active`` — load/wipe the saved plan
+- ``POST /active/exercises`` / ``DELETE /active/exercises/{id}`` — add/remove
+- ``PATCH /active/reorder`` — reorder exercises
+- ``GET /exercise-menu`` / ``GET /weekly-menu`` — exercise freshness data
+- ``POST /prescribe-next`` — strength-curve sequential prescription
+- ``POST /quick-start`` — create a workout session from a list of exercise IDs
+"""
+
 import datetime
 import json
 from typing import Literal
@@ -20,56 +33,23 @@ from app.models import (
     WeightLog,
     WorkoutSession,
 )
-from app.planner import (
+from app.planner_state import (
     add_exercises_to_plan,
-    complete_workout,
     delete_plan,
     get_saved_plan,
     remove_exercises_from_plan,
     reorder_plan_exercises,
-    save_plan,
-    start_workout,
-    suggest_today,
 )
 from app.strength_model import (
-    adjust_prescription,
     check_heavy_availability,
-    fit_curve,
-    get_bodyweight_suggestion,
     get_exercise_freshness,
-    get_max_recent_entered_weight,
-    plan_progressive_sets,
     prescribe_next_set,
-    refit_with_observations,
 )
 
 router = APIRouter(prefix="/api/planner", tags=["planner"])
 
 
-class SavePlanRequest(BaseModel):
-    day_label: str
-    target_regions: list[str]
-    exercises: list[dict]
-
-
-@router.get("/today")
-def get_today(
-    as_of: datetime.date | None = Query(default=None),
-    session: Session = Depends(get_session),
-    _user: str = Depends(get_current_user),
-):
-    return suggest_today(session, as_of=as_of)
-
-
-@router.post("/save", status_code=201)
-def save_today(
-    data: SavePlanRequest,
-    as_of: datetime.date | None = Query(default=None),
-    session: Session = Depends(get_session),
-    _user: str = Depends(get_current_user),
-):
-    plan_date = as_of or user_today()
-    return save_plan(session, plan_date, data.day_label, data.target_regions, data.exercises)
+# ── Active-plan CRUD ──────────────────────────────────────────────────
 
 
 @router.get("/active")
@@ -83,32 +63,6 @@ def get_active(
     if not plan:
         raise HTTPException(status_code=404, detail="No saved plan for this date")
     return plan
-
-
-@router.post("/start", status_code=200)
-def start_today(
-    as_of: datetime.date | None = Query(default=None),
-    session: Session = Depends(get_session),
-    _user: str = Depends(get_current_user),
-):
-    plan_date = as_of or user_today()
-    plan = get_saved_plan(session, plan_date)
-    if not plan:
-        raise HTTPException(status_code=404, detail="No saved plan for this date")
-    return start_workout(session, plan["id"])
-
-
-@router.post("/complete", status_code=200)
-def complete_today(
-    as_of: datetime.date | None = Query(default=None),
-    session: Session = Depends(get_session),
-    _user: str = Depends(get_current_user),
-):
-    plan_date = as_of or user_today()
-    plan = get_saved_plan(session, plan_date)
-    if not plan:
-        raise HTTPException(status_code=404, detail="No saved plan for this date")
-    return complete_workout(session, plan["id"])
 
 
 @router.delete("/active", status_code=204)
@@ -174,19 +128,17 @@ def reorder_exercises(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-# ── Strength-curve planner endpoints ──
+# ── Exercise menus (freshness-sorted) ─────────────────────────────────
 
 
 @router.get("/exercise-menu")
 def exercise_menu(
-    workout_session_id: int | None = Query(None, description="Current workout session ID for heavy availability check"),
+    workout_session_id: int | None = Query(
+        None, description="Current workout session ID for heavy availability check"
+    ),
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    """Return all exercises ordered by freshness (days since last trained).
-
-    If workout_session_id is provided, includes heavy_available for each exercise.
-    """
     items = get_exercise_freshness(session)
     for item in items:
         if item.get("allow_heavy_loading"):
@@ -210,152 +162,13 @@ def weekly_menu(
     return get_group_exercise_menu(session)
 
 
-class PrescribeRequest(BaseModel):
-    exercise_id: int
-    set_number: int  # 1, 2, or 3
-    actual_weight: float | None = None  # user-entered weight override
-    prior_sets: list[dict] | None = None  # [{weight, reps, rpe}] from completed sets
-
-
-@router.post("/prescribe")
-def prescribe_set(
-    data: PrescribeRequest,
-    session: Session = Depends(get_session),
-    _user: str = Depends(get_current_user),
-):
-    """Prescribe weight/reps for a set, with optional in-session refit.
-
-    - set_number=1: uses fitted curve to propose weight
-    - set_number=2-3: refits curve incorporating prior_sets, then proposes
-    - If actual_weight provided: recalculates target_reps for that weight
-    """
-    exercise = session.get(Exercise, data.exercise_id)
-    if exercise is None:
-        raise HTTPException(status_code=404, detail="Exercise not found")
-
-    bw_lookup = _get_bw_lookup(session)
-    bw_lb = latest_bodyweight(bw_lookup, user_today())
-
-    # Fit or refit the curve
-    if data.prior_sets:
-        fit = refit_with_observations(data.exercise_id, session, data.prior_sets)
-    else:
-        fit = fit_curve(data.exercise_id, session)
-
-    if fit is None:
-        # No curve fit — fall back to last-used weight
-        last_weight = get_max_recent_entered_weight(data.exercise_id, session)
-        return {
-            "has_curve": False,
-            "fallback_weight": last_weight,
-            "message": "Insufficient RPE data for curve fit. Use recent weight.",
-        }
-
-    # If user provided actual weight, adjust prescription
-    if data.actual_weight is not None:
-        prescription = adjust_prescription(
-            fit, exercise, data.actual_weight, bw_lb,
-            data.set_number, exercise.allow_heavy_loading,
-        )
-        return _prescription_response(prescription, fit)
-
-    # Generate full 3-set plan and return the requested set
-    max_weight = get_max_recent_entered_weight(data.exercise_id, session)
-    prescriptions = plan_progressive_sets(fit, exercise, bw_lb, max_weight)
-
-    if data.set_number < 1 or data.set_number > len(prescriptions):
-        raise HTTPException(status_code=400, detail="set_number must be 1-3")
-
-    prescription = prescriptions[data.set_number - 1]
-    return _prescription_response(prescription, fit, all_sets=prescriptions)
-
-
-@router.post("/prescribe-all")
-def prescribe_all_sets(
-    data: PrescribeRequest,
-    session: Session = Depends(get_session),
-    _user: str = Depends(get_current_user),
-):
-    """Prescribe all 3 sets at once for an exercise."""
-    exercise = session.get(Exercise, data.exercise_id)
-    if exercise is None:
-        raise HTTPException(status_code=404, detail="Exercise not found")
-
-    bw_lookup = _get_bw_lookup(session)
-    bw_lb = latest_bodyweight(bw_lookup, user_today())
-
-    if data.prior_sets:
-        fit = refit_with_observations(data.exercise_id, session, data.prior_sets)
-    else:
-        fit = fit_curve(data.exercise_id, session)
-
-    if fit is None:
-        last_weight = get_max_recent_entered_weight(data.exercise_id, session)
-        return {
-            "has_curve": False,
-            "fallback_weight": last_weight,
-            "message": "Insufficient RPE data for curve fit.",
-        }
-
-    # Check for bodyweight exercise
-    if (exercise.load_input_mode or "external_weight") in {"bodyweight", "assisted_bodyweight"}:
-        suggestion = get_bodyweight_suggestion(data.exercise_id, session)
-        return {
-            "has_curve": False,
-            "is_bodyweight": True,
-            "suggestion": suggestion,
-        }
-
-    max_weight = get_max_recent_entered_weight(data.exercise_id, session)
-    prescriptions = plan_progressive_sets(fit, exercise, bw_lb, max_weight)
-
-    return {
-        "has_curve": True,
-        "fit_tier": fit.fit_tier,
-        "fit_quality": round(fit.identifiability, 2),
-        "n_obs": fit.n_obs,
-        "sets": [_prescription_dict(p) for p in prescriptions],
-    }
-
-
-def _get_bw_lookup(session: Session) -> dict:
-    weights = session.exec(select(WeightLog).order_by(WeightLog.logged_at)).all()
-    return bodyweight_by_date(weights)
-
-
-def _prescription_dict(p) -> dict:
-    return {
-        "set_number": p.set_number,
-        "proposed_weight": p.entered_weight,
-        "effective_weight": p.effective_weight,
-        "target_reps": p.target_reps,
-        "target_rpe": p.target_rpe,
-        "r_fail": p.r_fail,
-        "acceptable_rep_min": p.acceptable_rep_min,
-        "acceptable_rep_max": p.acceptable_rep_max,
-    }
-
-
-def _prescription_response(prescription, fit, all_sets=None) -> dict:
-    result = {
-        "has_curve": True,
-        "fit_tier": fit.fit_tier,
-        "fit_quality": round(fit.identifiability, 2),
-        "n_obs": fit.n_obs,
-        "set": _prescription_dict(prescription),
-    }
-    if all_sets:
-        result["all_sets"] = [_prescription_dict(p) for p in all_sets]
-    return result
-
-
-# ── New sequential set-by-set prescription ──
+# ── Strength-curve sequential prescription ────────────────────────────
 
 
 class PrescribeNextRequest(BaseModel):
     exercise_id: int
-    prior_sets: list[dict] = []  # [{"weight": float, "reps": int, "rpe": float}]
-    actual_weight: float | None = None  # user-adjusted weight for this set
+    prior_sets: list[dict] = []
+    actual_weight: float | None = None
     training_mode: Literal["heavy", "volume"] = "volume"
 
 
@@ -365,14 +178,6 @@ def prescribe_next(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    """Prescribe the next set sequentially based on completed prior sets.
-
-    - 0 prior sets: prescribe set 1 from prior-data curve (RIR 3)
-    - 1 prior set: refit with set 1, prescribe set 2 (RIR 2)
-    - 2 prior sets: refit, prescribe set 3 (RIR 1)
-    - 3+ prior sets (heavy only): refit, check inflection, prescribe set 4 or mark complete
-    - 3+ prior sets (volume/light): exercise complete
-    """
     bw_lookup = _get_bw_lookup(session)
     bw_lb = latest_bodyweight(bw_lookup, user_today())
 
@@ -386,7 +191,12 @@ def prescribe_next(
     )
 
 
-# ── Quick-start: skip plan/save, go directly to workout ──
+def _get_bw_lookup(session: Session) -> dict:
+    weights = session.exec(select(WeightLog).order_by(WeightLog.logged_at)).all()
+    return bodyweight_by_date(weights)
+
+
+# ── Quick-start: skip plan/save, go directly to workout ───────────────
 
 
 class QuickStartRequest(BaseModel):
@@ -400,26 +210,20 @@ def quick_start(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    """Create a workout session immediately with selected exercises.
-
-    Skips the plan→save→start flow. Creates a WorkoutSession and a
-    lightweight PlannedSession record for compatibility, but does NOT
-    pre-create empty sets — sets are added one at a time via the
-    workout set API as the athlete logs them.
-    """
+    """Create a workout session immediately with the selected exercises."""
     plan_date = data.date or user_today()
 
-    # Get or create auto program
     program = session.exec(
         select(TrainingProgram).where(TrainingProgram.name == "__auto_plan__")
     ).first()
     if not program:
-        program = TrainingProgram(name="__auto_plan__", notes="Auto-generated daily plans")
+        program = TrainingProgram(
+            name="__auto_plan__", notes="Auto-generated daily plans"
+        )
         session.add(program)
         session.commit()
         session.refresh(program)
 
-    # Delete any existing auto-generated planned session for this date
     existing = session.exec(
         select(PlannedSession).where(PlannedSession.date == plan_date)
     ).all()
@@ -437,7 +241,6 @@ def quick_start(
             session.delete(ps)
     session.commit()
 
-    # Create program day
     exercise_names = []
     for eid in data.exercise_ids:
         ex = session.get(Exercise, eid)
@@ -454,7 +257,6 @@ def quick_start(
     session.commit()
     session.refresh(day)
 
-    # Create exercise entries
     for i, eid in enumerate(data.exercise_ids):
         pde = ProgramDayExercise(
             program_day_id=day.id,
@@ -465,7 +267,6 @@ def quick_start(
         )
         session.add(pde)
 
-    # Create workout session
     ws = WorkoutSession(
         date=plan_date,
         started_at=datetime.datetime.now(datetime.UTC),
@@ -474,7 +275,6 @@ def quick_start(
     session.commit()
     session.refresh(ws)
 
-    # Create planned session linked to workout
     planned = PlannedSession(
         program_day_id=day.id,
         date=plan_date,

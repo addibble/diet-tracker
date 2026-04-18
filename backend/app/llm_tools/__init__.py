@@ -2,8 +2,7 @@
 
 Provides tools organized by domain:
 - Nutrition: foods, recipes, meal_logs, weight_logs, macro_targets
-- Workout: exercises, tissues, tissue_conditions, workout_sessions,
-  workouts
+- Workout: exercises, tissues, workout_sessions, workouts
 
 Usage:
     from app.llm_tools import TOOL_HANDLERS, select_tools
@@ -50,8 +49,7 @@ _WORKOUT_PATTERN = re.compile(
     r"bench|squat|deadlift|press|curl|row|"
     r"run|running|walk|walking|cardio|routine|"
     r"rep|reps|set|sets|rpe|"
-    r"tissue|pain|painful|sore|soreness|tight|tightness|"
-    r"injur|rehab|recovery"
+    r"tissue|sore|soreness"
     r")\b",
     re.IGNORECASE,
 )

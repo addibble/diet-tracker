@@ -5,6 +5,7 @@ from sqlmodel import Session, select
 from app.auth import get_current_user
 from app.database import get_session
 from app.exercise_history import build_scheme_history, get_exercise_history_map
+from app.exercise_laterality import default_mapping_laterality_mode, infer_exercise_laterality
 from app.exercise_loads import effective_bodyweight_component
 from app.models import (
     Exercise,
@@ -13,7 +14,6 @@ from app.models import (
     TissueRelationship,
     WorkoutSet,
 )
-from app.tracked_tissues import default_mapping_laterality_mode, infer_exercise_laterality
 from app.workout_queries import get_current_exercise_tissues
 
 router = APIRouter(prefix="/api/exercises", tags=["exercises"])

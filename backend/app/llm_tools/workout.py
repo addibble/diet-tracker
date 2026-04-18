@@ -20,15 +20,12 @@ from app.models import (
     ProgramDay,
     ProgramDayExercise,
     Tissue,
-    TissueCondition,
     TrainingProgram,
     Workout,
     WorkoutSession,
     WorkoutSet,
 )
-from app.training_model import build_exercise_risk_ranking
 from app.workout_queries import (
-    get_all_current_conditions,
     get_current_exercise_tissues,
     get_current_tissues,
     get_last_trained_by_tissue,
@@ -308,9 +305,6 @@ def _compute_tissue_readiness(session: Session) -> list[dict]:
     """Compute readiness for all current tissues."""
     now = datetime.now(UTC)
     tissues = get_current_tissues(session)
-    conditions = {
-        c.tissue_id: c for c in get_all_current_conditions(session)
-    }
 
     # Exercise-tissue mappings
     current_ets = session.exec(
@@ -328,11 +322,8 @@ def _compute_tissue_readiness(session: Session) -> list[dict]:
 
     result = []
     for t in tissues:
-        condition = conditions.get(t.id)
         last_trained = last_trained_map.get(t.id)
         effective_recovery = t.recovery_hours
-        if condition and condition.recovery_hours_override is not None:
-            effective_recovery = condition.recovery_hours_override
 
         hours_since = None
         recovery_pct = 100.0
@@ -347,9 +338,6 @@ def _compute_tissue_readiness(session: Session) -> list[dict]:
                 recovery_pct = 100.0
             ready = recovery_pct >= 100.0
 
-        if condition and condition.status == "injured":
-            ready = False
-
         result.append({
             "tissue_name": t.name,
             "display_name": t.display_name,
@@ -360,11 +348,6 @@ def _compute_tissue_readiness(session: Session) -> list[dict]:
                 round(hours_since, 1) if hours_since is not None else None
             ),
             "effective_recovery_hours": effective_recovery,
-            "condition": condition.status if condition else "healthy",
-            "severity": condition.severity if condition else 0,
-            "max_loading_factor": (
-                condition.max_loading_factor if condition else None
-            ),
         })
     return result
 
@@ -380,8 +363,7 @@ GET_EXERCISES_DEF = {
         "description": (
             "Get exercise records with tissue mappings. "
             "Search by name (fuzzy) or equipment. "
-            "Include history, stats, and training_risk for progression data "
-            "and exercise selection."
+            "Include history and stats for progression data."
         ),
         "parameters": {
             "type": "object",
@@ -390,8 +372,7 @@ GET_EXERCISES_DEF = {
                     "type": "object",
                     "description": (
                         "id({eq,in}), name({eq,fuzzy,contains}), "
-                        "equipment({eq,contains}), "
-                        "recommendation({eq}: avoid/caution/good)."
+                        "equipment({eq,contains})."
                     ),
                 },
                 "include": {
@@ -402,7 +383,6 @@ GET_EXERCISES_DEF = {
                             "current_tissues",
                             "history",
                             "stats",
-                            "training_risk",
                         ],
                     },
                     "default": ["current_tissues"],
@@ -410,11 +390,7 @@ GET_EXERCISES_DEF = {
                 "limit": {"type": "integer", "default": 50},
                 "sort": {
                     "type": "array",
-                    "description": (
-                        "Sort by name, or when include contains training_risk, "
-                        "by training_risk_7d, training_risk_14d, suitability_score, "
-                        "or max_tissue_risk_7d."
-                    ),
+                    "description": "Sort by name.",
                 },
             },
         },
@@ -693,44 +669,6 @@ def handle_get_exercises(args: dict, session: Session) -> dict:
     if fuzzy_specs:
         records, match_info = apply_fuzzy_post_filter(records, fuzzy_specs)
 
-    training_risk_map = {}
-    if "training_risk" in includes:
-        risk_rows = build_exercise_risk_ranking(session)
-        training_risk_map = {row["id"]: row for row in risk_rows}
-        recommendation_filter = (filters or {}).get("recommendation")
-        if recommendation_filter:
-            expected = (
-                recommendation_filter.get("eq")
-                if isinstance(recommendation_filter, dict)
-                else recommendation_filter
-            )
-            records = [
-                exercise
-                for exercise in records
-                if training_risk_map.get(exercise.id, {}).get("recommendation") == expected
-            ]
-        custom_sort = (args.get("sort") or [])
-        if custom_sort:
-            field = custom_sort[0].get("field")
-            reverse = custom_sort[0].get("direction", "asc") == "desc"
-            if field in {
-                "training_risk_7d",
-                "training_risk_14d",
-                "suitability_score",
-                "max_tissue_risk_7d",
-            }:
-                field_map = {
-                    "training_risk_7d": "weighted_risk_7d",
-                    "training_risk_14d": "weighted_risk_14d",
-                    "suitability_score": "suitability_score",
-                    "max_tissue_risk_7d": "max_tissue_risk_7d",
-                }
-                sort_key = field_map[field]
-                records.sort(
-                    key=lambda exercise: training_risk_map.get(exercise.id, {}).get(sort_key, 0),
-                    reverse=reverse,
-                )
-
     results = []
     for ex in records:
         d = _build_exercise_detail(ex, session)
@@ -738,8 +676,6 @@ def handle_get_exercises(args: dict, session: Session) -> dict:
             d["history"] = _include_exercise_history(ex, session)
         if "stats" in includes:
             d["stats"] = _include_exercise_stats(ex, session)
-        if "training_risk" in includes:
-            d["training_risk"] = training_risk_map.get(ex.id)
         results.append(d)
 
     return getter_response(
@@ -1026,7 +962,7 @@ GET_TISSUES_DEF = {
         "name": "get_tissues",
         "description": (
             "Get tissue records. Include readiness, volume, "
-            "current_condition, tree, or history. "
+            "tree, or history. "
             "Use readiness to check what is ready to train."
         ),
         "parameters": {
@@ -1045,7 +981,6 @@ GET_TISSUES_DEF = {
                         "type": "string",
                         "enum": [
                             "readiness",
-                            "current_condition",
                             "volume_7d",
                             "history",
                         ],
@@ -1151,11 +1086,6 @@ def handle_get_tissues(args: dict, session: Session) -> dict:
         readiness_list = _compute_tissue_readiness(session)
         readiness_map = {r["tissue_name"]: r for r in readiness_list}
 
-    conditions_map = {}
-    if "current_condition" in includes:
-        for c in get_all_current_conditions(session):
-            conditions_map[c.tissue_id] = c
-
     results = []
     for t in filtered:
         d: dict = {
@@ -1174,18 +1104,6 @@ def handle_get_tissues(args: dict, session: Session) -> dict:
                 "hours_since": r.get("hours_since"),
                 "effective_recovery_hours": r.get(
                     "effective_recovery_hours", t.recovery_hours
-                ),
-            }
-        if "current_condition" in includes:
-            cond = conditions_map.get(t.id)
-            d["current_condition"] = {
-                "status": cond.status if cond else "healthy",
-                "severity": cond.severity if cond else 0,
-                "max_loading_factor": (
-                    cond.max_loading_factor if cond else None
-                ),
-                "rehab_protocol": (
-                    cond.rehab_protocol if cond else None
                 ),
             }
         results.append(d)
@@ -1305,270 +1223,7 @@ def handle_set_tissues(args: dict, session: Session) -> dict:
     )
 
 
-# =====================================================================
-#  Tissue Conditions
-# =====================================================================
 
-GET_TISSUE_CONDITIONS_DEF = {
-    "type": "function",
-    "function": {
-        "name": "get_tissue_conditions",
-        "description": (
-            "Get tissue condition records. Filter by tissue name "
-            "or status. Returns condition history or just current."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "filters": {
-                    "type": "object",
-                    "description": (
-                        "tissue_name({eq,fuzzy}), status({eq,in}), "
-                        "tissue_id({eq})."
-                    ),
-                },
-                "include": {
-                    "type": "array",
-                    "items": {
-                        "type": "string",
-                        "enum": ["current", "history"],
-                    },
-                    "default": ["current"],
-                },
-                "limit": {"type": "integer", "default": 10},
-            },
-        },
-    },
-}
-
-SET_TISSUE_CONDITIONS_DEF = {
-    "type": "function",
-    "function": {
-        "name": "set_tissue_conditions",
-        "description": (
-            "Log a tissue condition. Append-only: always creates "
-            "a new record. Use when the user reports pain, "
-            "tenderness, injury, or recovery status."
-        ),
-        "parameters": {
-            "type": "object",
-            "required": ["changes"],
-            "properties": {
-                "changes": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "required": ["operation"],
-                        "properties": {
-                            "operation": {
-                                "type": "string",
-                                "enum": ["create"],
-                            },
-                            "set": {
-                                "type": "object",
-                                "required": [
-                                    "tissue_name",
-                                    "status",
-                                    "severity",
-                                ],
-                                "properties": {
-                                    "tissue_name": {
-                                        "type": "string",
-                                    },
-                                    "tissue_id": {
-                                        "type": "integer",
-                                    },
-                                    "status": {
-                                        "type": "string",
-                                        "enum": [
-                                            "healthy",
-                                            "tender",
-                                            "injured",
-                                            "rehabbing",
-                                        ],
-                                    },
-                                    "severity": {
-                                        "type": "integer",
-                                        "description": "0-4",
-                                    },
-                                    "max_loading_factor": {
-                                        "type": "number",
-                                    },
-                                    "recovery_hours_override": {
-                                        "type": "number",
-                                    },
-                                    "rehab_protocol": {
-                                        "type": "string",
-                                    },
-                                    "notes": {"type": "string"},
-                                    "created_at": {
-                                        "type": "string",
-                                        "description": (
-                                            "ISO 8601 date or datetime to "
-                                            "backdate the record "
-                                            "(e.g. '2026-02-05' or "
-                                            "'2026-02-05T00:00:00'). "
-                                            "Defaults to now."
-                                        ),
-                                    },
-                                },
-                            },
-                        },
-                    },
-                },
-            },
-        },
-    },
-}
-
-
-def handle_get_tissue_conditions(
-    args: dict, session: Session
-) -> dict:
-    filters = args.get("filters") or {}
-    includes = args.get("include", ["current"])
-    limit = args.get("limit", 10)
-
-    # Resolve tissue
-    tissue = None
-    tissue_name = filters.get("tissue_name")
-    tissue_id = filters.get("tissue_id")
-    if isinstance(tissue_name, dict):
-        tn = tissue_name.get("fuzzy") or tissue_name.get("eq")
-        if tn:
-            tissue = _find_tissue_by_name(tn, session)
-    elif isinstance(tissue_name, str):
-        tissue = _find_tissue_by_name(tissue_name, session)
-    elif isinstance(tissue_id, dict) and "eq" in tissue_id:
-        tissue = session.get(Tissue, tissue_id["eq"])
-    elif isinstance(tissue_id, int):
-        tissue = session.get(Tissue, tissue_id)
-
-    if "current" in includes and not tissue:
-        # Return current conditions for all tissues
-        conditions = get_all_current_conditions(session)
-        results = []
-        for c in conditions:
-            t = session.get(Tissue, c.tissue_id)
-            results.append({
-                "tissue_name": t.name if t else f"id:{c.tissue_id}",
-                "tissue_id": c.tissue_id,
-                "status": c.status,
-                "severity": c.severity,
-                "max_loading_factor": c.max_loading_factor,
-                "recovery_hours_override": c.recovery_hours_override,
-                "rehab_protocol": c.rehab_protocol,
-                "notes": c.notes,
-                "updated_at": (
-                    c.updated_at.isoformat() if c.updated_at else None
-                ),
-            })
-        return getter_response(
-            "tissue_conditions", results, filters_applied=filters
-        )
-
-    if not tissue:
-        return error_response(
-            "tissue_conditions",
-            "Tissue not found. Provide tissue_name or tissue_id.",
-        )
-
-    stmt = (
-        select(TissueCondition)
-        .where(TissueCondition.tissue_id == tissue.id)
-        .order_by(col(TissueCondition.updated_at).desc())
-        .limit(limit)
-    )
-    conditions = list(session.exec(stmt).all())
-    results = [
-        {
-            "tissue_name": tissue.name,
-            "tissue_id": tissue.id,
-            "status": c.status,
-            "severity": c.severity,
-            "max_loading_factor": c.max_loading_factor,
-            "recovery_hours_override": c.recovery_hours_override,
-            "rehab_protocol": c.rehab_protocol,
-            "notes": c.notes,
-            "updated_at": (
-                c.updated_at.isoformat() if c.updated_at else None
-            ),
-        }
-        for c in conditions
-    ]
-    return getter_response(
-        "tissue_conditions", results, filters_applied=filters
-    )
-
-
-def handle_set_tissue_conditions(
-    args: dict, session: Session
-) -> dict:
-    results = []
-    created = 0
-    for change in args.get("changes", []):
-        set_fields = change.get("set", {})
-        # Resolve tissue
-        tissue = None
-        if set_fields.get("tissue_id"):
-            tissue = session.get(Tissue, set_fields["tissue_id"])
-        elif set_fields.get("tissue_name"):
-            tissue = _find_tissue_by_name(
-                set_fields["tissue_name"], session
-            )
-        if not tissue:
-            return error_response(
-                "tissue_conditions",
-                f"Tissue '{set_fields.get('tissue_name', '')}' not found",
-            )
-        recorded_at_str = set_fields.get("created_at")
-        if recorded_at_str:
-            try:
-                recorded_at = datetime.fromisoformat(recorded_at_str)
-                if recorded_at.tzinfo is None:
-                    recorded_at = recorded_at.replace(tzinfo=UTC)
-            except ValueError:
-                return error_response(
-                    "tissue_conditions",
-                    f"Invalid recorded_at value: '{recorded_at_str}'. "
-                    "Use ISO 8601 format, e.g. '2026-02-05' or "
-                    "'2026-02-05T12:00:00'.",
-                )
-        else:
-            recorded_at = datetime.now(UTC)
-        condition = TissueCondition(
-            tissue_id=tissue.id,
-            status=set_fields["status"],
-            severity=set_fields.get("severity", 0),
-            max_loading_factor=set_fields.get("max_loading_factor"),
-            recovery_hours_override=set_fields.get(
-                "recovery_hours_override"
-            ),
-            rehab_protocol=set_fields.get("rehab_protocol"),
-            notes=set_fields.get("notes"),
-            updated_at=recorded_at,
-        )
-        session.add(condition)
-        session.flush()
-        results.append({
-            "tissue_name": tissue.name,
-            "status": condition.status,
-            "severity": condition.severity,
-            "created_at": condition.updated_at.isoformat(),
-        })
-        created += 1
-
-    session.commit()
-    return setter_response(
-        "tissue_conditions", "create", results,
-        matched_count=created,
-        created_count=created,
-    )
-
-
-# =====================================================================
-#  Workout Sessions
-# =====================================================================
 
 GET_WORKOUT_SESSIONS_DEF = {
     "type": "function",
@@ -1610,7 +1265,7 @@ SET_WORKOUT_SESSIONS_DEF = {
         "description": (
             "Record COMPLETED sets in an active workout. Use ONLY for logging "
             "sets that the user has actually performed (reps, weight, RPE). "
-            "Do NOT use to add, remove, or reorder planned exercises — "
+            "Do NOT use to add, remove, or reorder planned exercises ΓÇö "
             "use modify_workout_plan for that instead. "
             "Add sets via the sets relation: mode=append to add new sets, "
             "mode=replace to overwrite all sets for a session."
@@ -1716,6 +1371,7 @@ SET_WORKOUT_SESSIONS_DEF = {
         },
     },
 }
+
 
 
 def _compute_rep_completion(
@@ -2251,30 +1907,9 @@ def get_workout_context(session: Session) -> dict[str, str]:
         else "  (no routine set)"
     )
 
-    conditions = get_all_current_conditions(session)
-    condition_lines = []
-    for c in conditions:
-        if c.status != "healthy":
-            tissue = session.get(Tissue, c.tissue_id)
-            name = (
-                tissue.display_name if tissue else f"id:{c.tissue_id}"
-            )
-            parts = f"  - {name}: {c.status} (severity {c.severity}"
-            if c.max_loading_factor is not None:
-                parts += f", max_load={c.max_loading_factor}"
-            if c.rehab_protocol:
-                parts += f", rehab: {c.rehab_protocol}"
-            parts += ")"
-            condition_lines.append(parts)
-    conditions_text = (
-        "\n".join(condition_lines) if condition_lines
-        else "  All tissues healthy."
-    )
-
     return {
         "exercise_list": exercise_list,
         "routine_summary": routine_summary,
-        "conditions_text": conditions_text,
     }
 
 
@@ -2309,7 +1944,7 @@ GET_WORKOUT_PLAN_DEF = {
 def handle_get_workout_plan(args: dict, session: "Session") -> dict:
     from datetime import date as date_type
 
-    from app.planner import get_saved_plan, suggest_today
+    from app.planner_state import get_saved_plan
 
     as_of = None
     if args.get("as_of"):
@@ -2317,60 +1952,17 @@ def handle_get_workout_plan(args: dict, session: "Session") -> dict:
 
     plan_date = as_of or date_type.today()
 
-    # Check for saved plan first
     saved = get_saved_plan(session, plan_date)
     if saved:
         return _format_saved_plan(saved)
 
-    # No saved plan — generate suggestion
-    result = suggest_today(session, as_of=as_of)
-    groups = result.get("groups") or []
-    if not groups:
-        return {"plan": result.get("message", "No plan available."), "saved": False}
-
-    lines = [
-        "Ranked Workout Categories:",
-        "",
-    ]
-    for group in groups[:4]:
-        lines.extend([
-            f"{group['day_label']}: {round(group['readiness_score'] * 100)}% ready",
-            f"  Regions: {', '.join(group.get('target_regions', []))}",
-            f"  Available: {group.get('available_count', 0)}/{group.get('exercise_count', 0)}",
-            f"  Rationale: {group.get('rationale', '')}",
-        ])
-        if group.get("ready_tomorrow_count"):
-            lines.append(f"  Ready tomorrow: {group['ready_tomorrow_count']}")
-        for ex in group.get("exercises", [])[:4]:
-            status = ex.get("planner_status", "ready")
-            if ex.get("selectable", True):
-                weight_str = f" @ {ex['target_weight']} lb" if ex.get("target_weight") else ""
-                note = f" ({ex['overload_note']})" if ex.get("overload_note") else ""
-                lines.append(
-                    f"    - {ex['exercise_name']}: {ex['target_sets']}x{ex['target_reps']}"
-                    f"{weight_str} [{ex['rep_scheme']}] ({status}){note}"
-                )
-            else:
-                lines.append(
-                    f"    - {ex['exercise_name']}: blocked today ({ex.get('planner_reason', status)})"
-                )
-        lines.append("")
-
-    if result.get("filtered_tissues"):
-        filtered_labels = [
-            f"{item['target_label']} ({item['reason']})"
-            for item in result["filtered_tissues"]
-        ]
-        lines.extend([
-            "",
-            "Filtered today:",
-            "  - " + ", ".join(filtered_labels),
-        ])
-
-    lines.append("")
-    lines.append("This plan is not saved yet. The user can save it from the Training page.")
-
-    return {"plan": "\n".join(lines), "saved": False}
+    return {
+        "plan": (
+            "No saved plan for this date. The user can start a workout from the "
+            "Training page by picking exercises from the weekly menu."
+        ),
+        "saved": False,
+    }
 
 
 def _format_saved_plan(saved: dict) -> dict:
@@ -2476,7 +2068,7 @@ MODIFY_WORKOUT_PLAN_DEF = {
 def handle_modify_workout_plan(args: dict, session: "Session") -> dict:
     from datetime import date as date_type
 
-    from app.planner import add_exercises_to_plan, remove_exercises_from_plan
+    from app.planner_state import add_exercises_to_plan, remove_exercises_from_plan
 
     as_of = None
     if args.get("as_of"):
@@ -2510,7 +2102,6 @@ def handle_modify_workout_plan(args: dict, session: "Session") -> dict:
 WORKOUT_TOOL_DEFINITIONS = [
     GET_EXERCISES_DEF, SET_EXERCISES_DEF,
     GET_TISSUES_DEF, SET_TISSUES_DEF,
-    GET_TISSUE_CONDITIONS_DEF, SET_TISSUE_CONDITIONS_DEF,
     GET_WORKOUT_SESSIONS_DEF, SET_WORKOUT_SESSIONS_DEF,
     GET_WORKOUTS_DEF, SET_WORKOUTS_DEF,
     GET_WORKOUT_PLAN_DEF, MODIFY_WORKOUT_PLAN_DEF,
@@ -2521,8 +2112,6 @@ WORKOUT_TOOL_HANDLERS = {
     "set_exercises": handle_set_exercises,
     "get_tissues": handle_get_tissues,
     "set_tissues": handle_set_tissues,
-    "get_tissue_conditions": handle_get_tissue_conditions,
-    "set_tissue_conditions": handle_set_tissue_conditions,
     "get_workout_sessions": handle_get_workout_sessions,
     "set_workout_sessions": handle_set_workout_sessions,
     "get_workouts": handle_get_workouts,

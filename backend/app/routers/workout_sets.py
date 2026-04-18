@@ -11,15 +11,13 @@ from sqlmodel import Session, func, select
 from app.auth import get_current_user
 from app.database import get_session
 from app.exercise_history import REP_SCHEME_VERSION, empty_scheme_history, get_exercise_scheme_history_map
+from app.exercise_laterality import default_performed_side
 from app.models import (
     Exercise,
     ProgramDayExercise,
-    TrackedTissue,
     WorkoutSession,
     WorkoutSet,
-    WorkoutSetTissueFeedback,
 )
-from app.tracked_tissues import default_performed_side, get_active_rehab_plans_by_tracked_tissue
 
 router = APIRouter(tags=["workout-sets"])
 
@@ -42,7 +40,6 @@ class SetUpdate(BaseModel):
     rep_completion: str | None = None
     notes: str | None = None
     training_mode: Literal["heavy", "volume"] | None = None
-    tissue_feedback: list[SetTissueFeedbackInput] | None = None
 
 
 class SetCreate(BaseModel):
@@ -60,13 +57,6 @@ class SetCreate(BaseModel):
     rep_completion: str | None = None
     notes: str | None = None
     training_mode: Literal["heavy", "volume"] | None = None
-    tissue_feedback: list[SetTissueFeedbackInput] | None = None
-
-
-class SetTissueFeedbackInput(BaseModel):
-    tracked_tissue_id: int
-    pain_0_10: int = 0
-    symptom_note: str | None = None
 
 
 class ProgramDayExerciseUpdate(BaseModel):
@@ -102,14 +92,6 @@ def _set_response(s: WorkoutSet, session: Session) -> dict:
         limit=40,
         exclude_session_ids=[s.session_id] if s.session_id is not None else None,
     ).get(s.exercise_id, empty_scheme_history())
-    feedback_rows = session.exec(
-        select(WorkoutSetTissueFeedback).where(WorkoutSetTissueFeedback.workout_set_id == s.id)
-    ).all()
-    tracked_rows = {
-        row.id: row
-        for row in session.exec(select(TrackedTissue)).all()
-    }
-    active_rehab_plans = get_active_rehab_plans_by_tracked_tissue(session)
     return {
         "id": s.id,
         "session_id": s.session_id,
@@ -128,23 +110,6 @@ def _set_response(s: WorkoutSet, session: Session) -> dict:
         "notes": s.notes,
         "training_mode": s.training_mode,
         "scheme_history": scheme_history,
-        "tissue_feedback": [
-            {
-                "id": row.id,
-                "tracked_tissue_id": row.tracked_tissue_id,
-                "tracked_tissue_display_name": tracked_rows.get(row.tracked_tissue_id).display_name
-                if tracked_rows.get(row.tracked_tissue_id)
-                else "unknown",
-                "pain_0_10": row.pain_0_10,
-                "symptom_note": row.symptom_note,
-                "recorded_at": row.recorded_at,
-                "above_threshold": (
-                    active_rehab_plans.get(row.tracked_tissue_id) is not None
-                    and row.pain_0_10 > active_rehab_plans[row.tracked_tissue_id].pain_monitoring_threshold
-                ),
-            }
-            for row in feedback_rows
-        ],
     }
 
 
@@ -170,29 +135,6 @@ def _normalize_session_set_order(session: Session, session_id: int) -> None:
         session.flush()
 
 
-def _replace_tissue_feedback(
-    *,
-    session: Session,
-    workout_set_id: int,
-    entries: list[SetTissueFeedbackInput],
-) -> None:
-    existing = session.exec(
-        select(WorkoutSetTissueFeedback).where(WorkoutSetTissueFeedback.workout_set_id == workout_set_id)
-    ).all()
-    for row in existing:
-        session.delete(row)
-    session.flush()
-    for entry in entries:
-        session.add(
-            WorkoutSetTissueFeedback(
-                workout_set_id=workout_set_id,
-                tracked_tissue_id=entry.tracked_tissue_id,
-                pain_0_10=entry.pain_0_10,
-                symptom_note=entry.symptom_note,
-            )
-        )
-
-
 # ---------------------------------------------------------------------------
 # Individual workout set endpoints
 # ---------------------------------------------------------------------------
@@ -209,12 +151,7 @@ def update_set(
     if not ws:
         raise HTTPException(status_code=404, detail="Set not found")
     exercise = session.get(Exercise, ws.exercise_id)
-    tissue_feedback = (
-        data.tissue_feedback
-        if "tissue_feedback" in data.model_fields_set
-        else None
-    )
-    updates = data.model_dump(exclude_unset=True, exclude={"tissue_feedback"})
+    updates = data.model_dump(exclude_unset=True)
     _rir_to_rpe(updates)
     if "performed_side" in updates and exercise:
         updates["performed_side"] = default_performed_side(
@@ -232,8 +169,6 @@ def update_set(
     for key, value in updates.items():
         setattr(ws, key, value)
     session.add(ws)
-    if tissue_feedback is not None:
-        _replace_tissue_feedback(session=session, workout_set_id=ws.id, entries=tissue_feedback)
     _normalize_session_set_order(session, ws.session_id)
     session.commit()
     session.refresh(ws)
@@ -301,8 +236,6 @@ def add_set(
     )
     session.add(new_set)
     session.flush()
-    if data.tissue_feedback:
-        _replace_tissue_feedback(session=session, workout_set_id=new_set.id, entries=data.tissue_feedback)
     _normalize_session_set_order(session, session_id)
     session.commit()
     session.refresh(new_set)

@@ -4,6 +4,12 @@ from datetime import date
 
 from sqlmodel import Session, select
 
+from app.exercise_laterality import (
+    default_mapping_laterality_mode,
+    infer_exercise_laterality,
+    seed_exercise_tissue_laterality_modes,
+    tissue_tracking_mode,
+)
 from app.models import (
     Exercise,
     ExerciseTissue,
@@ -22,13 +28,6 @@ from app.tissue_regions import (
     canonicalize_region,
     primary_region_for_tissue,
     regions_for_tissue,
-)
-from app.tracked_tissues import (
-    default_mapping_laterality_mode,
-    infer_exercise_laterality,
-    seed_exercise_tissue_laterality_modes,
-    seed_tracked_tissues,
-    tissue_tracking_mode,
 )
 
 # Flat tissue list: {name: {type, recovery_hours, display_name?}}
@@ -524,7 +523,8 @@ def seed_exercise_laterality_defaults(session: Session) -> None:
 
 
 def seed_tracked_tissue_defaults(session: Session) -> None:
-    seed_tracked_tissues(session)
+    """Deprecated: tracked-tissue subsystem removed. Kept as no-op."""
+    return
 
 
 def seed_tissue_relationship_defaults(session: Session) -> None:

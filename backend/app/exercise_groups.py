@@ -16,8 +16,18 @@ from sqlmodel import Session, func, select
 
 from app.config import user_today
 from app.models import Exercise, ExerciseTissue, Tissue, WorkoutSession, WorkoutSet
-from app.planner_groups import SIGNIFICANT_GROUP_LOAD, significant_mapping_load
 from app.tissue_regions import canonicalize_region
+
+SIGNIFICANT_GROUP_LOAD = 0.3
+
+
+def significant_mapping_load(mapping: dict) -> float:
+    return max(
+        float(mapping.get("loading_factor") or 0.0),
+        float(mapping.get("routing_factor") or 0.0),
+        float(mapping.get("joint_strain_factor") or 0.0),
+        float(mapping.get("tendon_strain_factor") or 0.0),
+    )
 
 # ---------------------------------------------------------------------------
 # Group centroids — each group is an ideal region-weight vector.
