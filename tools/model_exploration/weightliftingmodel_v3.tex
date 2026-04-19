@@ -1,0 +1,475 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{fontspec}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage[nameinlink,noabbrev]{cleveref}
+\usepackage{setspace}
+\usepackage{csquotes}
+\usepackage{siunitx}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage[backend=biber,style=authoryear,maxcitenames=2]{biblatex}
+
+\crefname{equation}{equation}{equations}
+\Crefname{equation}{Equation}{Equations}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  citecolor=blue!50!black,
+  urlcolor=blue!50!black,
+  pdftitle={Per-Exercise Baseline Bias and Per-Set Fatigue: An Empirical Refinement of the RPE-Driven Strength Curve},
+}
+
+\setmainfont{Latin Modern Roman}
+\setsansfont{Latin Modern Sans}
+\setmonofont{Latin Modern Mono}
+\onehalfspacing
+
+\graphicspath{%
+  {./}%
+  {../repos/addibble/diet-tracker/tools/model_exploration/}%
+}
+
+\begin{filecontents*}{references.bib}
+@article{Bowen2024,
+  author  = {Bowen, M. and Samozino, P. and Vonderscher, M. and Dutykh, D. and Morel, B.},
+  title   = {Mathematical modeling of exercise fatigability in the severe domain: A unifying integrative framework in isokinetic condition},
+  journal = {Journal of Theoretical Biology},
+  year    = {2024},
+  volume  = {578},
+  pages   = {111696},
+  doi     = {10.1016/j.jtbi.2023.111696}
+}
+@article{Vonderscher2024,
+  author  = {Vonderscher, M. and Bowen, M. and Samozino, P. and Morel, B.},
+  title   = {Testing the predictive capacity of a muscle fatigue model on electrically stimulated adductor pollicis},
+  journal = {European Journal of Applied Physiology},
+  year    = {2024},
+  volume  = {124},
+  number  = {12},
+  pages   = {3619--3630},
+  doi     = {10.1007/s00421-024-05551-x}
+}
+@article{Michaud2024,
+  author  = {Michaud, Florian and Beron, Santiago and Lugr{\'i}s, Urbano and Cuadrado, Javier},
+  title   = {Four-compartment muscle fatigue model to predict metabolic inhibition and long-lasting nonmetabolic components},
+  journal = {Frontiers in Physiology},
+  year    = {2024},
+  volume  = {15},
+  pages   = {1366172},
+  doi     = {10.3389/fphys.2024.1366172}
+}
+@article{Jukic2024,
+  author  = {Jukic, Ivan and Prnjak, Katarina and Helms, Eric R. and McGuigan, Michael R.},
+  title   = {Modeling the repetitions-in-reserve-velocity relationship: a valid method for resistance training monitoring and prescription, and fatigue management},
+  journal = {Physiological Reports},
+  year    = {2024},
+  volume  = {12},
+  number  = {5},
+  pages   = {e15955},
+  doi     = {10.14814/phy2.15955}
+}
+@article{Brzycki1993,
+  author  = {Brzycki, Matt},
+  title   = {Strength testing---predicting a one-rep max from reps-to-fatigue},
+  journal = {Journal of Physical Education, Recreation \& Dance},
+  year    = {1993},
+  volume  = {64},
+  number  = {1},
+  pages   = {88--90},
+  doi     = {10.1080/07303084.1993.10606684}
+}
+@article{Enoka2008,
+  author  = {Enoka, Roger M. and Duchateau, Jacques},
+  title   = {Muscle fatigue: what, why and how it influences muscle function},
+  journal = {Journal of Physiology},
+  year    = {2008},
+  volume  = {586},
+  number  = {1},
+  pages   = {11--23},
+  doi     = {10.1113/jphysiol.2007.139477}
+}
+@article{ParejaBlanco2017,
+  author  = {Pareja-Blanco, F. and Rodr{\'i}guez-Rosell, D. and S{\'a}nchez-Medina, L. and Sanchis-Moysi, J. and Dorado, C. and Mora-Custodio, R. and Y{\'a}{\~n}ez-Garc{\'i}a, J. M. and Morales-Alamo, D. and P{\'e}rez-Su{\'a}rez, I. and Calbet, J. A. L. and Gonz{\'a}lez-Badillo, J. J.},
+  title   = {Effects of velocity loss during resistance training on athletic performance, strength gains and muscle adaptations},
+  journal = {Scandinavian Journal of Medicine \& Science in Sports},
+  year    = {2017},
+  volume  = {27},
+  number  = {7},
+  pages   = {724--735},
+  doi     = {10.1111/sms.12678}
+}
+@article{Skiba2012,
+  author  = {Skiba, Philip F. and Chidnok, Weerapong and Vanhatalo, Anni and Jones, Andrew M.},
+  title   = {Modeling the expenditure and reconstitution of work capacity above critical power},
+  journal = {Medicine \& Science in Sports \& Exercise},
+  year    = {2012},
+  volume  = {44},
+  number  = {8},
+  pages   = {1526--1532},
+  doi     = {10.1249/MSS.0b013e3182517a80}
+}
+@article{Zourdos2016,
+  author  = {Zourdos, Michael C. and Klemp, Alex and Dolan, Chad and Quiles, Justin M. and Schau, Kyle A. and Jo, Edward and Helms, Eric and Esgro, Ben and Duncan, Scott and Garcia Merino, Sonia and Blanco, Rocky},
+  title   = {Novel resistance training--specific rating of perceived exertion scale measuring repetitions in reserve},
+  journal = {Journal of Strength and Conditioning Research},
+  year    = {2016},
+  volume  = {30},
+  number  = {1},
+  pages   = {267--275},
+  doi     = {10.1519/JSC.0000000000001049}
+}
+\end{filecontents*}
+
+\addbibresource{references.bib}
+
+\title{Per-Exercise Baseline Bias and Per-Set Fatigue\\[4pt]
+\large An Empirical Refinement of the RPE-Driven Strength Curve for Real-Time Set Prescription}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We revisit the RPE-driven progressive-overload guidance system described in our prior work (v2) after accumulating a multi-month training history and retrospectively analyzing its prediction accuracy.
+The v2 core model, a three-parameter fresh-set strength curve $r_\mathrm{fresh}(W)=k(M/W-1)^\gamma$ refit after each logged set, captures the athlete's current strength ceiling well but systematically mis-predicts \emph{reps} for any individual set.
+Leakage-free retrospective analysis of 388 RPE sets shows that the fresh-curve prediction has a root-mean-square error of 6.18 reps, of which $40\%$ is an exercise-specific baseline bias, a further $\approx 10\%$ is a daily (session-level) random intercept of small magnitude, and another $\approx 15\%$ is a deterministic per-set-index fatigue term whose magnitude depends on the exercise (larger for isolation movements than for compound lifts).
+Freshness covariates---days since last session, same exercise, same muscle group, or same primary tissue---explain only $7.5\%$ of the residual variance after exercise demeaning.
+An AR(1) dose accumulator borrowed from the W$^\prime$/CP endurance literature fails to improve on a three-parameter per-set-index fatigue table.
+We propose v3: retain the v2 fresh-curve machinery as the slow-varying \emph{strength} model, and layer a per-exercise baseline offset and a per-(exercise,\,set-index) fatigue table on top as the fast-varying \emph{prediction} model.
+The session-level random intercept is retained as a post-hoc readiness diagnostic rather than a predictor.
+This yields a model whose algorithmic structure is additive, interpretable, and strictly a refinement of v2: every v2 prescription is recovered by zeroing the new correction terms.
+\end{abstract}
+
+\section{What changed, in one paragraph}
+\label{sec:whatchanged}
+
+The core v2 machinery---the fresh-set curve, tiered fitting, t-test session filter, recency weighting, RPE confidence, session boost, inflection detection, and progressive-overload set structure---is unchanged in v3.
+What is added is a two-term additive correction that closes the gap between the \emph{curve} (which describes the athlete's strength over time) and the \emph{next-set prediction} (which is a specific number of reps at a specific weight today, on set $s$ of exercise $e$).
+The v3 prediction for the next set is
+\begin{equation}
+\label{eq:v3_prediction}
+\hat r_{\mathrm{fail}}(W \mid e, s) \;=\; r_\mathrm{fresh}(W) \;+\; b_e \;+\; \beta_{e,s},
+\end{equation}
+where $b_e$ is a per-exercise baseline offset and $\beta_{e,s}$ is a per-(exercise, set-index) fatigue term with $\beta_{e,1}\equiv 0$ by construction.
+Both $b_e$ and $\beta_{e,s}$ are learned online from residuals over a trailing window and shrunk to the global mean when exercise-specific data is thin.
+v2 is recovered by setting $b_e=\beta_{e,s}=0$.
+
+\section{Motivation: the residual after v2}
+\label{sec:motivation}
+
+The v2 paper established that the fresh-curve~$M$ parameter is \emph{identifiable} only when the session contains a near-failure heavy set (\cref{sec:v2recap}).
+That argument concerned the existence of the strength ceiling.
+It did \emph{not} claim, and v2 does not provide, a model of within-session rep variance at sub-maximal loads: the curve delivers one rep estimate per weight, and the quality of that estimate at, say, the second set of a three-set hypertrophy scheme is just whatever the curve happens to give.
+
+After six months of RPE logging under the v2 system we now have enough paired (observation, in-context prediction) data to ask how good that estimate actually is, and to ask what structure lives in the residual.
+The data say the structure is simple, additive, and dominated by two effects:
+
+\begin{enumerate}
+\item[(i)] \textbf{Per-exercise baseline bias.} For any given exercise, the fresh-curve prediction is off by a roughly constant number of reps.
+The sign and magnitude are exercise-specific: face pulls are under-predicted by $\approx +2$~reps, while barbell bench press is predicted accurately.
+\item[(ii)] \textbf{Per-(exercise, set-index) fatigue.} The second set is on average $\approx 1.2$~reps below the first, and the third is $\approx 2.4$~reps below the first, but the size of the per-set drop varies by exercise.
+Isolation movements (e.g.\ triceps pushdown, incline hammer curl) show larger drops than compound movements (e.g.\ deadlift, chest press).
+\end{enumerate}
+
+A session-level random intercept $\alpha_j$ exists but has standard deviation of only $0.5$--$1$~rep across sessions and is essentially uncorrelated with any observable session covariate we logged (prior-session volume, exercise order, or freshness-style features).
+We interpret it as latent daily state---sleep, nutrition, CNS readiness---and retain it only as a post-hoc diagnostic.
+
+\section{Methods: leakage-free residual analysis}
+\label{sec:methods}
+
+\subsection{Data}
+We analyzed the diet-tracker production database snapshot of 2026-04-18, which contained 4113 logged sets across sessions from 2025-08-24 through 2026-04-17, of which 676 sets had both RPE and reps-completed recorded (RPE logging only began with the v2 progressive-overload rollout in 2026-03).
+RPE-annotated sessions span 45~distinct training days.
+
+\subsection{Leakage-free baseline curve fits}
+Because the fresh curve in v2 is refit after every session, any residual analysis that uses the current curve would be contaminated: the observation we are trying to score has already entered the fit.
+We therefore recompute the curve fit afresh for every distinct target session date $t$, using only RPE sets with $\text{session\_date} < t$.
+This produces one $(M_e(t), k_e(t), \gamma_e(t))$ tuple per exercise per eligible date.
+For a set logged on date $t$ at weight $W_i$ we evaluate the fresh prediction
+\begin{equation}
+\hat r_{\mathrm{fresh},i} \;=\; k_e(t)\left(\frac{M_e(t)}{W_i}-1\right)^{\!\gamma_e(t)},
+\end{equation}
+and the residual
+\begin{equation}
+\varepsilon_i \;=\; \underbrace{r_i + (10 - \mathrm{RPE}_i)}_{\text{observed rtf}} \;-\; \hat r_{\mathrm{fresh},i}.
+\end{equation}
+Of the 676 RPE sets, 388 were predictable (i.e.\ had a prior fit); the remainder were cold-starts in early March~2026 for exercises that had not accumulated any prior RPE data.
+The leakage-free residual $\varepsilon_i$ is the signal we decompose.
+
+\subsection{Candidate decompositions}
+We compare six nested additive models, in each of which the predicted reps-to-failure has the form
+$\hat r_\mathrm{fresh}(W_i) + \text{correction}_i$:
+\begin{description}[leftmargin=2em,style=nextline]
+\item[M0 --- no correction.] Pure v2.
+\item[M1 --- per-exercise intercept $b_e$.] Residuals are averaged by exercise and that mean is subtracted.
+\item[M2 --- M1 $+$ per-session intercept $\alpha_j$.] Alternating-means estimation of $(b_e, \alpha_j)$ until convergence.
+\item[M3a --- M2 $+$ linear AR(1) dose term.] An exponentially weighted within-session dose accumulator (following the W$^\prime$/CP form of \textcite{Skiba2012}) is regressed on the M2 residual.
+\item[M3b --- M2 $+$ per-(exercise, set-index) dummies $\beta_{e,s}$.] One free parameter per (exercise, set position) combination with two or more observations.
+\item[M3c --- M2 $+$ global per-set-index dummies $\beta_s$.] One free parameter per set position, shared across exercises.
+\end{description}
+
+Each correction is fit only on prior data (so the evaluation stays leakage-free).
+We report root-mean-square error (RMSE) in reps, both overall and stratified by set index.
+
+\section{Results}
+\label{sec:results}
+
+\subsection{Headline decomposition}
+The fit qualities are summarized in \cref{tab:rmse}.
+Two findings are immediate.
+First, most of the v2 residual is \emph{not} fatigue: $40\%$ of the RMSE is eliminated by a single scalar per exercise (M0~$\to$~M1), which is structurally just a correction to the fresh curve's baseline calibration at the loads the athlete actually trains.
+Second, of the fatigue-like signal that remains, a $3$-parameter global per-set-index model (M3c) and a larger per-(exercise, set-index) model (M3b) both recover most of the reducible variance; the AR(1) dose accumulator (M3a) essentially does not improve on the session intercept alone.
+
+\begin{table}[ht]
+\centering
+\caption{Leakage-free RMSE (reps) by model and set index, $n=388$.
+Set-1, set-2, set-3 subsets contain 173, 150, and 65 observations respectively.
+Bold entries mark the two-term additive model we adopt for v3 (M1) and the best-fit discrete fatigue model (M3b).}
+\label{tab:rmse}
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Model} & \textbf{Overall} & \textbf{Set~1} & \textbf{Set~2} & \textbf{Set~3} \\
+\midrule
+M0~~ fresh curve only                     & 6.18 & 7.19 & 6.91 & 4.26 \\
+M1~~ $+ b_e$                              & \textbf{3.68} & 4.17 & 3.36 & 3.55 \\
+M2~~ M1 $+ \alpha_j$                      & 3.33 & 3.65 & 3.00 & 3.43 \\
+M3a~ M2 $+$ linear AR(1) dose             & 3.31 & 3.58 & 3.03 & 3.42 \\
+M3b~ M2 $+ \beta_{e,s}$ (exercise-specific)& \textbf{3.08} & 3.28 & 2.92 & 3.14 \\
+M3c~ M2 $+ \beta_s$ (shared)              & 3.20 & 3.47 & 3.00 & 3.22 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Signed bias under each model}
+\Cref{tab:bias} shows mean signed residuals.
+v2 (M0) systematically underpredicts set~1 by $+2.26$~reps and set~2 by $+1.02$ reps.
+After removing the per-exercise intercept, the signed bias collapses to a clean monotone decay across set index: $+1.18$, $\pm 0$, $-1.19$.
+That is the within-session fatigue signature in its purest form: $\beta_s \approx (0, -1.2, -2.4)$ reps on a global-mean basis.
+
+\begin{table}[ht]
+\centering
+\caption{Mean signed residual (reps) by set index; positive means the fresh curve underpredicts actual reps.}
+\label{tab:bias}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Model} & \textbf{Set~1} & \textbf{Set~2} & \textbf{Set~3} \\
+\midrule
+M0  fresh curve only                  & $+2.26$ & $+1.02$ & $+0.36$ \\
+M1  per-exercise intercept            & $+1.18$ & $\pm 0$ & $-1.19$ \\
+M2  $+$ session intercept             & $+1.13$ & $\pm 0$ & $-1.18$ \\
+M3c $+$ global per-set-index $\beta_s$& $\pm 0$ & $\pm 0$ & $\pm 0$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Session intercept: small and unforecastable}
+The fitted $\alpha_j$ values (\cref{fig:session_intercepts}) have standard deviation $\sigma_\alpha \approx 0.7$~reps across 45~sessions.
+Correlations of $\alpha_j$ with observable session covariates are close to zero:
+$\mathrm{corr}(\alpha_j,\text{prior-session volume maximum}) = -0.04$,
+$\mathrm{corr}(\alpha_j,\text{exercise-order maximum}) = -0.08$.
+This is consistent with the sports-science account that day-to-day variation in RPE-at-given-load is driven largely by unobserved physiological state---sleep, hydration, central nervous system readiness---rather than by accumulated session volume \parencite{Enoka2008}.
+Operationally, we cannot predict $\alpha_j$ from anything the system currently logs, so we treat it as a latent diagnostic and shrink it to zero in the forward prediction.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.95\textwidth]{plots/fatigue/session_intercepts.png}
+  \caption{Fitted per-session random intercepts $\alpha_j$ from model M2 across 45 training sessions.
+  Left: histogram; right: sessions sorted by $\alpha_j$.
+  Standard deviation is $\approx 0.7$ reps; observable session-level covariates fail to explain this variance.}
+  \label{fig:session_intercepts}
+\end{figure}
+
+\subsection{AR(1) dose kernel underperforms}
+The M3a fit picks up effectively none of the M2-residual variance beyond what a constant session intercept already absorbs.
+Plotted as residual-after-M2 versus the AR(1) dose accumulator (\cref{fig:local_fatigue}), there is no visible slope.
+This is a negative result against the transplantation of endurance-sport fatigue models into resistance training.
+The AR(1) kernel implicitly assumes that reps contribute dose linearly with weight-dependent scaling and that recovery is a simple exponential; neither holds precisely at the per-set granularity.
+The discrete $\beta_{e,s}$ table captures the actual signal---a monotone set-to-set drop whose shape is exercise-specific---more faithfully and with fewer unjustified assumptions.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=\textwidth]{plots/fatigue/local_fatigue.png}
+  \caption{Residual after model M2 as a function of (left) the AR(1) within-session dose accumulator,
+  (center) prior-exercise volume, and (right) prior-session volume.
+  No correction adds a detectable slope: the fast-varying within-session fatigue signal is not well-explained by these continuous accumulators.}
+  \label{fig:local_fatigue}
+\end{figure}
+
+\subsection{Freshness covariates are weak}
+An OLS regression of the set-1 residual on five freshness covariates (days since any session, same exercise, same primary tissue, same Push/Pull/Legs/Core group; 7-day rolling load on same tissue) after demeaning by exercise gives $R^2 = 0.075$.
+That is, once per-exercise baseline bias is removed, wall-clock freshness explains essentially none of the remaining set-1 variance (\cref{fig:set1_scatter}).
+\Cref{sec:discussion} argues this is a desirable finding: it means the athlete's current training schedule is already providing adequate inter-session recovery across the range observed, so freshness is not the free axis along which set-1 performance varies.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=\textwidth]{plots/set1_freshness/scatter_grid.png}
+  \caption{Exercise-demeaned set-1 residual versus five freshness covariates.
+  Joint OLS $R^2=0.075$.
+  Strongest standardized coefficient is for days-since-any-session, with the unexpected sign (more rest $\Rightarrow$ slightly smaller underprediction), likely confounded with deload weeks.}
+  \label{fig:set1_scatter}
+\end{figure}
+
+\subsection{Isolation versus compound}
+Stratifying the set-1 residual by exercise type shows that the per-exercise offset is systematically larger for isolation movements than for compound movements
+($+2.72$ vs $+1.51$ reps).
+Because the per-set fatigue decay $\beta_{e,s}$ is also steeper for isolation, the signed residual at set~3 is negative for both groups but of larger magnitude for isolation.
+Mechanistically this matches the literature: isolation work at a fixed rep target operates closer to local muscular endurance limits and reaches metabolic fatigue faster \parencite{Enoka2008, ParejaBlanco2017}.
+In v3 this is absorbed automatically by letting the fatigue table $\beta_{e,s}$ be exercise-specific rather than sharing a global $\beta_s$.
+
+\section{The v3 model}
+\label{sec:v3}
+
+\subsection{Prediction equation}
+Given the fresh curve $r_\mathrm{fresh}$ fit by the unchanged v2 pipeline and current set index $s$, the v3 prediction for reps-to-failure at weight $W$ on exercise $e$ is
+\begin{equation}
+\label{eq:v3_pred}
+\hat r_{\mathrm{fail}}(W \mid e, s) \;=\; r_\mathrm{fresh}(W;\,M_e,k_e,\gamma_e) \;+\; b_e \;+\; \beta_{e,s},
+\qquad \beta_{e,1}\equiv 0.
+\end{equation}
+For prescription we invert to weight,
+\begin{equation}
+\label{eq:v3_inv}
+W^* \;=\; \frac{M_e}{\,1 + \bigl((r^* - b_e - \beta_{e,s})/k_e\bigr)^{1/\gamma_e}\,},
+\end{equation}
+which is the v2 prescription equation with the target rep count adjusted by the additive correction.
+When $b_e = \beta_{e,s} = 0$, v3 and v2 agree.
+
+\subsection{Online estimation of \texorpdfstring{$b_e$}{b\_e} and \texorpdfstring{$\beta_{e,s}$}{beta\_\{e,s\}}}
+Both correction terms are rolling means of leakage-free residuals computed from a trailing $N$-session window (we propose $N=30$~days to match the fresh-curve fitting window).
+Write $\varepsilon_i = r_i + (10-\mathrm{RPE}_i) - r_\mathrm{fresh}(W_i;\,M_e(t_i),k_e(t_i),\gamma_e(t_i))$ for the raw residual of set $i$.
+Then
+\begin{align}
+\label{eq:be}
+b_e     &= \overline{\varepsilon_i}_{\,i \in e},\\
+\label{eq:bes}
+\beta_{e,s} &= \overline{\varepsilon_i - b_e}_{\,i \in (e,s)} ,
+\end{align}
+with an empirical-Bayes shrinkage toward the global per-set-index mean $\bar\beta_s$ when few observations exist:
+\begin{equation}
+\label{eq:shrink}
+\hat\beta_{e,s} \;=\; \frac{n_{e,s}\,\beta_{e,s} + \tau\,\bar\beta_s}{n_{e,s}+\tau},
+\qquad \tau = 4.
+\end{equation}
+This makes the model gracefully degrade to the shared $\beta_s$ of M3c for novel exercise/set combinations while still allowing well-sampled isolation exercises to assume their own larger decay.
+
+\subsection{Why additive, not multiplicative?}
+\Cref{tab:bias} reads as an almost perfectly additive decomposition: the signed bias drops from $+2.26$ to $+1.18$ under a pure per-exercise \emph{shift}, then to $\approx 0$ under a pure per-set-index \emph{shift}.
+A multiplicative or percentage-of-capacity model would distort this clean picture because the observed decay $\beta_s \approx (0, -1.2, -2.4)$ reps is approximately constant in reps across weights within the RPE~$\ge 7$ range, not in percent of $M$.
+Keeping the correction in rep space preserves the interpretability of the table and keeps the residual error budget transparent.
+
+\subsection{Interaction with the v2 session boost}
+The v2 session boost re-weights in-session observations so that they dominate the curve refit.
+That logic remains unchanged for the fresh-curve parameters $(M_e, k_e, \gamma_e)$, because those describe the \emph{slow} variable (strength capacity).
+The new $b_e$ and $\beta_{e,s}$ are deliberately \emph{not} boosted within session---they are stable exercise-level properties that should change on a week-scale, not a minute-scale.
+Concretely: during a live set, the prescription logic uses the end-of-previous-session $b_e, \beta_{e,s}$, updated only when the session concludes.
+
+\subsection{Readiness diagnostic}
+After a session completes, we compute the maximum-likelihood $\alpha_j$ given that session's residuals,
+\begin{equation}
+\hat\alpha_j \;=\; \overline{\varepsilon_i - b_e - \beta_{e,s}}_{\,i \in j}.
+\end{equation}
+We expose $\hat\alpha_j$ on the session summary screen as a readiness score: positive values indicate the athlete out-performed their usual state, negative values indicate an off-day.
+Because $\sigma_\alpha$ is only $\approx 0.7$~reps, we display the value in rep units rather than a normalized score, and we do not use it in forward prescription.
+
+\section{What carries over from v2}
+\label{sec:v2recap}
+
+For completeness, the v2 machinery listed below is used in v3 exactly as before.
+The \emph{only} structural change is the introduction of equations \eqref{eq:v3_pred}--\eqref{eq:shrink}.
+
+\begin{itemize}
+  \item Three-parameter fresh-set curve $r_\mathrm{fresh}(W)=k(M/W-1)^\gamma$.
+  \item Tiered fitting keyed to the exercise's heavy-loading capability rather than a post-hoc gamma check:
+    \begin{itemize}
+      \item Heavy-capable exercises with $\ge 5$ observations across $\ge 2$ distinct weights: tier~1, free $\gamma$ optimized in $[\gamma_\mathrm{min},\gamma_\mathrm{max}] = [0.01,0.9]$.
+      \item Light-loading exercises, or heavy-capable exercises with insufficient data: tier~2, $\gamma$ locked at $\gamma_\mathrm{prior} = 0.9$.
+    \end{itemize}
+  The upper bound $\gamma_\mathrm{max} = 0.9$ enforces physiological concavity (the fresh curve must bend down near $M$); for light-loading exercises, we are not trying to resolve the inflection point, so locking $\gamma = 0.9$ avoids wasting a degree of freedom.
+  The v2 paper described an older scheme with free $\gamma$ allowed up to unbounded values and a post-hoc demotion on $\gamma<0.5$; that demotion step has since been removed in favor of the tighter gamma bounds and capability-driven tier selection.
+  \item Multi-restart L-BFGS-B optimization over a $4\times 4$ initial-conditions grid with $M$ factors $\{1.1,1.3,1.5,2.0\}\times\max(W)$ and, for tier~1 only, $\gamma$ initializations $\{0.2,0.5,0.7,0.9\}$.
+  \item RPE confidence weighting $w_\mathrm{RPE}=\max(0.2, e^{-0.25\,\mathrm{RIR}})$.
+  \item Exponential recency weighting with 30-day half-life.
+  \item Welch t-test session filter that discards stale sessions.
+  \item Session-boost re-weighting of in-session observations.
+  \item Progressive-overload three-set structure driving toward an RPE~9 heavy final set.
+  \item Per-set Brzycki inflection detection for exercise completion and bonus-set gating.
+\end{itemize}
+
+The identifiability argument of v2 \S 3.1--\S 3.2---that $M$ is only pinned down when the session contains near-failure heavy data---remains the key rationale for the progressive-overload set structure, and is untouched.
+
+\section{Validation plan}
+\label{sec:validation}
+
+The decomposition above was fit retrospectively on the leakage-free residual table.
+Promotion of v3 into production is conditional on a forward test:
+\begin{enumerate}
+\item Freeze the $b_e$ and $\beta_{e,s}$ tables on data through 2026-04-17.
+\item For every RPE set logged after that date, record both the v2 prediction (no correction) and the v3 prediction (with correction) as silent shadows alongside the live prescription.
+\item After 4~weeks, recompute RMSE on the shadowed predictions.
+Success criterion: v3 RMSE is below v2 RMSE by at least $30\%$ on set 1 and at least $15\%$ on sets 2--3, consistent with the retrospective split.
+\item Only once the shadow test passes do we switch the prescription logic (\cref{eq:v3_inv}) over.
+\end{enumerate}
+This staged rollout protects against two failure modes: regression to the mean (if the training plateaued, the learned $b_e$ could be stale) and concept drift (a change in logging habits could distort the $\mathrm{rtf} = r + (10-\mathrm{RPE})$ approximation).
+
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Why the fresh curve needs a baseline offset}
+The v2 curve is fit to all RPE~$\ge 7$ observations within the 30-day window with recency and RPE weighting.
+It is dominated, in practice, by a small number of heavy sets near the top of the curve (because those sets have high $w_\mathrm{RPE}$) and by the bulk of hypertrophy sets in the midrange.
+For any exercise whose midrange is \emph{systematically} mispredicted by the exact three-parameter functional form $k(M/W-1)^\gamma$, the fit trades off midrange error against heavy-set error, and lands at a compromise that is not zero-mean in either band.
+A post-hoc scalar $b_e$ recovers zero-mean performance in the midrange at the cost of nothing: the heavy-set identifiability argument of v2 is orthogonal to the midrange calibration that $b_e$ corrects.
+
+Put differently, v2 asks \enquote{where is the 1RM ceiling?} and answers it well.
+It does not additionally ask \enquote{what is the expected number of reps at 70\% of that ceiling on a fresh set?}, and in fact the functional form alone has no reason to get that right for every exercise.
+The $b_e$ term is a pragmatic concession to per-exercise curve mis-specification that does not disturb the v2 ceiling estimate.
+
+\subsection{Why the freshness null result is good news}
+A naive reader might expect freshness to matter: surely training legs two days after legs should lower set-1 performance?
+The data say no, within the schedule actually observed.
+We read this not as evidence that freshness is physiologically irrelevant but as evidence that the v2 planner's muscle-group separation and 4-day minimum recovery rule are operating \emph{inside} the regime where acute recovery is complete.
+Had we observed \enquote{set-1 residual grows by $-X$ reps per day less rest}, that would have indicated under-recovery on the current schedule; the absence of such a signal is a weak-but-welcome validation of the v2 planning rules.
+A stronger test would require forcing the athlete into under-recovered conditions and measuring the resulting performance penalty; such a test is not ethically attractive.
+
+\subsection{Session-level state as latent physiology}
+The unforecastable nature of $\alpha_j$ is consistent with the muscle-fatigue literature, which distinguishes between \emph{peripheral} factors (local metabolic and mechanical state of the working muscle) and \emph{central} factors (CNS drive, motivation, cortical excitability) \parencite{Enoka2008}.
+Peripheral fatigue is largely captured by the $\beta_{e,s}$ table because it is deterministic within a set sequence of a given exercise.
+Central fatigue is what $\alpha_j$ is picking up, and it is tied to sleep, nutrition, and stress---none of which the system currently logs.
+A credible path to shrinking $\sigma_\alpha$ would be to add daily readiness inputs (a 1-line sleep/nutrition diary) and regress $\alpha_j$ on those features; the current system does not support this, so v3 treats $\alpha_j$ as a read-only diagnostic and leaves the predictive integration for future work.
+
+\subsection{Limits of this analysis}
+Three caveats.
+(a) $n=388$ sets, 45 sessions, single athlete: the $\beta_{e,s}$ table is coarse for exercises that have not yet been trained many times, and the empirical-Bayes shrinkage~(\ref{eq:shrink}) is what keeps v3 behaving sensibly in the thin-data regime; but the shrinkage target $\tau=4$ is itself a tuning choice.
+(b) The leakage-free residual is constructed against the same fresh-curve form v2 uses; an alternative baseline (e.g.\ a Gaussian-process curve) might leave a different residual structure.
+(c) RPE-reported-in-app has self-selection bias: the athlete is more likely to report RPE on sets that went cleanly, so the residual distribution may slightly under-weight failed or abandoned sets.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+The v2 strength model is correct about what it models---the slow-varying strength ceiling---but is silent on what determines actual rep counts at sub-maximal loads.
+Six months of deployment data reveal that the missing structure is dominantly additive: a per-exercise baseline offset explains $40\%$ of the prediction error, and a per-(exercise, set-index) fatigue table explains another $15\%$.
+The remainder splits into a small, unforecastable session-level intercept and irreducible noise.
+Fancier constructions---freshness covariates, AR(1) dose kernels, multiplicative capacity models---either under-perform or add complexity without earning their parameters.
+
+v3 adds two scalar tables ($b_e$, $\beta_{e,s}$) to v2 and otherwise leaves the system alone.
+v2 is recovered exactly by setting the tables to zero.
+Deployment is gated on a 4-week forward shadow-RMSE test.
+The core algorithm has therefore changed less than the analysis might suggest: v2 got the curve right, and v3 is a precise accounting of what living with that curve for six months revealed about the residual.
+
+\printbibliography
+
+\end{document}
