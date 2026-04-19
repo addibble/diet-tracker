@@ -114,19 +114,19 @@ def test_bootstrap_is_idempotent(monkeypatch, tmp_data_root):
 def test_bootstrap_reissues_invite_when_admin_has_no_passkey(
     monkeypatch, tmp_data_root
 ):
-    """Every restart while the admin has no passkey should surface a fresh URL."""
+    """If admin has no passkey and no active invite, a fresh one is minted;
+    if one already exists, no duplicate is created on subsequent starts."""
     monkeypatch.setattr(settings, "admin_email", "admin@example.test")
     bootstrap.run_bootstrap()
     with Session(db_engines.auth_engine()) as db:
         first = db.exec(select(Invite).where(Invite.is_bootstrap)).all()
         assert len(first) == 1
+    # Second restart while the existing invite is still valid — should NOT
+    # mint a new one.
     bootstrap.run_bootstrap()
     with Session(db_engines.auth_engine()) as db:
         all_invites = db.exec(select(Invite).where(Invite.is_bootstrap)).all()
-        # Two invites total: the first is now expired, the second is active.
-        assert len(all_invites) == 2
-        active = [i for i in all_invites if i.consumed_at is None and i.expires_at > bootstrap._now()]
-        assert len(active) == 1
+        assert len(all_invites) == 1
 
 
 def test_bootstrap_skips_when_admin_email_missing(monkeypatch, tmp_data_root):

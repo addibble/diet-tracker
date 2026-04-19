@@ -157,30 +157,37 @@ def run_bootstrap() -> None:
                 )
             db.commit()
 
-        # Admin exists but no passkey registered → always mint a fresh
-        # single-use invite and log the URL so the operator can complete
-        # enrollment. Any prior unused bootstrap invite is invalidated so we
-        # don't accumulate dangling tokens.
+        # Admin exists but no passkey registered → mint a single bootstrap
+        # invite *if one doesn't already exist*. If there's already an active
+        # unconsumed bootstrap invite, just note it in the log — we can't
+        # re-emit the URL since we only stored the hash. Operator can call
+        # the admin API (or redeploy after bumping INVITE_TTL) to get a new
+        # one if the original was lost.
         if admin_passkeys == 0:
             now = _now()
-            prior = db.exec(
+            active = db.exec(
                 select(Invite)
                 .where(Invite.is_bootstrap == True)  # noqa: E712
                 .where(Invite.consumed_at.is_(None))
                 .where(Invite.expires_at > now)
-            ).all()
-            for p in prior:
-                p.expires_at = now
-                db.add(p)
-            if prior:
-                db.commit()
-            token, _ = _make_invite(
-                db,
-                created_by=None,
-                is_bootstrap=True,
-                email_hint=admin.email,
-            )
-            _emit_invite_url(token, reused=False)
+                .order_by(Invite.created_at.desc())
+            ).first()
+            if active is None:
+                token, _ = _make_invite(
+                    db,
+                    created_by=None,
+                    is_bootstrap=True,
+                    email_hint=admin.email,
+                )
+                _emit_invite_url(token, reused=False)
+            else:
+                logger.warning(
+                    "Admin %s has no passkey; an active bootstrap invite "
+                    "already exists (expires %s). POST /api/admin/invites to "
+                    "mint a replacement if the URL was lost.",
+                    admin.email,
+                    active.expires_at.isoformat(),
+                )
         else:
             # Mark bootstrap as complete once the admin has at least one key.
             if db.get(AuthState, BOOTSTRAP_FLAG) is None:
