@@ -1567,6 +1567,7 @@ def fatigue_profile(
     session: Session,
     *,
     days: int = 30,
+    session_date: date | None = None,
 ) -> dict:
     """Return a reps-by-set-index fatigue decomposition for one exercise.
 
@@ -1578,7 +1579,8 @@ def fatigue_profile(
     Algorithm:
       * Fit the current fresh curve (same `fit_curve` the prescription uses).
       * Walk the trailing ``days`` window of RPE-qualifying sets grouped by
-        session. The most recent session becomes ``session_observations``.
+        session. The anchor session (``session_date`` if provided, else the
+        most recent) becomes ``session_observations``.
       * For each remaining session, bucket sets by ``set_order`` and compute
         the residual ``rtf - r_fresh(W)`` per bucket.
       * Average residuals per set index → ``beta_per_set``. When a set index
@@ -1627,12 +1629,17 @@ def fatigue_profile(
 
     ordered_dates = sorted(sessions_by_date.keys(), reverse=True)
 
-    # Most recent session → session_observations (what the user sees as "today"
-    # when the UI loads mid-session; falls back to the most recent completed
-    # session when nothing has been logged yet).
-    session_observations: list[dict] = []
-    if ordered_dates:
+    # Anchor session → session_observations. If the caller passed a specific
+    # session_date, use that; otherwise the most-recent session. Historical
+    # residuals (β) always exclude the anchor.
+    anchor_date: date | None = None
+    if session_date is not None and session_date in sessions_by_date:
+        anchor_date = session_date
+    elif ordered_dates:
         anchor_date = ordered_dates[0]
+
+    session_observations: list[dict] = []
+    if anchor_date is not None:
         for ws, ws_date in sessions_by_date[anchor_date]:
             ew = effective_weight(exercise, ws, bw_lookup, ws_date)
             if ew <= 0:
@@ -1648,11 +1655,13 @@ def fatigue_profile(
                 "session_date": ws_date.isoformat(),
             })
 
-    # History = all older sessions. Aggregate residuals per set_index.
+    # History = all sessions other than the anchor.
     history_by_set: dict[int, list[float]] = defaultdict(list)
     history_session_dates: set[date] = set()
     if fit is not None:
-        for older_date in ordered_dates[1:]:
+        for older_date in ordered_dates:
+            if older_date == anchor_date:
+                continue
             for ws, ws_date in sessions_by_date[older_date]:
                 ew = effective_weight(exercise, ws, bw_lookup, ws_date)
                 if ew <= 0:

@@ -283,10 +283,15 @@ export interface FatigueProfileResponse {
   curve?: { M: number; k: number; gamma: number } | null;
 }
 
-export const getFatigueProfile = (exerciseId: number, days: number = 30) =>
-  request<FatigueProfileResponse>(
-    `/planner/fatigue-profile/${exerciseId}?days=${days}`,
+export const getFatigueProfile = (
+  exerciseId: number, days: number = 30, sessionDate?: string,
+) => {
+  const params = new URLSearchParams({ days: String(days) });
+  if (sessionDate) params.set('session_date', sessionDate);
+  return request<FatigueProfileResponse>(
+    `/planner/fatigue-profile/${exerciseId}?${params.toString()}`,
   );
+};
 
 export const quickStart = (exerciseIds: number[], date?: string) =>
   request<QuickStartResponse>('/planner/quick-start', {

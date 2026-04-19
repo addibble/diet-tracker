@@ -25,6 +25,7 @@ import {
 import MealItemEditor from '../components/MealItemEditor'
 import WorkoutSetEditor from '../components/WorkoutSetEditor'
 import CurvePane, { type CompletedSet } from '../components/CurvePane'
+import FatiguePane from '../components/FatiguePane'
 import { getCurveSnapshot, type CurveSnapshotResponse } from '../api/planner'
 
 function today() {
@@ -875,6 +876,13 @@ function RecentSessionsCard({
                                   onConfirmRir={() => {}}
                                   completedSets={completedSets}
                                 />
+                                {exId != null && completedSets.length > 0 && (
+                                  <FatiguePane
+                                    exerciseId={exId}
+                                    setCount={completedSets.length}
+                                    sessionDate={date}
+                                  />
+                                )}
                               </div>
                             ) : (
                               <div className="flex flex-wrap gap-1 mt-0.5">

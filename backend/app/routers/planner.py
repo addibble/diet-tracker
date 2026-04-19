@@ -226,6 +226,7 @@ def curve_snapshot(
 def get_fatigue_profile(
     exercise_id: int,
     days: int = Query(default=30, ge=7, le=180),
+    session_date: datetime.date | None = Query(default=None),
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
@@ -233,8 +234,12 @@ def get_fatigue_profile(
 
     Returns `r_fresh(W_s) + β_s` where β_s is the learned per-(exercise, set_index)
     residual over the trailing window, with a global fallback when data is sparse.
+    Pass ``session_date`` to anchor ``session_observations`` to a specific
+    historical session (otherwise the most recent session in the window).
     """
-    return fatigue_profile(exercise_id, session, days=days)
+    return fatigue_profile(
+        exercise_id, session, days=days, session_date=session_date,
+    )
 
 
 def _get_bw_lookup(session: Session) -> dict:

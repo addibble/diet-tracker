@@ -5,6 +5,8 @@ interface Props {
   exerciseId: number
   // Re-fetch whenever set_count changes so the pane reflects today's sets.
   setCount: number
+  // Optional: anchor session_observations to a specific historical session.
+  sessionDate?: string
 }
 
 const VB_W = 320
@@ -16,13 +18,13 @@ const PAD_B = 26
 const PLOT_W = VB_W - PAD_L - PAD_R
 const PLOT_H = VB_H - PAD_T - PAD_B
 
-export default function FatiguePane({ exerciseId, setCount }: Props) {
+export default function FatiguePane({ exerciseId, setCount, sessionDate }: Props) {
   const [data, setData] = useState<FatigueProfileResponse | null>(null)
   const [err, setErr] = useState('')
 
   useEffect(() => {
     let cancelled = false
-    getFatigueProfile(exerciseId, 30)
+    getFatigueProfile(exerciseId, 30, sessionDate)
       .then((d) => { if (!cancelled) { setData(d); setErr('') } })
       .catch((e) => {
         if (!cancelled) {
@@ -30,7 +32,7 @@ export default function FatiguePane({ exerciseId, setCount }: Props) {
         }
       })
     return () => { cancelled = true }
-  }, [exerciseId, setCount])
+  }, [exerciseId, setCount, sessionDate])
 
   if (err) return <div className="text-xs text-red-600">{err}</div>
   if (!data) return null
