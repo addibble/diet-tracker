@@ -120,6 +120,30 @@ export interface PrescribeNextResponse {
   message?: string;
   is_bodyweight?: boolean;
   suggestion?: { sets: number; reps_per_set: number; notes: string };
+  // Curve chart data (tier 1/2)
+  curve?: {
+    M: number;
+    k: number;
+    gamma: number;
+    fit_tier?: string;
+    n_obs?: number;
+    max_observed_weight?: number;
+  } | null;
+  observations?: {
+    weight: number;
+    reps: number;
+    rir?: number;
+    age_days: number;
+  }[];
+  // Bootstrap scheme hint (when has_curve === false, not bodyweight)
+  scheme?: {
+    set_number: number;
+    target_reps: number;
+    target_rir: number;
+    r_fail: number;
+    acceptable_rep_min: number;
+    acceptable_rep_max: number;
+  } | null;
 }
 
 export interface QuickStartResponse {

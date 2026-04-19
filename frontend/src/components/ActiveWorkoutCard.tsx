@@ -1,6 +1,8 @@
 import type { FocusEvent } from 'react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import WorkoutSetEditor from './WorkoutSetEditor'
+import CurvePane, { type ConfirmedRir } from './CurvePane'
+import { snapWeight } from '../lib/weight_grid'
 import {
   addPlanExercise,
   addWorkoutSet,
@@ -701,6 +703,96 @@ function ExerciseWorkout({
     && (!showSecs || secs !== '')
     && rir !== ''
 
+  // ── Curve-first UI state (only for reps + external-weight exercises) ──
+  const useCurvePane = repsOnlyMode && !rx?.is_bodyweight && !state.complete
+  const [curveMode, setCurveMode] = useState<'pre' | 'logging'>('pre')
+  const [sparkWeight, setSparkWeight] = useState(0)
+  const [sparkReps, setSparkReps] = useState(0)
+
+  // Seed spark whenever prescription changes (new set / refit).
+  useEffect(() => {
+    if (!useCurvePane || !rx) return
+    let w = 0
+    let r = 0
+    if (rx.next_set?.proposed_weight != null) {
+      w = snapWeight(rx.next_set.proposed_weight)
+      r = rx.next_set.target_reps
+    } else if (rx.fallback_weight != null) {
+      w = snapWeight(rx.fallback_weight)
+      r = rx.scheme?.target_reps ?? 15
+    } else if (rx.scheme?.target_reps != null) {
+      w = 0
+      r = rx.scheme.target_reps
+    }
+    setSparkWeight(w)
+    setSparkReps(r)
+    setCurveMode('pre')
+  }, [rx, useCurvePane])
+
+  const curveFit = useMemo(() => (
+    rx?.curve ? { M: rx.curve.M, k: rx.curve.k, gamma: rx.curve.gamma } : null
+  ), [rx?.curve])
+  const observations = rx?.observations ?? []
+  const schemeRir = rx?.next_set?.target_rir ?? rx?.scheme?.target_rir ?? 3
+  const schemeSetNumber = (
+    rx?.next_set?.set_number
+    ?? rx?.scheme?.set_number
+    ?? state.sets.length + 1
+  )
+  const bootstrapTargetReps = rx?.scheme?.target_reps ?? rx?.next_set?.target_reps ?? 15
+
+  const handleSparkChange = useCallback((w: number, r: number) => {
+    setSparkWeight(w)
+    setSparkReps(r)
+  }, [])
+
+  const handleGo = useCallback(() => {
+    // In bootstrap mode reps are the scheme target until the user drags them;
+    // in curve mode the Y is already the predicted reps.
+    if (!curveFit && sparkReps <= 0) setSparkReps(bootstrapTargetReps)
+    // Solve a cleaner starting Y using the curve at the snapped weight.
+    if (curveFit && sparkWeight > 0) {
+      // Keep the rep target at what the curve predicts at the chosen weight
+      // minus the scheme RIR, so the user's first logged-reps estimate is honest.
+      // We don't overwrite sparkReps here; CurvePane already kept it in sync.
+    }
+    setCurveMode('logging')
+  }, [curveFit, sparkWeight, sparkReps, bootstrapTargetReps])
+
+  const handleConfirmRir = useCallback(async (rirVal: ConfirmedRir) => {
+    if (logging) return
+    const w = snapWeight(sparkWeight)
+    const r = Math.max(1, Math.round(sparkReps))
+    const minReps = rx?.next_set?.acceptable_rep_min ?? rx?.scheme?.acceptable_rep_min
+    const repCompletion = minReps != null
+      ? (r >= minReps ? 'full' : 'partial')
+      : 'full'
+    setLogging(true)
+    try {
+      const result = await addWorkoutSet(sessionId, {
+        exercise_id: state.exercise_id,
+        weight: w,
+        reps: r,
+        duration_secs: null,
+        rir: rirVal,
+        training_mode: state.training_mode,
+        rep_completion: repCompletion,
+      })
+      onSetLogged({
+        id: result.id,
+        weight: w,
+        reps: r,
+        rir: rirVal,
+        duration_secs: null,
+      })
+      // Switch back to pre for the next set; the new rx will reseed the spark.
+      setCurveMode('pre')
+    } catch {
+      // best effort — stay in logging mode so the user can retry
+    } finally {
+      setLogging(false)
+    }
+  }, [sparkWeight, sparkReps, rx, sessionId, state.exercise_id, state.training_mode, logging, onSetLogged])
   return (
     <div className="space-y-3">
       {/* Training mode toggle (only before first set on allow_heavy exercises) */}
@@ -791,138 +883,129 @@ function ExerciseWorkout({
       {/* Prescription / Next set guidance */}
       {!state.complete && (
         <>
-          {state.prescribing && (
+          {state.prescribing && !rx && (
             <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
               <p className="text-xs italic text-gray-400">Computing prescription...</p>
             </div>
           )}
 
-          {rx && !state.prescribing && rx.next_set && !rx.is_bodyweight && repsOnlyMode && (
-            <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
-              <div className="flex items-center justify-between">
-                <p className="text-xs font-medium text-blue-800">
-                  Set {rx.next_set.set_number} — suggested
-                </p>
-                <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-700">
-                  RIR {rx.next_set.target_rir}
-                </span>
-              </div>
-              <p className="mt-1 text-sm font-semibold text-blue-900">
-                {rx.next_set.proposed_weight != null ? `${Math.round(rx.next_set.proposed_weight)} lb` : '—'} × {rx.next_set.target_reps} reps
-              </p>
-              <p className="mt-0.5 text-[10px] text-blue-600">
-                Range: {rx.next_set.acceptable_rep_min}–{rx.next_set.acceptable_rep_max} reps
-              </p>
-            </div>
-          )}
+          {rx && useCurvePane ? (
+            <CurvePane
+              mode={curveMode}
+              curve={curveFit}
+              bootstrapTargetReps={bootstrapTargetReps}
+              observations={observations}
+              sparkWeight={sparkWeight}
+              sparkReps={sparkReps}
+              schemeRir={schemeRir}
+              schemeSetNumber={schemeSetNumber}
+              onSparkChange={handleSparkChange}
+              onGo={handleGo}
+              onConfirmRir={handleConfirmRir}
+              submitting={logging}
+            />
+          ) : (
+            <>
+              {rx && rx.is_bodyweight && rx.suggestion && !rx.exercise_complete && repsOnlyMode && (
+                <div className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3">
+                  <p className="text-xs font-medium text-sky-800">
+                    Bodyweight — Set {state.sets.length + 1} of {rx.suggestion.sets}
+                  </p>
+                  <p className="mt-0.5 text-xs text-sky-700">
+                    {rx.suggestion.reps_per_set} reps
+                  </p>
+                </div>
+              )}
 
-          {rx && !state.prescribing && !rx.has_curve && !rx.is_bodyweight && repsOnlyMode && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-              <p className="text-xs text-amber-800">
-                {rx.message || 'No curve data available.'}
-                {rx.fallback_weight != null && ` Last weight: ${rx.fallback_weight} lb`}
-              </p>
-            </div>
-          )}
+              {!repsOnlyMode && (
+                <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
+                  <p className="text-xs text-gray-700">
+                    {metricMode === 'duration'
+                      ? `Timed exercise — Set ${state.sets.length + 1} of ${state.target_sets}. Log duration in seconds.`
+                      : `Set ${state.sets.length + 1} of ${state.target_sets}.`}
+                  </p>
+                </div>
+              )}
 
-          {rx && rx.is_bodyweight && rx.suggestion && !rx.exercise_complete && repsOnlyMode && (
-            <div className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3">
-              <p className="text-xs font-medium text-sky-800">
-                Bodyweight — Set {state.sets.length + 1} of {rx.suggestion.sets}
-              </p>
-              <p className="mt-0.5 text-xs text-sky-700">
-                {rx.suggestion.reps_per_set} reps
-              </p>
-            </div>
+              {/* Input fields */}
+              <div className="flex items-end gap-2">
+                {showWeight && (
+                  <div className="flex-1">
+                    <label className="block text-[10px] font-medium text-gray-500">Weight (lb)</label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      pattern="[0-9]*\.?[0-9]*"
+                      value={weight}
+                      onChange={e => handleWeightChange(e.target.value)}
+                      onFocus={moveCursorToEnd}
+                      className="mt-0.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400"
+                      placeholder="0"
+                    />
+                  </div>
+                )}
+                {showSecs && (
+                  <div className="w-20">
+                    <label className="block text-[10px] font-medium text-gray-500">Secs</label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      value={secs}
+                      onChange={e => setSecs(e.target.value)}
+                      onFocus={moveCursorToEnd}
+                      className="mt-0.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400"
+                      placeholder="0"
+                    />
+                  </div>
+                )}
+                {showReps && (
+                  <div className="w-20">
+                    <label className="block text-[10px] font-medium text-gray-500">
+                      Reps{adjusting && <span className="ml-1 text-blue-400">…</span>}
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      value={reps}
+                      onChange={e => setReps(e.target.value)}
+                      onFocus={moveCursorToEnd}
+                      className={`mt-0.5 w-full rounded-lg border px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400 ${
+                        adjusting ? 'border-blue-300 bg-blue-50' : 'border-gray-300'
+                      }`}
+                      placeholder="0"
+                    />
+                  </div>
+                )}
+                <div className="w-16">
+                  <label className="block text-[10px] font-medium text-gray-500">
+                    RIR{adjusting && <span className="ml-1 text-blue-400">…</span>}
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={rir}
+                    onChange={e => setRir(e.target.value)}
+                    onFocus={moveCursorToEnd}
+                    className={`mt-0.5 w-full rounded-lg border px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400 ${
+                      adjusting ? 'border-blue-300 bg-blue-50' : 'border-gray-300'
+                    }`}
+                    placeholder="0"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={handleLogSet}
+                  disabled={!canLog}
+                  className="rounded-lg bg-gray-900 px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-gray-800 disabled:opacity-40"
+                >
+                  {logging ? '...' : 'Log'}
+                </button>
+              </div>
+            </>
           )}
-
-          {!repsOnlyMode && (
-            <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
-              <p className="text-xs text-gray-700">
-                {metricMode === 'duration'
-                  ? `Timed exercise — Set ${state.sets.length + 1} of ${state.target_sets}. Log duration in seconds.`
-                  : `Set ${state.sets.length + 1} of ${state.target_sets}.`}
-              </p>
-            </div>
-          )}
-
-          {/* Input fields */}
-          <div className="flex items-end gap-2">
-            {showWeight && (
-              <div className="flex-1">
-                <label className="block text-[10px] font-medium text-gray-500">Weight (lb)</label>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  pattern="[0-9]*\.?[0-9]*"
-                  value={weight}
-                  onChange={e => handleWeightChange(e.target.value)}
-                  onFocus={moveCursorToEnd}
-                  className="mt-0.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400"
-                  placeholder="0"
-                />
-              </div>
-            )}
-            {showSecs && (
-              <div className="w-20">
-                <label className="block text-[10px] font-medium text-gray-500">Secs</label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  value={secs}
-                  onChange={e => setSecs(e.target.value)}
-                  onFocus={moveCursorToEnd}
-                  className="mt-0.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400"
-                  placeholder="0"
-                />
-              </div>
-            )}
-            {showReps && (
-              <div className="w-20">
-                <label className="block text-[10px] font-medium text-gray-500">
-                  Reps{adjusting && <span className="ml-1 text-blue-400">…</span>}
-                </label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  value={reps}
-                  onChange={e => setReps(e.target.value)}
-                  onFocus={moveCursorToEnd}
-                  className={`mt-0.5 w-full rounded-lg border px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400 ${
-                    adjusting ? 'border-blue-300 bg-blue-50' : 'border-gray-300'
-                  }`}
-                  placeholder="0"
-                />
-              </div>
-            )}
-            <div className="w-16">
-              <label className="block text-[10px] font-medium text-gray-500">
-                RIR{adjusting && <span className="ml-1 text-blue-400">…</span>}
-              </label>
-              <input
-                type="text"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                value={rir}
-                onChange={e => setRir(e.target.value)}
-                onFocus={moveCursorToEnd}
-                className={`mt-0.5 w-full rounded-lg border px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400 ${
-                  adjusting ? 'border-blue-300 bg-blue-50' : 'border-gray-300'
-                }`}
-                placeholder="0"
-              />
-            </div>
-            <button
-              type="button"
-              onClick={handleLogSet}
-              disabled={!canLog}
-              className="rounded-lg bg-gray-900 px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-gray-800 disabled:opacity-40"
-            >
-              {logging ? '...' : 'Log'}
-            </button>
-          </div>
 
           {/* Skip / Mark done */}
           <div className="flex justify-end">

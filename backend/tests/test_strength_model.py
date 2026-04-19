@@ -1091,3 +1091,63 @@ class TestWorkoutSetTrainingMode:
         assert resp.status_code == 201
         data = resp.json()
         assert data["training_mode"] is None
+
+
+class TestPrescribeCurveBlock:
+    """prescribe-next response includes curve + observations (tier1/2) or scheme (bootstrap)."""
+
+    def test_curve_block_when_has_curve(self, session):
+        from app.strength_model import prescribe_next_set
+        ex = _make_exercise(session, name="Curve Block Test", allow_heavy_loading=True)
+        # Enough RPE data across dates for a tier2 fit.
+        _make_session_and_sets(session, ex, [
+            {"reps": 15, "weight": 80, "rpe": 7.0},
+            {"reps": 12, "weight": 100, "rpe": 8.0},
+            {"reps": 10, "weight": 120, "rpe": 8.5},
+        ], session_date=date.today() - timedelta(days=7))
+        _make_session_and_sets(session, ex, [
+            {"reps": 14, "weight": 85, "rpe": 7.5},
+            {"reps": 11, "weight": 105, "rpe": 8.0},
+            {"reps": 9, "weight": 125, "rpe": 9.0},
+        ], session_date=date.today() - timedelta(days=3))
+        session.flush()
+        result = prescribe_next_set(
+            ex.id, session, prior_sets=[], bodyweight_lb=180, training_mode="volume",
+        )
+        assert result.get("has_curve") is True
+        curve = result.get("curve")
+        assert curve is not None
+        for key in ("M", "k", "gamma", "fit_tier", "n_obs", "max_observed_weight"):
+            assert key in curve, f"missing curve.{key}"
+        obs = result.get("observations")
+        assert isinstance(obs, list) and len(obs) > 0
+        first = obs[0]
+        for key in ("weight", "reps", "rir", "age_days"):
+            assert key in first
+
+    def test_scheme_block_when_bootstrapping(self, session):
+        from app.strength_model import prescribe_next_set
+        ex = _make_exercise(session, name="Bootstrap Test", allow_heavy_loading=True)
+        # No RPE data -> fit is None -> bootstrap branch.
+        result = prescribe_next_set(
+            ex.id, session, prior_sets=[], bodyweight_lb=180, training_mode="volume",
+        )
+        assert result.get("has_curve") is False
+        scheme = result.get("scheme")
+        assert scheme is not None
+        assert scheme["set_number"] == 1
+        assert scheme["target_rir"] == 3  # set 1 of volume scheme
+        assert scheme["target_reps"] > 0
+        assert "observations" in result
+
+    def test_bootstrap_scheme_advances_with_prior_sets(self, session):
+        from app.strength_model import prescribe_next_set
+        ex = _make_exercise(session, name="Bootstrap Advance", allow_heavy_loading=True)
+        result = prescribe_next_set(
+            ex.id, session, prior_sets=[
+                {"weight": 100, "reps": 15, "rpe": 7.0},
+            ], bodyweight_lb=180, training_mode="volume",
+        )
+        assert result.get("has_curve") is False
+        assert result["scheme"]["set_number"] == 2
+        assert result["scheme"]["target_rir"] == 2

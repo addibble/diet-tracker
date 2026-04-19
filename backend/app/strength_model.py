@@ -910,9 +910,19 @@ def prescribe_next_set(
             "fallback_weight": last_weight,
             "message": "Insufficient RPE data for curve fit.",
             "training_mode": training_mode,
+            "scheme": _bootstrap_scheme_dict(exercise, training_mode, len(prior_sets)),
+            "observations": _build_observations(exercise_id, session),
         }
 
     n_done = len(prior_sets)
+    curve_block = _curve_dict(fit)
+    observations = _build_observations(exercise_id, session)
+
+    def _with_curve(d: dict) -> dict:
+        d["curve"] = curve_block
+        d["observations"] = observations
+        return d
+
     is_heavy_mode = training_mode == "heavy" and exercise.allow_heavy_loading
     if is_heavy_mode:
         scheme = HEAVY_SCHEME
@@ -945,28 +955,28 @@ def prescribe_next_set(
             else:
                 result["exercise_complete"] = True
                 result["next_set"] = None
-            return result
+            return _with_curve(result)
         else:
             # Volume/light mode: hard stop at 3 sets
-            return {
+            return _with_curve({
                 "has_curve": True,
                 "exercise_complete": True,
                 "inflection_detected": None,
                 "estimated_1rm": round(fit.M, 1),
                 "next_set": None,
                 "training_mode": training_mode,
-            }
+            })
 
     # Sets 1-3: prescribe from scheme
     if n_done >= len(scheme):
-        return {
+        return _with_curve({
             "has_curve": True,
             "exercise_complete": True,
             "inflection_detected": None,
             "estimated_1rm": round(fit.M, 1),
             "next_set": None,
             "training_mode": training_mode,
-        }
+        })
 
     set_idx = n_done  # 0-indexed
     r_fail_target, rir, target_rpe, expected_reps, rep_min, rep_max = scheme[set_idx]
@@ -977,14 +987,14 @@ def prescribe_next_set(
             fit, exercise, actual_weight, bodyweight_lb,
             set_idx + 1, exercise.allow_heavy_loading,
         )
-        return {
+        return _with_curve({
             "has_curve": True,
             "exercise_complete": False,
             "inflection_detected": None,
             "estimated_1rm": None,
             "next_set": _set_prescription_dict(prescription),
             "training_mode": training_mode,
-        }
+        })
 
     # Standard prescription
     ew = solve_weight(r_fail_target, fit)
@@ -1043,14 +1053,14 @@ def prescribe_next_set(
         acceptable_rep_max=rep_max,
     )
 
-    return {
+    return _with_curve({
         "has_curve": True,
         "exercise_complete": False,
         "inflection_detected": None,
         "estimated_1rm": None,
         "next_set": _set_prescription_dict(prescription),
         "training_mode": training_mode,
-    }
+    })
 
 
 def _set_prescription_dict(p: SetPrescription) -> dict:
@@ -1065,6 +1075,63 @@ def _set_prescription_dict(p: SetPrescription) -> dict:
         "r_fail": p.r_fail,
         "acceptable_rep_min": p.acceptable_rep_min,
         "acceptable_rep_max": p.acceptable_rep_max,
+    }
+
+
+def _curve_dict(fit: CurveFit) -> dict:
+    """Expose fit parameters for the frontend curve chart."""
+    return {
+        "M": round(fit.M, 2),
+        "k": round(fit.k, 4),
+        "gamma": round(fit.gamma, 4),
+        "fit_tier": fit.fit_tier,
+        "n_obs": fit.n_obs,
+        "max_observed_weight": round(fit.max_observed_weight, 2),
+    }
+
+
+def _build_observations(
+    exercise_id: int, session: Session, *, days: int = 30, limit: int = 40
+) -> list[dict]:
+    """Return recent RPE observations for the curve chart's gray dots."""
+    exercise, set_rows = _load_recent_sets(exercise_id, session, days)
+    if exercise is None:
+        return []
+    today = user_today()
+    out: list[dict] = []
+    for ws, ws_date in set_rows[:limit]:
+        if ws.weight is None or ws.reps is None or ws.rpe is None:
+            continue
+        out.append({
+            "weight": round(float(ws.weight), 2),
+            "reps": int(ws.reps),
+            "rir": round(10.0 - float(ws.rpe)),
+            "age_days": max(0, (today - ws_date).days),
+        })
+    return out
+
+
+def _scheme_for(exercise: Exercise, training_mode: str) -> list[tuple]:
+    is_heavy_mode = training_mode == "heavy" and exercise.allow_heavy_loading
+    if is_heavy_mode:
+        return HEAVY_SCHEME
+    if exercise.allow_heavy_loading:
+        return VOLUME_SCHEME
+    return LIGHT_SCHEME
+
+
+def _bootstrap_scheme_dict(exercise: Exercise, training_mode: str, n_done: int) -> dict | None:
+    """Scheme hint for the bootstrap flat-line UI when has_curve is False."""
+    scheme = _scheme_for(exercise, training_mode)
+    idx = min(n_done, len(scheme) - 1)
+    r_fail_target, rir, _target_rpe, expected_reps, rep_min, rep_max = scheme[idx]
+    return {
+        "set_number": n_done + 1,
+        "target_reps": int(expected_reps),
+        "target_rir": int(rir),
+        "r_fail": int(r_fail_target),
+        "acceptable_rep_min": int(rep_min),
+        "acceptable_rep_max": int(rep_max),
     }
 
 
