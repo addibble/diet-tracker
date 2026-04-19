@@ -1128,16 +1128,15 @@ class TestPrescribeCurveBlock:
     def test_scheme_block_when_bootstrapping(self, session):
         from app.strength_model import prescribe_next_set
         ex = _make_exercise(session, name="Bootstrap Test", allow_heavy_loading=True)
-        # No RPE data -> fit is None -> bootstrap branch.
+        # No RPE data -> bootstrap branch.
         result = prescribe_next_set(
             ex.id, session, prior_sets=[], bodyweight_lb=180, training_mode="volume",
         )
         assert result.get("has_curve") is False
-        scheme = result.get("scheme")
-        assert scheme is not None
-        assert scheme["set_number"] == 1
-        assert scheme["target_rir"] == 3  # set 1 of volume scheme
-        assert scheme["target_reps"] > 0
+        assert result.get("mode") == "bootstrap"
+        ns = result["next_set"]
+        assert ns["set_number"] == 1
+        assert ns["target_reps"] > 0
         assert "observations" in result
 
     def test_bootstrap_scheme_advances_with_prior_sets(self, session):
@@ -1149,5 +1148,5 @@ class TestPrescribeCurveBlock:
             ], bodyweight_lb=180, training_mode="volume",
         )
         assert result.get("has_curve") is False
-        assert result["scheme"]["set_number"] == 2
-        assert result["scheme"]["target_rir"] == 2
+        assert result.get("mode") == "bootstrap"
+        assert result["next_set"]["set_number"] == 2

@@ -911,6 +911,31 @@ def prescribe_next_set(
             },
         }
 
+    # Bootstrap mode: insufficient recent RPE history for a curve fit. Guide
+    # the athlete through anchor + probing sets using the universal prior
+    # curve. Once they've logged enough sets across enough distinct weights,
+    # is_bootstrap() returns False and the normal planner takes over.
+    if is_bootstrap(exercise_id, session):
+        n_done = len(prior_sets)
+        # Cap at 3 bootstrap sets per session; beyond that the exercise
+        # should have data for a real fit next session (or at the next
+        # planner call within this session after the 3rd set is logged).
+        if n_done >= 3:
+            return {
+                "has_curve": False,
+                "mode": "bootstrap",
+                "exercise_complete": True,
+                "next_set": None,
+                "bootstrap": {
+                    "stage": 3, "total_stages": 3,
+                    "explanation": "Calibration complete.",
+                },
+                "observations": _build_observations(exercise_id, session),
+            }
+        return bootstrap_prescription(
+            exercise_id, session, prior_sets, bodyweight_lb,
+        )
+
     # Fit or refit curve — allow_heavy keyed off exercise capability (not mode)
     # so volume mode on heavy exercises still gets a trained curve
     allow_heavy = exercise.allow_heavy_loading
@@ -1171,6 +1196,526 @@ def curve_snapshot_for_date(
         "curve": _curve_dict(fit) if fit is not None else None,
         "curve_prior": _curve_dict(prior_fit) if prior_fit is not None else None,
         "observations": observations,
+    }
+
+
+# ── Bootstrap mode (cold-start per-exercise guided calibration) ──
+#
+# An exercise enters bootstrap when recent RPE history is below the fitting
+# threshold: fewer than MIN_SETS_TIER2 RPE sets, or fewer than
+# MIN_DISTINCT_WEIGHTS_TIER1 distinct weights. The athlete is guided through
+# an anchor set (free entry) and then 1–2 probing sets computed from a shared
+# universal curve, and the exercise exits bootstrap once the threshold is met.
+
+# Universal "prior" curve used by the bootstrap to invert observations into an
+# M estimate and back into a prescribed weight. Keeping the same (k, γ) for
+# both directions is critical — mixing Brzycki-in / curve-out causes the
+# prescribed weight to bias upward by ~30% for high-rep (light) scenarios.
+BOOT_K = 20.0
+BOOT_GAMMA = 0.9
+
+# Target rtf (reps-to-failure) ladder for bootstrap probes. Absolute values,
+# not geometric step-downs — after ~3 points we have enough to fit, and
+# perpetual geometric decay marches toward failure far too fast.
+_BOOT_TARGETS_HEAVY = (18, 11, 6)  # ~15/RIR3, ~9/RIR2, ~4/RIR2
+_BOOT_TARGETS_LIGHT = (23, 14, 10)  # ~20/RIR3, ~12/RIR2, ~8/RIR2
+_BOOT_RIR = (3, 2, 2)
+
+# Safety clamp on W_next / W_prev. State-dependent: severe overshoot (the
+# athlete hit failure on a guess far too heavy) allows a larger drop so the
+# system can recover in one step rather than chasing a bad anchor.
+_BOOT_CLAMP_NORMAL = (0.80, 1.35)
+_BOOT_CLAMP_SEVERE_OVER = (0.50, 1.35)
+_BOOT_CLAMP_SEVERE_UNDER = (0.80, 1.55)
+
+# rtf cap — Brzycki-style 1RM explodes as rtf → 37, and the universal curve
+# gets twitchy at very high rtf too. Cap the inferred rtf for M estimation.
+_BOOT_RTF_CAP = 30.0
+
+# How many days to look back for prior bootstrap observations.
+_BOOT_HISTORY_DAYS = 90
+
+
+def _invert_universal_curve(rtf: float, W: float) -> float:
+    """Solve M from a single (W, rtf) observation assuming bootstrap priors.
+
+    From rtf = k * (M/W - 1)^γ  →  M = W * (1 + (rtf/k)^(1/γ))
+    """
+    if rtf <= 0 or W <= 0:
+        return W * 1.5
+    rtf_capped = min(rtf, _BOOT_RTF_CAP)
+    ratio = (rtf_capped / BOOT_K) ** (1.0 / BOOT_GAMMA)
+    return W * (1.0 + ratio)
+
+
+def _prescribe_universal_curve(M: float, target_rtf: float) -> float:
+    """Invert the universal curve for W given an M estimate and target rtf."""
+    if M <= 0 or target_rtf <= 0:
+        return 0.0
+    ratio = (target_rtf / BOOT_K) ** (1.0 / BOOT_GAMMA)
+    return M / (1.0 + ratio)
+
+
+# Bootstrap accepts a lower RPE floor than the curve fit — a too-easy set
+# (RPE 5-6, athlete still has 4-5 in the tank) is precisely what we need
+# for severe-undershoot correction.
+_BOOT_MIN_RPE = 5.0
+
+
+def _load_bootstrap_observations(
+    exercise_id: int, session: Session, *, days: int = _BOOT_HISTORY_DAYS,
+) -> list[dict]:
+    """Load RPE-qualifying sets across the trailing window for an exercise.
+
+    Includes both historical sessions and today's session. Only sets with
+    weight > 0, reps > 0, and RPE >= _BOOT_MIN_RPE survive.
+    """
+    exercise, set_rows = _load_recent_sets(exercise_id, session, days)
+    if exercise is None:
+        return []
+    bw_lookup = _load_bodyweight_lookup(session)
+    out: list[dict] = []
+    for ws, ws_date in set_rows:
+        if ws.rpe is None or ws.reps is None or ws.reps <= 0:
+            continue
+        if ws.rpe < _BOOT_MIN_RPE or ws.rpe > 10.0:
+            continue
+        if not supports_strength_estimate(exercise, ws):
+            continue
+        ew = effective_weight(exercise, ws, bw_lookup, ws_date)
+        if ew <= 0:
+            continue
+        rir = 10.0 - float(ws.rpe)
+        out.append({
+            "weight": round(float(ws.weight), 2),
+            "effective_weight": round(ew, 2),
+            "reps": int(ws.reps),
+            "rpe": round(float(ws.rpe), 1),
+            "rtf": round(float(ws.reps) + rir, 2),
+            "date": ws_date,
+            "set_order": int(ws.set_order),
+        })
+    return out
+
+
+def is_bootstrap(
+    exercise_id: int, session: Session, *, days: int = _BOOT_HISTORY_DAYS,
+) -> bool:
+    """True when the exercise has insufficient RPE history for a fit."""
+    exercise = session.get(Exercise, exercise_id)
+    if exercise is None:
+        return False
+    is_bw = (exercise.load_input_mode or "external_weight") in BODYWEIGHT_MODES
+    if is_bw:
+        return False
+    obs = _load_bootstrap_observations(exercise_id, session, days=days)
+    n_sets = len(obs)
+    # Exit threshold still uses the curve-fit RPE floor: only RPE>=MIN_RPE_FOR_FIT
+    # sets count as "real" training observations toward tier2.
+    strong_obs = [o for o in obs if o["rpe"] >= MIN_RPE_FOR_FIT]
+    n_strong = len(strong_obs)
+    n_strong_weights = len({round(o["effective_weight"], 1) for o in strong_obs})
+    return (n_strong < MIN_SETS_TIER2
+            or n_strong_weights < MIN_DISTINCT_WEIGHTS_TIER1
+            or n_sets < MIN_SETS_TIER2)
+
+
+def _bootstrap_scheme(exercise: Exercise) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    if exercise.allow_heavy_loading:
+        return _BOOT_TARGETS_HEAVY, _BOOT_RIR
+    return _BOOT_TARGETS_LIGHT, _BOOT_RIR
+
+
+def _severity_flags(
+    prev_obs: dict, prev_target_rtf: float, prev_target_reps: int,
+) -> tuple[bool, bool]:
+    """Detect severe overshoot / undershoot to widen safety clamps."""
+    # Overshoot = weight was too heavy → athlete hit near-failure early.
+    severe_over = (
+        prev_obs["rpe"] >= 9.0
+        and prev_obs["reps"] < max(1, prev_target_reps - 4)
+    )
+    # Undershoot = weight was too light → many more reps than expected at low RPE.
+    severe_under = (
+        prev_obs["rpe"] <= 6.5
+        and prev_obs["reps"] > prev_target_reps + 3
+    )
+    return severe_over, severe_under
+
+
+def _round_to_increment(weight: float, increment: float = 5.0) -> float:
+    if increment <= 0:
+        return weight
+    return round(weight / increment) * increment
+
+
+def bootstrap_prescription(
+    exercise_id: int,
+    session: Session,
+    prior_sets: list[dict],
+    bodyweight_lb: float,
+) -> dict:
+    """Return the next bootstrap prescription (mode='bootstrap').
+
+    Shape mirrors ``prescribe_next_set``: a dict with ``has_curve`` (False in
+    bootstrap), ``mode``, ``next_set``, ``exercise_complete``, and a
+    ``bootstrap`` sub-dict carrying the anchor prompt and explanation.
+    """
+    exercise = session.get(Exercise, exercise_id)
+    if exercise is None:
+        return {"has_curve": False, "mode": "bootstrap", "error": "Exercise not found"}
+
+    targets, rirs = _bootstrap_scheme(exercise)
+    all_obs = _load_bootstrap_observations(exercise_id, session)
+    # Overlay prior_sets from the live session — same shape minus bookkeeping.
+    for s in prior_sets:
+        w = s.get("weight")
+        reps = s.get("reps")
+        rpe = s.get("rpe")
+        if w is None or reps is None or rpe is None:
+            continue
+        if rpe < _BOOT_MIN_RPE or rpe > 10.0 or reps <= 0:
+            continue
+        ew = _entered_to_effective(exercise, float(w), bodyweight_lb)
+        if ew <= 0:
+            continue
+        all_obs.append({
+            "weight": float(w), "effective_weight": ew,
+            "reps": int(reps), "rpe": float(rpe),
+            "rtf": float(reps) + (10.0 - float(rpe)),
+            "set_order": s.get("set_order") or (len(all_obs) + 1),
+        })
+
+    n_done_session = len(prior_sets)
+    set_idx = n_done_session  # 0-based index for the next set
+    stage = min(set_idx, len(targets) - 1)
+    target_rtf = float(targets[stage])
+    rir = int(rirs[stage])
+    target_reps = max(1, int(target_rtf - rir))
+    target_rpe = 10.0 - rir
+
+    bootstrap_block: dict = {
+        "stage": stage,
+        "total_stages": len(targets),
+        "target_rtf": target_rtf,
+        "heavy_capable": bool(exercise.allow_heavy_loading),
+    }
+
+    # ── Stage 0: anchor — ask athlete to pick W_1 themselves ──
+    if not all_obs:
+        bootstrap_block["prompt"] = (
+            f"Pick a weight you could do for about {target_reps} reps with "
+            f"{rir} reps in the tank (RPE {target_rpe:.0f})."
+        )
+        bootstrap_block["explanation"] = (
+            "We're calibrating this exercise. Log 3 sets across ≥2 distinct "
+            "weights and we'll take over from here."
+        )
+        return {
+            "has_curve": False,
+            "mode": "bootstrap",
+            "exercise_complete": False,
+            "bootstrap": bootstrap_block,
+            "next_set": {
+                "set_number": set_idx + 1,
+                "proposed_weight": None,
+                "effective_weight": None,
+                "target_reps": target_reps,
+                "target_rpe": target_rpe,
+                "target_rir": rir,
+                "r_fail": target_rtf,
+                "acceptable_rep_min": max(1, target_reps - 3),
+                "acceptable_rep_max": target_reps + 3,
+            },
+            "scheme": {
+                "set_number": set_idx + 1,
+                "target_reps": target_reps,
+                "target_rir": rir,
+                "r_fail": target_rtf,
+                "acceptable_rep_min": max(1, target_reps - 3),
+                "acceptable_rep_max": target_reps + 3,
+            },
+            "observations": _build_observations(exercise_id, session),
+        }
+
+    # ── Stages 1+: compute W from accumulated observations ──
+    M_estimates = [
+        _invert_universal_curve(o["rtf"], o["effective_weight"])
+        for o in all_obs
+    ]
+    # Discard pathological estimates (negative or below max observed weight).
+    max_ew = max(o["effective_weight"] for o in all_obs)
+    sane = [m for m in M_estimates if m > max_ew]
+    M_guess = float(np.mean(sane)) if sane else max_ew * 1.3
+
+    target_ew = _prescribe_universal_curve(M_guess, target_rtf)
+
+    prev = all_obs[-1]
+    prev_w = prev["weight"]
+
+    # Translate target effective weight → entered weight for display.
+    entered = entered_weight_for_effective_weight(
+        exercise, effective_weight_lb=target_ew, bodyweight_lb=bodyweight_lb,
+    )
+    if entered is None:
+        entered = target_ew
+
+    # Safety clamp based on severity of the previous set's outcome.
+    prev_stage = max(0, stage - 1)
+    prev_target_rtf = float(targets[prev_stage])
+    prev_target_reps = max(1, int(prev_target_rtf - rirs[prev_stage]))
+    severe_over, severe_under = _severity_flags(
+        prev, prev_target_rtf, prev_target_reps,
+    )
+    if severe_over:
+        lo, hi = _BOOT_CLAMP_SEVERE_OVER
+    elif severe_under:
+        lo, hi = _BOOT_CLAMP_SEVERE_UNDER
+    else:
+        lo, hi = _BOOT_CLAMP_NORMAL
+
+    clamp_floor = prev_w * lo
+    clamp_ceil = prev_w * hi
+    entered_clamped = float(np.clip(entered, clamp_floor, clamp_ceil))
+
+    # Round to a useful increment (5 lb default). Avoid prescribing the same
+    # rounded weight as the previous set — that yields a third stacked dot
+    # with no new information and stalls exit from bootstrap.
+    entered_rounded = _round_to_increment(entered_clamped, 5.0)
+    if abs(entered_rounded - prev_w) < 2.5:
+        bump = 5.0 if entered_clamped >= prev_w else -5.0
+        entered_rounded = prev_w + bump
+    # Re-clamp after rounding/bumping so the hard safety rail always holds.
+    entered_rounded = float(np.clip(entered_rounded, clamp_floor, clamp_ceil))
+
+    # Recompute the effective weight and forward-predict rtf from the final
+    # entered weight so the UI's "expected reps" matches what we'll prescribe.
+    final_ew = _entered_to_effective(exercise, entered_rounded, bodyweight_lb)
+    if final_ew <= 0:
+        final_ew = max(1.0, entered_rounded)
+    predicted_rtf = float(fresh_curve(final_ew, M_guess, BOOT_K, BOOT_GAMMA))
+    expected_reps = max(1, int(round(predicted_rtf - rir)))
+
+    reason = "standard step"
+    if severe_over:
+        reason = "previous set was too heavy — stepping down"
+    elif severe_under:
+        reason = "previous set was too light — stepping up"
+
+    bootstrap_block.update({
+        "M_guess": round(M_guess, 1),
+        "M_samples": len(sane),
+        "severe_over": severe_over,
+        "severe_under": severe_under,
+        "reason": reason,
+        "prior_weight": prev_w,
+        "clamp": [lo, hi],
+    })
+
+    return {
+        "has_curve": False,
+        "mode": "bootstrap",
+        "exercise_complete": False,
+        "bootstrap": bootstrap_block,
+        "next_set": {
+            "set_number": set_idx + 1,
+            "proposed_weight": round(entered_rounded, 1),
+            "effective_weight": round(final_ew, 2),
+            "target_reps": expected_reps,
+            "target_rpe": target_rpe,
+            "target_rir": rir,
+            "r_fail": round(predicted_rtf, 1),
+            "acceptable_rep_min": max(1, expected_reps - 3),
+            "acceptable_rep_max": expected_reps + 3,
+        },
+        "scheme": {
+            "set_number": set_idx + 1,
+            "target_reps": expected_reps,
+            "target_rir": rir,
+            "r_fail": round(predicted_rtf, 1),
+            "acceptable_rep_min": max(1, expected_reps - 3),
+            "acceptable_rep_max": expected_reps + 3,
+        },
+        "observations": _build_observations(exercise_id, session),
+    }
+
+
+# ── Fatigue profile (β_{e,s} per-set residual decomposition) ──
+#
+# Global fallback for β_s when there is insufficient per-(exercise, set_index)
+# history. Derived from the model-exploration refresh (~300 sessions across all
+# exercises): on average the second set loses ~1.2 reps and the third loses
+# ~2.4 reps vs. the fresh-curve prediction. See
+# ``tools/model_exploration/analysis_summary.md``.
+GLOBAL_BETA_PER_SET: tuple[float, ...] = (0.0, -1.2, -2.4)
+
+# Minimum historical sessions observing a given set index before we trust the
+# learned β_s over the global fallback.
+MIN_HISTORY_FOR_LEARNED_BETA = 2
+
+
+def _global_beta(set_index: int) -> float:
+    """Look up the global β_s fallback. Clamp past length to the final value."""
+    if set_index <= 0:
+        return 0.0
+    idx = min(set_index, len(GLOBAL_BETA_PER_SET)) - 1
+    return GLOBAL_BETA_PER_SET[idx]
+
+
+def fatigue_profile(
+    exercise_id: int,
+    session: Session,
+    *,
+    days: int = 30,
+) -> dict:
+    """Return a reps-by-set-index fatigue decomposition for one exercise.
+
+    Produces enough data for the UI companion "fatigue pane" that complements
+    the weight-reps curve. Useful for fatigue-dominated exercises (holds,
+    isolation movements) where three sets at a single weight degenerate to
+    stacked dots on the curve view but tell a story when indexed by set.
+
+    Algorithm:
+      * Fit the current fresh curve (same `fit_curve` the prescription uses).
+      * Walk the trailing ``days`` window of RPE-qualifying sets grouped by
+        session. The most recent session becomes ``session_observations``.
+      * For each remaining session, bucket sets by ``set_order`` and compute
+        the residual ``rtf - r_fresh(W)`` per bucket.
+      * Average residuals per set index → ``beta_per_set``. When a set index
+        has fewer than ``MIN_HISTORY_FOR_LEARNED_BETA`` history observations,
+        fall back to the exploration-derived global series.
+
+    The response is always keyed by 1-based set_index. ``has_data`` is False
+    for bodyweight/non-strength exercises or when the curve cannot be fit
+    (the UI should then render the global fallback as "typical decay").
+    """
+    exercise = session.get(Exercise, exercise_id)
+    if exercise is None:
+        return {"exercise_id": exercise_id, "has_data": False,
+                "message": "Exercise not found"}
+
+    is_bw = (exercise.load_input_mode or "external_weight") in BODYWEIGHT_MODES
+    if is_bw:
+        return {
+            "exercise_id": exercise_id,
+            "has_data": False,
+            "is_bodyweight": True,
+            "session_observations": [],
+            "model_prediction": [],
+            "beta_per_set": list(GLOBAL_BETA_PER_SET),
+            "beta_source": "fallback",
+            "n_history_sessions": 0,
+        }
+
+    fit = fit_curve(
+        exercise_id, session, days=days,
+        allow_heavy=exercise.allow_heavy_loading,
+    )
+
+    _, set_rows = _load_recent_sets(exercise_id, session, days)
+    bw_lookup = _load_bodyweight_lookup(session)
+
+    # Group by session_date in reverse-chronological order. ``_load_recent_sets``
+    # already orders by date desc, set_order asc.
+    sessions_by_date: dict[date, list[tuple[WorkoutSet, date]]] = defaultdict(list)
+    for ws, ws_date in set_rows:
+        if ws.rpe is None or ws.reps is None or ws.reps <= 0:
+            continue
+        if ws.rpe < MIN_RPE_FOR_FIT or ws.rpe > 10.0:
+            continue
+        sessions_by_date[ws_date].append((ws, ws_date))
+
+    ordered_dates = sorted(sessions_by_date.keys(), reverse=True)
+
+    # Most recent session → session_observations (what the user sees as "today"
+    # when the UI loads mid-session; falls back to the most recent completed
+    # session when nothing has been logged yet).
+    session_observations: list[dict] = []
+    if ordered_dates:
+        anchor_date = ordered_dates[0]
+        for ws, ws_date in sessions_by_date[anchor_date]:
+            ew = effective_weight(exercise, ws, bw_lookup, ws_date)
+            if ew <= 0:
+                continue
+            rir = 10.0 - float(ws.rpe)
+            session_observations.append({
+                "set_index": int(ws.set_order),
+                "weight": round(float(ws.weight or 0), 2),
+                "effective_weight": round(ew, 2),
+                "reps": int(ws.reps),
+                "rpe": round(float(ws.rpe), 1),
+                "rtf": round(float(ws.reps) + rir, 2),
+                "session_date": ws_date.isoformat(),
+            })
+
+    # History = all older sessions. Aggregate residuals per set_index.
+    history_by_set: dict[int, list[float]] = defaultdict(list)
+    history_session_dates: set[date] = set()
+    if fit is not None:
+        for older_date in ordered_dates[1:]:
+            for ws, ws_date in sessions_by_date[older_date]:
+                ew = effective_weight(exercise, ws, bw_lookup, ws_date)
+                if ew <= 0:
+                    continue
+                rir = 10.0 - float(ws.rpe)
+                rtf_obs = float(ws.reps) + rir
+                predicted_fresh = float(fresh_curve(ew, fit.M, fit.k, fit.gamma))
+                residual = rtf_obs - predicted_fresh
+                history_by_set[int(ws.set_order)].append(residual)
+                history_session_dates.add(ws_date)
+
+    # Build beta_per_set up to the largest set index we care about (at least
+    # the length of the global fallback, and any set index observed today/in
+    # history).
+    observed_indices = (
+        {o["set_index"] for o in session_observations}
+        | set(history_by_set.keys())
+    )
+    max_idx = max(
+        [len(GLOBAL_BETA_PER_SET)] + list(observed_indices) + [3]
+    )
+
+    beta_per_set: list[float] = []
+    beta_learned_flags: list[bool] = []
+    for s in range(1, max_idx + 1):
+        residuals = history_by_set.get(s, [])
+        if len(residuals) >= MIN_HISTORY_FOR_LEARNED_BETA and fit is not None:
+            beta_per_set.append(round(float(np.mean(residuals)), 3))
+            beta_learned_flags.append(True)
+        else:
+            beta_per_set.append(_global_beta(s))
+            beta_learned_flags.append(False)
+
+    beta_source = "learned" if any(beta_learned_flags) else "fallback"
+
+    # Model prediction for each observed set: r_fresh(W_s) + β_s, clamped ≥ 0.
+    model_prediction: list[dict] = []
+    if fit is not None:
+        for obs in session_observations:
+            s = obs["set_index"]
+            ew = obs["effective_weight"]
+            beta_s = beta_per_set[s - 1] if 1 <= s <= len(beta_per_set) else 0.0
+            predicted = float(fresh_curve(ew, fit.M, fit.k, fit.gamma)) + beta_s
+            model_prediction.append({
+                "set_index": s,
+                "weight": obs["weight"],
+                "effective_weight": ew,
+                "predicted_rtf": round(max(predicted, 0.0), 2),
+                "beta_used": beta_s,
+                "beta_learned": beta_learned_flags[s - 1]
+                    if 1 <= s <= len(beta_learned_flags) else False,
+            })
+
+    return {
+        "exercise_id": exercise_id,
+        "has_data": fit is not None,
+        "session_observations": session_observations,
+        "model_prediction": model_prediction,
+        "beta_per_set": beta_per_set,
+        "beta_learned_flags": beta_learned_flags,
+        "beta_source": beta_source,
+        "n_history_sessions": len(history_session_dates),
+        "curve": _curve_dict(fit) if fit is not None else None,
     }
 
 

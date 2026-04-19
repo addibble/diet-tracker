@@ -2,6 +2,7 @@ import type { FocusEvent } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import WorkoutSetEditor from './WorkoutSetEditor'
 import CurvePane, { type ConfirmedRir } from './CurvePane'
+import FatiguePane from './FatiguePane'
 import { snapWeight } from '../lib/weight_grid'
 import {
   addPlanExercise,
@@ -887,6 +888,15 @@ function ExerciseWorkout({
           onGo={() => {}}
           onConfirmRir={() => {}}
           completedSets={completedSetsData}
+        />
+      )}
+
+      {/* Fatigue companion pane — reps-by-set-index, useful when the curve
+          view degenerates (e.g. stacked dots for fatigue-dominated exercises). */}
+      {!rx?.is_bodyweight && state.sets.length > 0 && (
+        <FatiguePane
+          exerciseId={state.exercise_id}
+          setCount={state.sets.length}
         />
       )}
 

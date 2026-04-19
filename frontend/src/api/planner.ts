@@ -255,6 +255,39 @@ export const getCurveSnapshot = (exerciseId: number, date: string) =>
     `/planner/curve-snapshot/${exerciseId}?date=${encodeURIComponent(date)}`,
   );
 
+export interface FatigueProfileResponse {
+  exercise_id: number;
+  has_data: boolean;
+  is_bodyweight?: boolean;
+  session_observations: {
+    set_index: number;
+    weight: number;
+    effective_weight: number;
+    reps: number;
+    rpe: number;
+    rtf: number;
+    session_date?: string;
+  }[];
+  model_prediction: {
+    set_index: number;
+    weight: number;
+    effective_weight: number;
+    predicted_rtf: number;
+    beta_used: number;
+    beta_learned: boolean;
+  }[];
+  beta_per_set: number[];
+  beta_learned_flags: boolean[];
+  beta_source: 'learned' | 'fallback';
+  n_history_sessions: number;
+  curve?: { M: number; k: number; gamma: number } | null;
+}
+
+export const getFatigueProfile = (exerciseId: number, days: number = 30) =>
+  request<FatigueProfileResponse>(
+    `/planner/fatigue-profile/${exerciseId}?days=${days}`,
+  );
+
 export const quickStart = (exerciseIds: number[], date?: string) =>
   request<QuickStartResponse>('/planner/quick-start', {
     method: 'POST',

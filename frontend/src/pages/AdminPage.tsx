@@ -112,6 +112,20 @@ export default function AdminPage() {
     await reload()
   }
 
+  const downloadUserDb = (id: string) => {
+    // Session cookie authenticates; anchor click triggers the download.
+    const a = document.createElement('a')
+    a.href = `/api/admin/users/${id}/download-db`
+    a.click()
+  }
+
+  const downloadAllDbs = () => {
+    if (!window.confirm('Download a zip of ALL athlete databases?')) return
+    const a = document.createElement('a')
+    a.href = '/api/admin/users/download-all'
+    a.click()
+  }
+
   return (
     <div className="p-4 max-w-3xl mx-auto space-y-6">
       <h1 className="text-xl font-semibold">Administration</h1>
@@ -120,6 +134,12 @@ export default function AdminPage() {
       <section className="bg-white border rounded-md p-4">
         <div className="flex items-center justify-between mb-2">
           <h2 className="font-medium">Users ({users.length})</h2>
+          <button
+            onClick={downloadAllDbs}
+            className="text-sm text-blue-600 hover:underline"
+          >
+            Download all DBs (zip)
+          </button>
         </div>
         <table className="w-full text-sm">
           <thead className="text-left text-gray-500">
@@ -148,6 +168,12 @@ export default function AdminPage() {
                   )}
                 </td>
                 <td className="text-right space-x-2">
+                  <button
+                    onClick={() => downloadUserDb(u.id)}
+                    className="text-xs text-blue-600 hover:underline"
+                  >
+                    DB
+                  </button>
                   {u.disabled_at ? (
                     <button
                       onClick={() => enableUser(u.id)}

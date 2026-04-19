@@ -17,6 +17,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 
 from fastapi import Cookie, Depends, HTTPException, Request, Response
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlmodel import Session, select
 
 from app.auth_models import AuthSession, User
@@ -80,6 +81,57 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="Admin required")
     return user
+
+
+# ── Dual-path admin auth (passkey session OR HTTP Basic) ────────────────
+#
+# Passkey-session admins drive the browser UI; HTTP Basic against the existing
+# ``logs_user`` / ``logs_password`` .env pair lets a curl-style AI agent hit
+# read-only admin endpoints (DB downloads). **Mutating** admin endpoints must
+# keep ``require_admin`` so a leaked Basic credential can't destroy data.
+
+_basic_security = HTTPBasic(auto_error=False)
+
+
+def require_admin_or_basic(
+    request: Request,
+    basic: HTTPBasicCredentials | None = Depends(_basic_security),
+    session_cookie: str | None = Cookie(default=None, alias="session"),
+    auth_db: Session = Depends(_auth_session_dep),
+) -> str:
+    """Accept passkey-session admin OR HTTP Basic logs_user/logs_password.
+
+    Returns a short principal string for audit logs: the admin ``user.id`` on
+    the passkey path or ``"basic:{username}"`` on the Basic path. Never returns
+    without raising on failure.
+    """
+    # 1) Passkey path — silently try, fall through to Basic on any failure.
+    token = session_cookie or request.cookies.get(settings.session_cookie_name)
+    if token:
+        try:
+            row = auth_db.get(AuthSession, hash_token(token))
+            if row is not None and row.expires_at >= _now():
+                user = auth_db.get(User, row.user_id)
+                if user is not None and user.disabled_at is None and user.is_admin:
+                    row.last_seen_at = _now()
+                    auth_db.add(row)
+                    auth_db.commit()
+                    return user.id
+        except Exception:  # noqa: BLE001 — fall through to Basic
+            pass
+
+    # 2) HTTP Basic path — only when both env vars are configured.
+    if basic is not None and settings.logs_user and settings.logs_password:
+        u_ok = secrets.compare_digest(basic.username, settings.logs_user)
+        p_ok = secrets.compare_digest(basic.password, settings.logs_password)
+        if u_ok and p_ok:
+            return f"basic:{basic.username}"
+
+    raise HTTPException(
+        status_code=401,
+        detail="Admin passkey session or HTTP Basic required",
+        headers={"WWW-Authenticate": "Basic"},
+    )
 
 
 def create_session(
@@ -155,5 +207,6 @@ __all__ = [
     "hash_token",
     "list_user_sessions",
     "require_admin",
+    "require_admin_or_basic",
     "revoke_session",
 ]

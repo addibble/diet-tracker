@@ -1,18 +1,24 @@
-"""Admin endpoints: user list, disable/delete, invite management."""
+"""Admin endpoints: user list, disable/delete, invite management, DB downloads."""
 
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import secrets
 import shutil
+import sqlite3
+import tempfile
+import zipfile
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, EmailStr
 from sqlmodel import Session, delete, select
 
-from app.auth import _auth_db_dep, require_admin
+from app.auth import _auth_db_dep, require_admin, require_admin_or_basic
 from app.auth_models import (
     AuthSession,
     Invite,
@@ -21,7 +27,12 @@ from app.auth_models import (
     WebAuthnCredential,
 )
 from app.config import settings
-from app.db_engines import dispose_user_engine, user_db_dir
+from app.db_engines import (
+    dispose_user_engine,
+    user_db_dir,
+    user_db_path,
+    user_exists_on_disk,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -232,3 +243,136 @@ def revoke_any_session(
     db.delete(row)
     db.commit()
     return {"status": "ok"}
+
+
+# ── DB downloads (dual-auth: passkey admin OR HTTP Basic for AI agent) ──
+
+
+def _timestamp_slug() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%d_%H%M%S")
+
+
+def _snapshot_user_db(user_id: str) -> Path:
+    """Make a consistent SQLite snapshot via ``sqlite3.backup``. Raises if the
+    user does not exist on disk. Caller is responsible for cleanup."""
+    if not user_exists_on_disk(user_id):
+        raise HTTPException(status_code=404, detail="User DB not found")
+    src_path = user_db_path(user_id)
+    tmp = tempfile.NamedTemporaryFile(
+        prefix=f"snap_{user_id}_", suffix=".db", delete=False,
+    )
+    tmp.close()
+    dst_path = Path(tmp.name)
+    # ``with sqlite3.connect(...)`` only commits/rollbacks on exit, it does
+    # NOT close the connection — we must close() explicitly or Windows will
+    # refuse to unlink the file afterwards.
+    src = sqlite3.connect(str(src_path))
+    dst = sqlite3.connect(str(dst_path))
+    try:
+        src.backup(dst)
+    except Exception:
+        dst.close()
+        src.close()
+        dst_path.unlink(missing_ok=True)
+        raise
+    dst.close()
+    src.close()
+    return dst_path
+
+
+def _unlink_later(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.exception("Failed to remove snapshot %s", path)
+
+
+@router.get("/users/{user_id}/download-db")
+def download_user_db(
+    user_id: str,
+    background: BackgroundTasks,
+    db: Session = Depends(_auth_db_dep),
+    principal: str = Depends(require_admin_or_basic),
+) -> FileResponse:
+    """Stream one user's per-user SQLite DB as a consistent snapshot."""
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    snap = _snapshot_user_db(user_id)
+    logger.info(
+        "admin download: principal=%s target=user_db user_id=%s size=%d",
+        principal, user_id, snap.stat().st_size,
+    )
+    background.add_task(_unlink_later, snap)
+    filename = f"{user_id}_{_timestamp_slug()}.db"
+    return FileResponse(
+        path=str(snap),
+        media_type="application/vnd.sqlite3",
+        filename=filename,
+    )
+
+
+@router.get("/users/download-all")
+def download_all_dbs(
+    background: BackgroundTasks,
+    db: Session = Depends(_auth_db_dep),
+    principal: str = Depends(require_admin_or_basic),
+) -> FileResponse:
+    """Zip every per-user SQLite DB (snapshotted) with a top-level manifest."""
+    users = list(db.exec(select(User).order_by(User.created_at)))
+
+    tmp_zip = tempfile.NamedTemporaryFile(
+        prefix="all_athletes_", suffix=".zip", delete=False,
+    )
+    tmp_zip.close()
+    zip_path = Path(tmp_zip.name)
+    snapshots: list[Path] = []
+
+    try:
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as z:
+            manifest: list[dict] = []
+            for u in users:
+                if not user_exists_on_disk(u.id):
+                    manifest.append({
+                        "user_id": u.id, "display_name": u.display_name,
+                        "last_login_at": u.last_login_at.isoformat()
+                            if u.last_login_at else None,
+                        "included": False, "reason": "no_db_on_disk",
+                    })
+                    continue
+                snap = _snapshot_user_db(u.id)
+                snapshots.append(snap)
+                arcname = f"{u.id}/{u.id}_{_timestamp_slug()}.db"
+                z.write(snap, arcname=arcname)
+                manifest.append({
+                    "user_id": u.id,
+                    "display_name": u.display_name,
+                    "email": u.email,
+                    "is_admin": u.is_admin,
+                    "last_login_at": u.last_login_at.isoformat()
+                        if u.last_login_at else None,
+                    "included": True,
+                    "archive_path": arcname,
+                    "size_bytes": snap.stat().st_size,
+                })
+            z.writestr("manifest.json", json.dumps(manifest, indent=2))
+    except Exception:
+        zip_path.unlink(missing_ok=True)
+        for s in snapshots:
+            s.unlink(missing_ok=True)
+        raise
+
+    for snap in snapshots:
+        snap.unlink(missing_ok=True)
+
+    logger.info(
+        "admin download: principal=%s target=all_dbs user_count=%d size=%d",
+        principal, len(users), zip_path.stat().st_size,
+    )
+    background.add_task(_unlink_later, zip_path)
+    filename = f"all_athletes_{_timestamp_slug()}.zip"
+    return FileResponse(
+        path=str(zip_path),
+        media_type="application/zip",
+        filename=filename,
+    )

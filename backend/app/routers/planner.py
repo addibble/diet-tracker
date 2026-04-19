@@ -44,6 +44,7 @@ from app.planner_state import (
 from app.strength_model import (
     check_heavy_availability,
     curve_snapshot_for_date,
+    fatigue_profile,
     get_exercise_freshness,
     prescribe_next_set,
 )
@@ -219,6 +220,21 @@ def curve_snapshot(
 ):
     """Historical curve fit for the completed-exercise view (Recent Sessions)."""
     return curve_snapshot_for_date(exercise_id, session, date)
+
+
+@router.get("/fatigue-profile/{exercise_id}")
+def get_fatigue_profile(
+    exercise_id: int,
+    days: int = Query(default=30, ge=7, le=180),
+    session: Session = Depends(get_session),
+    _user: str = Depends(get_current_user),
+):
+    """Per-set fatigue decomposition for the reps-by-set-index companion chart.
+
+    Returns `r_fresh(W_s) + β_s` where β_s is the learned per-(exercise, set_index)
+    residual over the trailing window, with a global fallback when data is sparse.
+    """
+    return fatigue_profile(exercise_id, session, days=days)
 
 
 def _get_bw_lookup(session: Session) -> dict:
