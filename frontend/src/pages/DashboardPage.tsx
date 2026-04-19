@@ -24,6 +24,8 @@ import {
 } from '../api'
 import MealItemEditor from '../components/MealItemEditor'
 import WorkoutSetEditor from '../components/WorkoutSetEditor'
+import CurvePane, { type CompletedSet } from '../components/CurvePane'
+import { getCurveSnapshot, type CurveSnapshotResponse } from '../api/planner'
 
 function today() {
   const now = new Date()
@@ -580,6 +582,10 @@ function RecentSessionsCard({
   const [expandedDates, setExpandedDates] = useState<string[]>([])
   const [editingDates, setEditingDates] = useState<Set<string>>(new Set())
   const [deleting, setDeleting] = useState<Set<number>>(new Set())
+  // snapshot cache keyed by `${date}:${exercise_id}`
+  const [snapshots, setSnapshots] = useState<
+    Map<string, CurveSnapshotResponse | 'loading' | 'error'>
+  >(new Map())
 
   // Group multiple sessions on the same date into one entry
   const byDate = useMemo(() => {
@@ -636,6 +642,47 @@ function RecentSessionsCard({
         return { date, sessions: daySessions, exerciseMap, totalVolume, rpeMissingCount, notes, f1Statuses }
       })
   }, [sessions])
+
+  // When a date expands (and not in editing mode) fetch curve snapshots
+  // for each exercise shown that day. Cache per (date, exercise_id).
+  useEffect(() => {
+    for (const date of expandedDates) {
+      if (editingDates.has(date)) continue
+      const day = byDate.find((d) => d.date === date)
+      if (!day) continue
+      // Resolve the first (earliest-ordered) exercise_id for each name.
+      const byName = new Map<string, number>()
+      for (const [name, sets] of day.exerciseMap) {
+        const withId = sets.find((s) => s.exercise_id != null)
+        if (withId?.exercise_id != null) byName.set(name, withId.exercise_id)
+      }
+      for (const [, exId] of byName) {
+        const key = `${date}:${exId}`
+        if (snapshots.has(key)) continue
+        setSnapshots((prev) => {
+          if (prev.has(key)) return prev
+          const next = new Map(prev)
+          next.set(key, 'loading')
+          return next
+        })
+        getCurveSnapshot(exId, date)
+          .then((resp) => {
+            setSnapshots((prev) => {
+              const next = new Map(prev)
+              next.set(key, resp)
+              return next
+            })
+          })
+          .catch(() => {
+            setSnapshots((prev) => {
+              const next = new Map(prev)
+              next.set(key, 'error')
+              return next
+            })
+          })
+      }
+    }
+  }, [expandedDates, editingDates, byDate, snapshots])
 
   if (byDate.length === 0) return null
 
@@ -779,6 +826,24 @@ function RecentSessionsCard({
                       {Array.from(exerciseMap.entries()).map(([name, sets]) => {
                         const exerciseStatus = f1Statuses.get(name)
                         const missingRpeCount = sets.filter((s) => s.rpe == null).length
+                        const exId = sets.find((s) => s.exercise_id != null)?.exercise_id
+                        const snap = exId != null ? snapshots.get(`${date}:${exId}`) : undefined
+                        const snapData =
+                          snap && snap !== 'loading' && snap !== 'error' ? snap : null
+                        const completedSets: CompletedSet[] = sets
+                          .filter(
+                            (s) =>
+                              s.weight != null && s.reps != null && s.rpe != null,
+                          )
+                          .map((s) => ({
+                            weight: s.weight as number,
+                            reps: s.reps as number,
+                            rir: Math.max(0, Math.round(10 - (s.rpe as number))),
+                          }))
+                        const showCurve =
+                          snapData?.has_curve &&
+                          snapData.curve != null &&
+                          completedSets.length > 0
                         return (
                           <div key={name}>
                             <div className="flex flex-wrap items-center gap-2">
@@ -794,23 +859,42 @@ function RecentSessionsCard({
                                 </span>
                               )}
                             </div>
-                            <div className="flex flex-wrap gap-1 mt-0.5">
-                              {sets.map((s) => {
-                                const missingRpe = s.rpe == null
-                                return (
-                                  <span
-                                    key={s.id}
-                                    className={`rounded px-1.5 py-0.5 text-[11px] ${
-                                      missingRpe
-                                        ? 'bg-amber-50 font-medium text-amber-700'
-                                        : 'bg-gray-50 text-gray-500'
-                                    }`}
-                                  >
-                                    {formatRecentSessionSet(s)} · {formatRecentSessionRpe(s)}
-                                  </span>
-                                )
-                              })}
-                            </div>
+                            {showCurve ? (
+                              <div className="mt-1">
+                                <CurvePane
+                                  mode="completed"
+                                  curve={snapData.curve ?? null}
+                                  priorCurve={snapData.curve_prior ?? null}
+                                  observations={snapData.observations ?? []}
+                                  sparkWeight={0}
+                                  sparkReps={0}
+                                  schemeRir={0}
+                                  schemeSetNumber={completedSets.length}
+                                  onSparkChange={() => {}}
+                                  onGo={() => {}}
+                                  onConfirmRir={() => {}}
+                                  completedSets={completedSets}
+                                />
+                              </div>
+                            ) : (
+                              <div className="flex flex-wrap gap-1 mt-0.5">
+                                {sets.map((s) => {
+                                  const missingRpe = s.rpe == null
+                                  return (
+                                    <span
+                                      key={s.id}
+                                      className={`rounded px-1.5 py-0.5 text-[11px] ${
+                                        missingRpe
+                                          ? 'bg-amber-50 font-medium text-amber-700'
+                                          : 'bg-gray-50 text-gray-500'
+                                      }`}
+                                    >
+                                      {formatRecentSessionSet(s)} · {formatRecentSessionRpe(s)}
+                                    </span>
+                                  )
+                                })}
+                              </div>
+                            )}
                           </div>
                         )
                       })}

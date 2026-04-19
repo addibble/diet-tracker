@@ -43,6 +43,7 @@ from app.planner_state import (
 )
 from app.strength_model import (
     check_heavy_availability,
+    curve_snapshot_for_date,
     get_exercise_freshness,
     prescribe_next_set,
 )
@@ -207,6 +208,17 @@ def prescribe_next(
         actual_weight=data.actual_weight,
         training_mode=data.training_mode,
     )
+
+
+@router.get("/curve-snapshot/{exercise_id}")
+def curve_snapshot(
+    exercise_id: int,
+    date: datetime.date = Query(..., description="Date to snapshot the curve for"),
+    session: Session = Depends(get_session),
+    _user: str = Depends(get_current_user),
+):
+    """Historical curve fit for the completed-exercise view (Recent Sessions)."""
+    return curve_snapshot_for_date(exercise_id, session, date)
 
 
 def _get_bw_lookup(session: Session) -> dict:

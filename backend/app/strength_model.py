@@ -385,9 +385,14 @@ def _fit_params(
 
 
 def _load_recent_sets(
-    exercise_id: int, session: Session, days: int
+    exercise_id: int, session: Session, days: int,
+    *, as_of: date | None = None,
 ) -> tuple[Exercise | None, list[tuple[WorkoutSet, date]]]:
-    """Load exercise and its recent RPE sets."""
+    """Load exercise and its recent RPE sets.
+
+    When ``as_of`` is provided, the window is anchored on that date (sets on
+    dates > as_of are excluded) so we can fit a curve snapshot for a past day.
+    """
     exercise = session.get(Exercise, exercise_id)
     if exercise is None:
         return None, []
@@ -396,7 +401,8 @@ def _load_recent_sets(
     if (exercise.load_input_mode or "external_weight") in BODYWEIGHT_MODES:
         return exercise, []
 
-    cutoff = user_today() - timedelta(days=days)
+    anchor = as_of if as_of is not None else user_today()
+    cutoff = anchor - timedelta(days=days)
 
     stmt = (
         select(WorkoutSet, WorkoutSession.date)
@@ -407,6 +413,7 @@ def _load_recent_sets(
             WorkoutSet.reps.is_not(None),
             WorkoutSet.reps > 0,
             WorkoutSession.date >= cutoff,
+            WorkoutSession.date <= anchor,
         )
         .order_by(WorkoutSession.date.desc(), WorkoutSet.set_order)
     )
@@ -426,6 +433,7 @@ def _load_bodyweight_lookup(session: Session) -> dict[date, float]:
 def fit_curve(
     exercise_id: int, session: Session, *, days: int = 30,
     allow_heavy: bool = True, exclude_today: bool = False,
+    as_of: date | None = None,
 ) -> CurveFit | None:
     """Fit the fresh-set strength curve for an exercise using recent RPE data.
 
@@ -434,13 +442,15 @@ def fit_curve(
     When allow_heavy is False, forces tier2 (fixed gamma) regardless of data.
     When exclude_today is True, sets performed today are dropped before fitting;
     this is used to produce the "prior" curve shown alongside today's refit.
+    When as_of is provided the "today" reference is that date, and the window
+    anchors on it (for historical snapshots of the completed-exercise view).
     """
-    exercise, set_rows = _load_recent_sets(exercise_id, session, days)
+    exercise, set_rows = _load_recent_sets(exercise_id, session, days, as_of=as_of)
     if exercise is None or not set_rows:
         return None
 
     bw_lookup = _load_bodyweight_lookup(session)
-    today = user_today()
+    today = as_of if as_of is not None else user_today()
 
     if exclude_today:
         set_rows = [(ws, d) for (ws, d) in set_rows if d < today]
@@ -1102,24 +1112,66 @@ def _curve_dict(fit: CurveFit) -> dict:
 
 
 def _build_observations(
-    exercise_id: int, session: Session, *, days: int = 30, limit: int = 40
+    exercise_id: int, session: Session, *, days: int = 30, limit: int = 40,
+    as_of: date | None = None, exclude_on_date: bool = False,
 ) -> list[dict]:
-    """Return recent RPE observations for the curve chart's gray dots."""
-    exercise, set_rows = _load_recent_sets(exercise_id, session, days)
+    """Return recent RPE observations for the curve chart's gray dots.
+
+    When ``as_of`` is set, the window anchors on that date (for historical
+    snapshots). When ``exclude_on_date`` is also True, sets on the anchor
+    date are omitted so the caller can draw them separately (e.g. as the
+    colored per-set sparks in the completed view).
+    """
+    exercise, set_rows = _load_recent_sets(exercise_id, session, days, as_of=as_of)
     if exercise is None:
         return []
-    today = user_today()
+    anchor = as_of if as_of is not None else user_today()
     out: list[dict] = []
     for ws, ws_date in set_rows[:limit]:
         if ws.weight is None or ws.reps is None or ws.rpe is None:
+            continue
+        if exclude_on_date and ws_date == anchor:
             continue
         out.append({
             "weight": round(float(ws.weight), 2),
             "reps": int(ws.reps),
             "rir": round(10.0 - float(ws.rpe)),
-            "age_days": max(0, (today - ws_date).days),
+            "age_days": max(0, (anchor - ws_date).days),
         })
     return out
+
+
+def curve_snapshot_for_date(
+    exercise_id: int, session: Session, on_date: date,
+) -> dict:
+    """Fit the strength curve as of ``on_date`` for the completed-exercise view.
+
+    Returns a dict with ``has_curve``, ``curve`` (fit up to & including on_date),
+    ``curve_prior`` (fit strictly before on_date), and ``observations`` (RPE
+    sets in the 30-day window before on_date, excluding the anchor day).
+    """
+    exercise = session.get(Exercise, exercise_id)
+    if exercise is None:
+        return {"has_curve": False, "observations": []}
+    is_bw = (exercise.load_input_mode or "external_weight") in BODYWEIGHT_MODES
+    if is_bw:
+        return {"has_curve": False, "is_bodyweight": True, "observations": []}
+
+    allow_heavy = exercise.allow_heavy_loading
+    fit = fit_curve(exercise_id, session, allow_heavy=allow_heavy, as_of=on_date)
+    prior_fit = fit_curve(
+        exercise_id, session, allow_heavy=allow_heavy,
+        as_of=on_date, exclude_today=True,
+    )
+    observations = _build_observations(
+        exercise_id, session, as_of=on_date, exclude_on_date=True,
+    )
+    return {
+        "has_curve": fit is not None,
+        "curve": _curve_dict(fit) if fit is not None else None,
+        "curve_prior": _curve_dict(prior_fit) if prior_fit is not None else None,
+        "observations": observations,
+    }
 
 
 def _scheme_for(exercise: Exercise, training_mode: str) -> list[tuple]:

@@ -223,6 +223,38 @@ export const prescribeNext = (data: PrescribeNextRequest) =>
     body: JSON.stringify(data),
   });
 
+export interface CurveSnapshotResponse {
+  has_curve: boolean;
+  is_bodyweight?: boolean;
+  curve?: {
+    M: number;
+    k: number;
+    gamma: number;
+    fit_tier?: string;
+    n_obs?: number;
+    max_observed_weight?: number;
+  } | null;
+  curve_prior?: {
+    M: number;
+    k: number;
+    gamma: number;
+    fit_tier?: string;
+    n_obs?: number;
+    max_observed_weight?: number;
+  } | null;
+  observations?: {
+    weight: number;
+    reps: number;
+    rir?: number;
+    age_days: number;
+  }[];
+}
+
+export const getCurveSnapshot = (exerciseId: number, date: string) =>
+  request<CurveSnapshotResponse>(
+    `/planner/curve-snapshot/${exerciseId}?date=${encodeURIComponent(date)}`,
+  );
+
 export const quickStart = (exerciseIds: number[], date?: string) =>
   request<QuickStartResponse>('/planner/quick-start', {
     method: 'POST',
