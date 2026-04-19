@@ -231,7 +231,7 @@ export default function ActiveWorkoutCard({
 
   const fetchPrescription = (idx: number, states: typeof exStates) => {
     const ex = states[idx]
-    if (!ex || ex.complete || ex.prescription) return
+    if (!ex || ex.prescription) return
     // Non-rep metric exercises have no strength curve; skip prescription.
     if (ex.set_metric_mode && ex.set_metric_mode !== 'reps' && ex.set_metric_mode !== 'hybrid') return
     if (fetchingRef.current === ex.exercise_id) return
@@ -272,7 +272,7 @@ export default function ActiveWorkoutCard({
 
   // Auto-trigger prescription fetch when active exercise needs one
   const activeEx = exStates[activeIdx]
-  const needsRx = activeEx && !activeEx.complete && !activeEx.prescription && !activeEx.prescribing
+  const needsRx = activeEx && !activeEx.prescription && !activeEx.prescribing
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- async data fetch triggered by state change
     if (needsRx) fetchPrescription(activeIdx, exStates)
@@ -732,6 +732,17 @@ function ExerciseWorkout({
   const curveFit = useMemo(() => (
     rx?.curve ? { M: rx.curve.M, k: rx.curve.k, gamma: rx.curve.gamma } : null
   ), [rx?.curve])
+  const priorCurveFit = useMemo(() => (
+    rx?.curve_prior
+      ? { M: rx.curve_prior.M, k: rx.curve_prior.k, gamma: rx.curve_prior.gamma }
+      : null
+  ), [rx?.curve_prior])
+  const completedSetsData = useMemo(() => (
+    state.sets.map(s => ({ weight: s.weight, reps: s.reps, rir: s.rir }))
+  ), [state.sets])
+  const useCompletedCurvePane = (
+    repsOnlyMode && !rx?.is_bodyweight && state.complete && !!rx?.curve
+  )
   const observations = rx?.observations ?? []
   const schemeRir = rx?.next_set?.target_rir ?? rx?.scheme?.target_rir ?? 3
   const schemeSetNumber = (
@@ -841,8 +852,8 @@ function ExerciseWorkout({
           )}
         </div>
       )}
-      {/* Logged sets summary */}
-      {state.sets.length > 0 && (
+      {/* Logged sets summary (hidden when the completed curve pane handles it) */}
+      {state.sets.length > 0 && !useCompletedCurvePane && (
         <div className="space-y-1">
           {state.sets.map((s, i) => {
             const parts: string[] = []
@@ -860,6 +871,25 @@ function ExerciseWorkout({
         </div>
       )}
 
+      {/* Completed curve pane — colored sparks, today's + prior curves, history */}
+      {useCompletedCurvePane && (
+        <CurvePane
+          mode="completed"
+          curve={curveFit}
+          priorCurve={priorCurveFit}
+          bootstrapTargetReps={bootstrapTargetReps}
+          observations={observations}
+          sparkWeight={0}
+          sparkReps={0}
+          schemeRir={schemeRir}
+          schemeSetNumber={schemeSetNumber}
+          onSparkChange={() => {}}
+          onGo={() => {}}
+          onConfirmRir={() => {}}
+          completedSets={completedSetsData}
+        />
+      )}
+
       {/* Inflection result */}
       {state.complete && state.inflection_detected && (
         <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
@@ -872,7 +902,7 @@ function ExerciseWorkout({
         </div>
       )}
 
-      {state.complete && !state.inflection_detected && state.sets.length >= 3 && (
+      {state.complete && !state.inflection_detected && state.sets.length >= 3 && !useCompletedCurvePane && (
         <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
           <p className="text-xs font-medium text-gray-800">
             ✓ Exercise complete ({state.sets.length} sets)

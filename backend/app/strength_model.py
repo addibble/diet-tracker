@@ -425,13 +425,15 @@ def _load_bodyweight_lookup(session: Session) -> dict[date, float]:
 
 def fit_curve(
     exercise_id: int, session: Session, *, days: int = 30,
-    allow_heavy: bool = True,
+    allow_heavy: bool = True, exclude_today: bool = False,
 ) -> CurveFit | None:
     """Fit the fresh-set strength curve for an exercise using recent RPE data.
 
     Returns None if insufficient qualifying data (< MIN_SETS_TIER2 RPE sets
     within the last `days` days, or exercise is bodyweight/non-strength).
     When allow_heavy is False, forces tier2 (fixed gamma) regardless of data.
+    When exclude_today is True, sets performed today are dropped before fitting;
+    this is used to produce the "prior" curve shown alongside today's refit.
     """
     exercise, set_rows = _load_recent_sets(exercise_id, session, days)
     if exercise is None or not set_rows:
@@ -439,6 +441,11 @@ def fit_curve(
 
     bw_lookup = _load_bodyweight_lookup(session)
     today = user_today()
+
+    if exclude_today:
+        set_rows = [(ws, d) for (ws, d) in set_rows if d < today]
+        if not set_rows:
+            return None
 
     # Build observations
     eff_weights: list[float] = []
@@ -917,9 +924,13 @@ def prescribe_next_set(
     n_done = len(prior_sets)
     curve_block = _curve_dict(fit)
     observations = _build_observations(exercise_id, session)
+    # Prior-day curve (excludes today's sets) — for the post-complete display.
+    prior_fit = fit_curve(exercise_id, session, allow_heavy=allow_heavy, exclude_today=True)
+    curve_prior_block = _curve_dict(prior_fit) if prior_fit is not None else None
 
     def _with_curve(d: dict) -> dict:
         d["curve"] = curve_block
+        d["curve_prior"] = curve_prior_block
         d["observations"] = observations
         return d
 

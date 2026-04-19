@@ -129,6 +129,15 @@ export interface PrescribeNextResponse {
     n_obs?: number;
     max_observed_weight?: number;
   } | null;
+  // Curve fit over observations strictly before today (for the completed view).
+  curve_prior?: {
+    M: number;
+    k: number;
+    gamma: number;
+    fit_tier?: string;
+    n_obs?: number;
+    max_observed_weight?: number;
+  } | null;
   observations?: {
     weight: number;
     reps: number;

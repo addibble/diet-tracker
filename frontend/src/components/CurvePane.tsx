@@ -14,13 +14,20 @@ export interface CurveObservation {
   age_days: number
 }
 
-export type CurvePaneMode = 'pre' | 'logging'
+export type CurvePaneMode = 'pre' | 'logging' | 'completed'
 
 export type ConfirmedRir = 0 | 1 | 2 | 3 | 5
+
+export interface CompletedSet {
+  weight: number
+  reps: number
+  rir: number
+}
 
 interface Props {
   mode: CurvePaneMode
   curve: CurveFit | null
+  priorCurve?: CurveFit | null
   bootstrapTargetReps?: number  // used when curve == null
   observations: CurveObservation[]
   sparkWeight: number
@@ -31,6 +38,7 @@ interface Props {
   onGo: () => void
   onConfirmRir: (rir: ConfirmedRir) => void
   submitting?: boolean
+  completedSets?: CompletedSet[]
 }
 
 const VB_W = 320
@@ -101,6 +109,7 @@ function curvePath(
 export default function CurvePane({
   mode,
   curve,
+  priorCurve = null,
   bootstrapTargetReps = 15,
   observations,
   sparkWeight,
@@ -111,6 +120,7 @@ export default function CurvePane({
   onGo,
   onConfirmRir,
   submitting = false,
+  completedSets,
 }: Props) {
   const svgRef = useRef<SVGSVGElement | null>(null)
   const rafRef = useRef<number | null>(null)
@@ -280,6 +290,23 @@ export default function CurvePane({
   const sparkX = xToPx(sparkWeight)
   const sparkY = yToPx(sparkReps)
 
+  // Colors for today's completed sets (in set order). Up to 6 distinct hues.
+  const SET_COLORS = [
+    '#ef4444', // red
+    '#f97316', // orange
+    '#eab308', // yellow
+    '#22c55e', // green
+    '#3b82f6', // blue
+    '#a855f7', // purple
+  ]
+
+  const isCompleted = mode === 'completed'
+  // In completed mode hide today's gray dots so they don't duplicate the
+  // colored sparks rendered from completedSets.
+  const visibleObservations = isCompleted
+    ? observations.filter(o => o.age_days > 0)
+    : observations
+
   return (
     <div className="relative">
       {/* Go button (pre mode only) */}
@@ -298,22 +325,30 @@ export default function CurvePane({
       {/* Set + live readout banner */}
       <div className="mb-1 flex items-end justify-between gap-2 px-1">
         <span className="text-[11px] font-medium text-gray-500">
-          Set {schemeSetNumber}
-          <span className="ml-1 text-gray-400">· target RIR {schemeRir}</span>
-          {mode === 'logging' && (
-            <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
-              log reps
-            </span>
+          {isCompleted ? (
+            <>Exercise complete · {completedSets?.length ?? 0} sets</>
+          ) : (
+            <>
+              Set {schemeSetNumber}
+              <span className="ml-1 text-gray-400">· target RIR {schemeRir}</span>
+              {mode === 'logging' && (
+                <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                  log reps
+                </span>
+              )}
+            </>
           )}
         </span>
-        <span
-          className={`text-xl font-bold tabular-nums ${
-            dragging ? 'text-emerald-600' : 'text-gray-900'
-          }`}
-        >
-          {Math.max(0, Math.round(sparkReps))} reps @{' '}
-          {sparkWeight % 1 === 0 ? sparkWeight : sparkWeight.toFixed(1)} lbs
-        </span>
+        {!isCompleted && (
+          <span
+            className={`text-xl font-bold tabular-nums ${
+              dragging ? 'text-emerald-600' : 'text-gray-900'
+            }`}
+          >
+            {Math.max(0, Math.round(sparkReps))} reps @{' '}
+            {sparkWeight % 1 === 0 ? sparkWeight : sparkWeight.toFixed(1)} lbs
+          </span>
+        )}
       </div>
 
       <svg
@@ -321,11 +356,11 @@ export default function CurvePane({
         viewBox={`0 0 ${VB_W} ${VB_H}`}
         preserveAspectRatio="none"
         className="block w-full select-none rounded-lg border border-gray-200 bg-white"
-        style={{ aspectRatio: '16 / 10', touchAction: 'none' }}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerUp}
+        style={{ aspectRatio: '16 / 10', touchAction: isCompleted ? 'auto' : 'none' }}
+        onPointerDown={isCompleted ? undefined : handlePointerDown}
+        onPointerMove={isCompleted ? undefined : handlePointerMove}
+        onPointerUp={isCompleted ? undefined : handlePointerUp}
+        onPointerCancel={isCompleted ? undefined : handlePointerUp}
       >
         {/* Plot background */}
         <rect
@@ -391,6 +426,18 @@ export default function CurvePane({
           reps
         </text>
 
+        {/* Prior curve (yellow, dashed) — drawn under the green curve */}
+        {isCompleted && priorCurve && (
+          <path
+            d={curvePath(priorCurve, xMin, xMax, xToPx, yToPx)}
+            fill="none"
+            stroke="#eab308"
+            strokeWidth={1.5}
+            strokeDasharray="4 3"
+            opacity={0.85}
+          />
+        )}
+
         {/* Curve or flat target line */}
         {curve ? (
           <path
@@ -412,7 +459,7 @@ export default function CurvePane({
         )}
 
         {/* Historical observations */}
-        {observations.map((o, i) => {
+        {visibleObservations.map((o, i) => {
           if (o.weight <= 0 || o.reps <= 0) return null
           const op = clamp(1 - o.age_days / 30, 0.25, 1)
           return (
@@ -427,68 +474,148 @@ export default function CurvePane({
           )
         })}
 
-        {/* Spark hit target (larger for touch) + visible dot */}
-        <g pointerEvents="none">
-          {/* Vertical/horizontal guide */}
-          {mode === 'pre' ? (
-            <line
-              x1={sparkX}
-              x2={sparkX}
-              y1={PAD_T}
-              y2={PAD_T + PLOT_H}
-              stroke="#10b981"
-              strokeOpacity="0.25"
-              strokeDasharray="2 3"
-            />
-          ) : (
-            <>
+        {/* Completed-mode sparks for today's sets, with labels */}
+        {isCompleted && completedSets?.map((s, i) => {
+          const cx = xToPx(s.weight)
+          const cy = yToPx(s.reps)
+          const color = SET_COLORS[i % SET_COLORS.length]
+          // Alternate label above / below to reduce overlap.
+          const above = cy > PAD_T + PLOT_H / 2
+          const labelY = above ? cy - 12 : cy + 18
+          // Nudge label horizontally to stay within plot.
+          const labelText = `${s.weight}×${s.reps} RIR${s.rir}`
+          const approxWidth = labelText.length * 4.3 + 6
+          let tx = cx
+          const minX = PAD_L + approxWidth / 2 + 2
+          const maxX = PAD_L + PLOT_W - approxWidth / 2 - 2
+          if (tx < minX) tx = minX
+          if (tx > maxX) tx = maxX
+          return (
+            <g key={`set-${i}`}>
+              <circle cx={cx} cy={cy} r={9} fill={color} fillOpacity={0.18} />
+              <circle
+                cx={cx} cy={cy} r={5}
+                fill={color} stroke="#fff" strokeWidth={1.5}
+              />
+              <text
+                x={cx} y={cy + 2}
+                textAnchor="middle" fontSize="7"
+                fill="#fff" fontWeight="bold"
+              >
+                {i + 1}
+              </text>
+              <rect
+                x={tx - approxWidth / 2}
+                y={labelY - 7}
+                width={approxWidth}
+                height={10}
+                rx={2}
+                fill="white"
+                stroke={color}
+                strokeWidth={0.75}
+              />
+              <text
+                x={tx} y={labelY + 1}
+                textAnchor="middle" fontSize="7"
+                fill="#111827" fontWeight="600"
+              >
+                {labelText}
+              </text>
+            </g>
+          )
+        })}
+
+        {/* Interactive spark (pre / logging only) */}
+        {!isCompleted && (
+          <g pointerEvents="none">
+            {/* Vertical/horizontal guide */}
+            {mode === 'pre' ? (
               <line
                 x1={sparkX}
                 x2={sparkX}
                 y1={PAD_T}
                 y2={PAD_T + PLOT_H}
-                stroke="#f59e0b"
-                strokeOpacity="0.35"
+                stroke="#10b981"
+                strokeOpacity="0.25"
                 strokeDasharray="2 3"
               />
-              <line
-                x1={PAD_L}
-                x2={PAD_L + PLOT_W}
-                y1={sparkY}
-                y2={sparkY}
-                stroke="#f59e0b"
-                strokeOpacity="0.35"
-                strokeDasharray="2 3"
-              />
-            </>
-          )}
-          <circle
-            cx={sparkX}
-            cy={sparkY}
-            r={10}
-            fill={mode === 'pre' ? '#10b981' : '#f59e0b'}
-            fillOpacity="0.2"
-          />
-          <circle
-            cx={sparkX}
-            cy={sparkY}
-            r={6}
-            fill={mode === 'pre' ? '#10b981' : '#f59e0b'}
-            stroke="#fff"
-            strokeWidth={1.5}
-          />
-        </g>
+            ) : (
+              <>
+                <line
+                  x1={sparkX}
+                  x2={sparkX}
+                  y1={PAD_T}
+                  y2={PAD_T + PLOT_H}
+                  stroke="#f59e0b"
+                  strokeOpacity="0.35"
+                  strokeDasharray="2 3"
+                />
+                <line
+                  x1={PAD_L}
+                  x2={PAD_L + PLOT_W}
+                  y1={sparkY}
+                  y2={sparkY}
+                  stroke="#f59e0b"
+                  strokeOpacity="0.35"
+                  strokeDasharray="2 3"
+                />
+              </>
+            )}
+            <circle
+              cx={sparkX}
+              cy={sparkY}
+              r={10}
+              fill={mode === 'pre' ? '#10b981' : '#f59e0b'}
+              fillOpacity="0.2"
+            />
+            <circle
+              cx={sparkX}
+              cy={sparkY}
+              r={6}
+              fill={mode === 'pre' ? '#10b981' : '#f59e0b'}
+              stroke="#fff"
+              strokeWidth={1.5}
+            />
+          </g>
+        )}
       </svg>
 
-      {/* Spark readout */}
-      <div className="mt-2 flex items-baseline justify-between px-1 text-sm">
-        <span className="font-semibold tabular-nums text-gray-900">
-          {snapWeight(sparkWeight)} lb × {Math.max(0, Math.round(sparkReps))} reps
-        </span>
-        <span className="text-[11px] text-gray-500">
-          {mode === 'pre' ? 'drag to pick weight' : 'drag to set reps achieved'}
-        </span>
-      </div>
+      {/* Spark readout (drag-mode only) */}
+      {!isCompleted && (
+        <div className="mt-2 flex items-baseline justify-between px-1 text-sm">
+          <span className="font-semibold tabular-nums text-gray-900">
+            {snapWeight(sparkWeight)} lb × {Math.max(0, Math.round(sparkReps))} reps
+          </span>
+          <span className="text-[11px] text-gray-500">
+            {mode === 'pre' ? 'drag to pick weight' : 'drag to set reps achieved'}
+          </span>
+        </div>
+      )}
+
+      {/* Legend (completed mode) */}
+      {isCompleted && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-[10px] text-gray-500">
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-[2px] w-4 bg-emerald-500" />
+            today
+          </span>
+          {priorCurve && (
+            <span className="flex items-center gap-1">
+              <span
+                className="inline-block h-[2px] w-4"
+                style={{
+                  backgroundImage: 'repeating-linear-gradient(to right, #eab308 0 4px, transparent 4px 7px)',
+                }}
+              />
+              before today
+            </span>
+          )}
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-2 w-2 rounded-full bg-gray-400" />
+            history
+          </span>
+        </div>
+      )}
 
       {/* RIR confirm row (logging) */}
       {mode === 'logging' && (
