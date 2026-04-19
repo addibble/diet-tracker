@@ -41,7 +41,13 @@ _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 _parse_logger.addHandler(_fh)
 
 
-# Attach ring buffer handler to root logger for remote log tailing
+# Attach ring buffer handler to root logger for remote log tailing,
+# and a stdout stream handler so app logs show up in `docker compose logs`.
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(
+    logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+)
+logging.getLogger().addHandler(_console_handler)
 logging.getLogger().addHandler(ring_handler)
 logging.getLogger().setLevel(logging.INFO)
 
