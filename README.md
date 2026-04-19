@@ -24,7 +24,7 @@ A self-hosted diet and workout tracking app with an LLM-powered chat interface. 
 | Frontend | React 19 / Vite / Tailwind CSS v4 / TypeScript |
 | LLM | OpenRouter API (Claude Haiku default, switchable) |
 | Food data | USDA FoodData Central API |
-| Auth | Single-user password via signed cookies (itsdangerous) |
+| Auth | Passkey-only (WebAuthn) with per-user SQLite DBs |
 | Deploy | Docker Compose / nginx / GitHub Actions CI/CD / ghcr.io |
 | Hosting | Any Linux VPS with Docker |
 
@@ -83,7 +83,7 @@ cd diet-tracker
 
 # Configure environment
 cp .env.example .env
-# Edit .env: set APP_PASSWORD, SECRET_KEY, OPENROUTER_API_KEY
+# Edit .env: set ADMIN_EMAIL, SECRET_KEY, OPENROUTER_API_KEY, WEBAUTHN_RP_ID, WEBAUTHN_ORIGIN
 
 # Backend
 cd backend
@@ -113,7 +113,8 @@ cd frontend
 npm run dev
 ```
 
-Open http://localhost:5173 and log in with your `APP_PASSWORD`.
+Open http://localhost:5173 and register with the bootstrap invite URL printed
+to the backend logs on first boot (see **Multi-user & passkeys** below).
 
 ### Run with Docker
 
@@ -157,13 +158,69 @@ Create a `.env` file in the project root (see `.env.example`):
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `APP_PASSWORD` | Login password for the web UI | `your-secure-password` |
-| `SECRET_KEY` | Signing key for session cookies | `random-string-here` |
-| `DATABASE_URL` | SQLite database path | `sqlite:///./data/diet_tracker.db` |
+| `ADMIN_EMAIL` | Email address promoted to admin on first boot (required for bootstrap) | `you@example.com` |
+| `SECRET_KEY` | Reserved; unused by the passkey flow but kept for compatibility | `random-string-here` |
+| `DATABASE_URL` | Legacy SQLite path. `<parent>/` is reused as the data root (holds `auth.db`, `users/<id>/`, `legacy/`) | `sqlite:///./data/diet_tracker.db` |
+| `WEBAUTHN_RP_ID` | WebAuthn Relying Party ID. **Must match the hostname exactly** (no scheme, no port). iOS/Safari require a real domain for iCloud Keychain passkey sync. | `diet.example.com` |
+| `WEBAUTHN_RP_NAME` | Display name shown on the passkey prompt | `Diet Tracker` |
+| `WEBAUTHN_ORIGIN` | Full origin (scheme + host, optional port) the browser posts from | `https://diet.example.com` |
+| `SESSION_COOKIE_NAME` | Cookie name for the server-side session (default `session`) | `session` |
+| `SESSION_TTL_DAYS` | Session lifetime in days (default 30) | `30` |
+| `INVITE_TTL_DAYS` | Invite lifetime in days (default 7) | `7` |
+| `COOKIE_SECURE` | Set `true` in production so cookies are HTTPS-only | `true` |
 | `OPENROUTER_API_KEY` | API key from openrouter.ai | `sk-or-v1-...` |
 | `LOGS_USER` | Username for remote log tailing | `logs` |
 | `LOGS_PASSWORD` | Password for remote log tailing | `your-logs-password` |
 | `APP_URL` | Public URL (for reference only) | `https://yourapp.example.com` |
+
+## Multi-user & passkeys
+
+The app is invite-only and passwordless. Authentication is WebAuthn (passkeys)
+and data is partitioned one SQLite DB per user:
+
+```
+data/
+  auth.db                       # users, passkeys, sessions, invites
+  users/<user_id>/diet_tracker.db   # per-user diet + workout data
+  legacy/prod_backup_<ts>.db    # archived single-tenant DB (first boot)
+```
+
+### First boot / migration
+
+On first startup the backend:
+
+1. Creates `auth.db` and the admin user from `ADMIN_EMAIL`.
+2. If a legacy `data/diet_tracker.db` exists, snapshots it under `data/legacy/`
+   and moves it into the admin's per-user dir.
+3. Logs a **bootstrap invite URL** at `WARNING` level. Visit the URL in a
+   browser and register your first passkey — this consumes the invite and signs
+   you in as the admin.
+
+Tail the bootstrap URL with e.g.:
+
+```bash
+docker compose logs backend | grep "BOOTSTRAP INVITE"
+```
+
+### Inviting more users
+
+Signed in as an admin, visit `/admin` to:
+
+- List, disable/enable, or permanently delete users (deleting also removes
+  their per-user DB dir).
+- Mint a single-use invite URL (shape: `/invite/<token>`, TTL `INVITE_TTL_DAYS`).
+- Revoke sessions for any user.
+
+Send the URL to the invitee; they pick an email, create a passkey, and land
+signed in on their own empty database.
+
+### Managing your passkeys and sessions
+
+Each user has an `/account` page to:
+
+- Add additional passkeys (one per device — iPhone, desktop, YubiKey, ...).
+- Remove old passkeys. At least one must remain.
+- Revoke individual sessions or log out everywhere.
 
 ## Production Deployment
 
@@ -181,9 +238,13 @@ cp privkey.pem ~/diet-tracker/ssl/key.pem
 
 # Create .env
 cat > ~/diet-tracker/.env << 'EOF'
-APP_PASSWORD=your-secure-password
+ADMIN_EMAIL=you@example.com
 SECRET_KEY=your-random-secret-key
 DATABASE_URL=sqlite:///./data/diet_tracker.db
+WEBAUTHN_RP_ID=diet.example.com
+WEBAUTHN_RP_NAME=Diet Tracker
+WEBAUTHN_ORIGIN=https://diet.example.com
+COOKIE_SECURE=true
 OPENROUTER_API_KEY=sk-or-v1-your-key
 LOGS_USER=logs
 LOGS_PASSWORD=your-logs-password
@@ -394,7 +455,7 @@ git push origin main
 
 - **Python**: Type hints everywhere. Ruff for linting and formatting (100-char line limit). No Alembic -- schema changes are applied at startup in `database.py`.
 - **TypeScript**: Strict mode. All API types defined in `api.ts`. No external charting libraries -- SVG charts built inline.
-- **API routes**: Prefixed with `/api`. All endpoints require auth except `/api/health` and `/api/auth/login`.
+- **API routes**: Prefixed with `/api`. All endpoints require auth except `/api/health`, `/api/auth/register/*`, `/api/auth/login/*`, and `/api/debug/logs` (HTTP Basic).
 - **Macros**: The canonical 8-macro field list is defined in `backend/app/macros.py` (`MACRO_FIELDS`) and `frontend/src/api.ts` (`MACRO_KEYS`).
 - **Log tables**: `tissue`, `exercise_tissue`, and `tissue_condition` are append-only. Rows are never updated -- new rows are inserted and queries use the latest per logical key.
 

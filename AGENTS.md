@@ -18,7 +18,10 @@ backend/           # FastAPI application
     models.py      # SQLModel table definitions
     database.py    # Engine and session management
     config.py      # Pydantic settings
-    auth.py        # Cookie-based auth
+    auth.py        # Passkey/WebAuthn session helpers (get_current_user)
+    auth_models.py # User, WebAuthnCredential, AuthSession, Invite tables
+    db_engines.py  # auth_engine() + per-user user_engine(user_id)
+    bootstrap.py   # First-boot migration from legacy single-tenant DB
     macros.py      # Shared macro field definitions and helpers
     llm.py         # OpenRouter API client, chat loop, tool dispatch
     usda.py        # USDA FoodData Central API client
@@ -309,7 +312,7 @@ If download or conversion fails, you receive an `answer` message explaining the 
 
 - Python: type hints everywhere, ruff for linting/formatting (line-length 100)
 - API routes prefixed with `/api`
-- Auth: all `/api` endpoints require auth except `/api/health`, `/api/auth/login`, and `/api/debug/logs` (HTTP Basic Auth)
+- Auth: all `/api` endpoints require a passkey session cookie except `/api/health`, `/api/auth/register/*`, `/api/auth/login/*`, and `/api/debug/logs` (HTTP Basic Auth). Sessions live in `auth.db`; data lives in `data/users/<user_id>/diet_tracker.db`.
 - 8 macros tracked: calories, fat, saturated_fat, cholesterol, sodium, carbs, fiber, protein
 - Macros stored **per serving** with `serving_size_grams` on each food; scale for actual amounts
 - Macro field list defined in `backend/app/macros.py` (MACRO_FIELDS) and `frontend/src/api.ts` (MACRO_KEYS)
@@ -326,18 +329,21 @@ If download or conversion fails, you receive an `answer` message explaining the 
 
 Tail production backend logs from your local machine:
 
-Find the password as APP_PASSWORD in .env
+Find the logs password as LOGS_PASSWORD in .env
 Find the URL as APP_URL in .env
 
 ```bash
 # Last 100 lines (default)
-curl -u logs:$APP_PASSWORD $APP_URL/api/debug/logs
+curl -u logs:$LOGS_PASSWORD $APP_URL/api/debug/logs
 
 # Last 50 lines
-curl -u logs:$APP_PASSWORD $APP_URL/api/debug/logs?lines=50
+curl -u logs:$LOGS_PASSWORD $APP_URL/api/debug/logs?lines=50
 
 # Only errors
-curl -u logs:$APP_PASSWORD $APP_URL/api/debug/logs?level=ERROR
+curl -u logs:$LOGS_PASSWORD $APP_URL/api/debug/logs?level=ERROR
+
+# Filter to one user
+curl -u logs:$LOGS_PASSWORD $APP_URL/api/debug/logs?user_id=<user_id>
 ```
 
 ### Live Testing with Chrome DevTools MCP
@@ -377,7 +383,7 @@ After pushing to `main`, GitHub Actions deploys to the production VPS (~2 minute
      });
    });
    ```
-5. Log in using the password from `APP_PASSWORD` in `.env` (single password field, submit button)
+5. Log in with a passkey: enter the admin email from `ADMIN_EMAIL` in `.env`, then approve the browser's passkey prompt. (For first-boot, grab the bootstrap invite URL from backend logs via `/api/debug/logs` and visit it to register the passkey first.)
 6. **Re-install error listeners after login** — the page navigates, clearing listeners
 7. Exercise the feature under test (click buttons, fill forms, etc.)
 8. Check `window.__capturedErrors` for any JS errors

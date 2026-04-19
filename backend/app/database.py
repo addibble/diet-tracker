@@ -4,14 +4,12 @@ from collections.abc import Generator
 from datetime import UTC, datetime
 from pathlib import Path
 
+from fastapi import Depends
 from sqlalchemy import inspect, text
-from sqlmodel import Session, SQLModel, create_engine
-
-from app.config import settings
+from sqlalchemy.engine import Engine
+from sqlmodel import Session, SQLModel
 
 logger = logging.getLogger(__name__)
-
-engine = create_engine(settings.database_url, echo=False)
 
 RUNTIME_REQUIRED_TABLES = {
     "tissue_region_links",
@@ -57,60 +55,86 @@ RUNTIME_REQUIRED_COLUMNS = {
 }
 
 
-def _ensure_sqlite_dir():
-    if settings.database_url.startswith("sqlite"):
-        db_path = settings.database_url.split("///")[-1]
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+def _engine_sqlite_path(engine: Engine) -> Path | None:
+    url = engine.url
+    if url.drivername.startswith("sqlite"):
+        if url.database and url.database != ":memory:":
+            return Path(url.database)
+    return None
 
 
-def _backup_database():
+def _ensure_sqlite_dir(engine: Engine) -> None:
+    path = _engine_sqlite_path(engine)
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _backup_database(engine: Engine) -> None:
     """Copy the SQLite file to a timestamped backup before migrations."""
-    if not settings.database_url.startswith("sqlite"):
-        return
-    db_path = Path(settings.database_url.split("///")[-1])
-    if not db_path.exists():
+    path = _engine_sqlite_path(engine)
+    if path is None or not path.exists():
         return
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = db_path.with_name(f"{db_path.name}.{ts}")
-    shutil.copy2(db_path, backup_path)
+    backup_path = path.with_name(f"{path.name}.{ts}")
+    shutil.copy2(path, backup_path)
     logger.info("Database backup: %s", backup_path)
+    _rotate_backups(path)
 
 
-def create_db_and_tables():
+def _rotate_backups(path: Path, keep: int = 10) -> None:
+    """Keep only the most recent *keep* timestamped backups for *path*."""
+
+    prefix = f"{path.name}."
+    candidates = sorted(
+        (p for p in path.parent.glob(f"{path.name}.*") if p.name.startswith(prefix)),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for stale in candidates[keep:]:
+        try:
+            stale.unlink()
+        except OSError:
+            logger.exception("Failed to rotate backup %s", stale)
+
+
+def create_db_and_tables(engine: Engine) -> None:
+    import app.models  # noqa: F401
+    from app.auth_models import AUTH_TABLE_NAMES
+
+    _ensure_sqlite_dir(engine)
+    data_tables = [
+        t for name, t in SQLModel.metadata.tables.items() if name not in AUTH_TABLE_NAMES
+    ]
+    SQLModel.metadata.create_all(engine, tables=data_tables)
+
+
+def ensure_runtime_db_ready(engine: Engine) -> None:
     import app.models  # noqa: F401
 
-    _ensure_sqlite_dir()
-    SQLModel.metadata.create_all(engine)
-
-
-def ensure_runtime_db_ready():
-    import app.models  # noqa: F401
-
-    _ensure_sqlite_dir()
-    SQLModel.metadata.create_all(engine)
-    if _runtime_db_needs_manual_updates():
+    create_db_and_tables(engine)
+    if _runtime_db_needs_manual_updates(engine):
         logger.info("Applying pending runtime database updates")
-        apply_db_updates()
+        apply_db_updates(engine)
 
 
-def apply_db_updates():
+def apply_db_updates(engine: Engine) -> None:
     """Apply manual schema/data updates and historical backfills."""
     import app.models  # noqa: F401
 
-    _ensure_sqlite_dir()
-    _backup_database()
-    SQLModel.metadata.create_all(engine)
-    _migrate_add_columns()
-    _drop_obsolete_tables()
-    _seed_data()
-    _backfill_heavy_loading_defaults()
-    _backfill_rep_completion()
-    _backfill_special_workout_sets()
-    _backfill_historical_bodyweight_anchor()
-    _backfill_progression_rep_completion()
+    _ensure_sqlite_dir(engine)
+    _backup_database(engine)
+    create_db_and_tables(engine)
+    _migrate_add_columns(engine)
+    _drop_obsolete_tables(engine)
+    _seed_data(engine)
+    _backfill_heavy_loading_defaults(engine)
+    _backfill_rep_completion(engine)
+    _backfill_special_workout_sets(engine)
+    _backfill_historical_bodyweight_anchor(engine)
+    _backfill_progression_rep_completion(engine)
 
 
-def _runtime_db_needs_manual_updates() -> bool:
+def _runtime_db_needs_manual_updates(engine: Engine) -> bool:
     insp = inspect(engine)
     table_names = set(insp.get_table_names())
 
@@ -174,7 +198,7 @@ def _runtime_db_needs_manual_updates() -> bool:
     return False
 
 
-def _migrate_add_columns():
+def _migrate_add_columns(engine: Engine):
     """Add new columns and clean up legacy data (no Alembic)."""
     insp = inspect(engine)
     table_names = insp.get_table_names()
@@ -196,6 +220,7 @@ def _migrate_add_columns():
                 "estimated_minutes_per_set": "ALTER TABLE exercises ADD COLUMN estimated_minutes_per_set FLOAT DEFAULT 2.0",
             },
             insp,
+            engine,
         )
 
     if "exercise_tissues" in table_names:
@@ -209,6 +234,7 @@ def _migrate_add_columns():
                 "laterality_mode": "ALTER TABLE exercise_tissues ADD COLUMN laterality_mode TEXT DEFAULT 'bilateral_equal'",
             },
             insp,
+            engine,
         )
 
     if "tissues" in table_names:
@@ -219,6 +245,7 @@ def _migrate_add_columns():
                 "tracking_mode": "ALTER TABLE tissues ADD COLUMN tracking_mode TEXT DEFAULT 'paired'",
             },
             insp,
+            engine,
         )
 
     if "workout_sets" in table_names:
@@ -231,6 +258,7 @@ def _migrate_add_columns():
                 "training_mode": "ALTER TABLE workout_sets ADD COLUMN training_mode TEXT",
             },
             insp,
+            engine,
         )
 
     if "tissue_conditions" in table_names:
@@ -240,6 +268,7 @@ def _migrate_add_columns():
                 "tracked_tissue_id": "ALTER TABLE tissue_conditions ADD COLUMN tracked_tissue_id INTEGER",
             },
             insp,
+            engine,
         )
 
     if "recovery_check_ins" in table_names:
@@ -249,18 +278,18 @@ def _migrate_add_columns():
                 "tracked_tissue_id": "ALTER TABLE recovery_check_ins ADD COLUMN tracked_tissue_id INTEGER",
             },
             insp,
+            engine,
         )
 
     if "foods" in insp.get_table_names():
         cols = {c["name"] for c in insp.get_columns("foods")}
         if "brand" not in cols:
-            with engine.connect() as conn:
+            with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE foods ADD COLUMN brand TEXT"))
-                conn.commit()
 
     # Clean up legacy tissue groups and deduplicate
     if "tissues" in insp.get_table_names():
-        with engine.connect() as conn:
+        with engine.begin() as conn:
             # Delete exercise_tissue rows pointing to group tissues
             conn.execute(text(
                 "DELETE FROM exercise_tissues WHERE tissue_id IN "
@@ -281,23 +310,21 @@ def _migrate_add_columns():
                 "(SELECT MAX(id) FROM exercise_tissues "
                 "GROUP BY exercise_id, tissue_id)"
             ))
-            conn.commit()
 
 
-def _drop_obsolete_tables():
-    with engine.connect() as conn:
+def _drop_obsolete_tables(engine: Engine):
+    with engine.begin() as conn:
         conn.execute(text("DROP TABLE IF EXISTS tissue_recovery_logs"))
-        conn.commit()
 
 
-def _backfill_rep_completion():
+def _backfill_rep_completion(engine: Engine):
     """Backfill rep_completion on workout_sets using program_day_exercises targets.
 
     For each set with reps but NULL rep_completion, trace:
     workout_set → workout_session → planned_session → program_day_exercises
     to find the target rep range and compute completion status.
     """
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         rows = conn.execute(text(
             "SELECT ws.id, ws.reps, pde.target_rep_min, pde.target_rep_max "
             "FROM workout_sets ws "
@@ -327,10 +354,9 @@ def _backfill_rep_completion():
                 ),
                 {"status": status, "id": ws_id},
             )
-        conn.commit()
 
 
-def _seed_data():
+def _seed_data(engine: Engine):
     """Seed reference data after table creation."""
     from app.seed_tissues import (
         load_seed_sql,
@@ -371,8 +397,57 @@ def _seed_data():
         seed_default_training_exclusion_windows(session)
 
 
-def get_session() -> Generator[Session, None, None]:
-    with Session(engine) as session:
+def get_session(
+    user_id: str = Depends(lambda: _require_auth_wired()),  # noqa: B008
+) -> Generator[Session, None, None]:
+    """FastAPI dep: yield a Session bound to the current user's engine.
+
+    The default value is a lambda that raises until ``_wire_auth_dep`` swaps
+    in the real ``get_current_user_id`` dependency. Tests that override
+    ``get_session`` via ``app.dependency_overrides`` bypass this entirely.
+    """
+
+    from app.db_engines import user_engine
+
+    eng = user_engine(user_id)
+    with Session(eng) as session:
+        yield session
+
+
+def _require_auth_wired() -> str:  # pragma: no cover - replaced at startup
+    raise RuntimeError(
+        "get_session was invoked before _wire_auth_dep() ran; "
+        "ensure app.main calls it at startup."
+    )
+
+
+def _wire_auth_dep() -> None:
+    """Re-bind the user_id dep on ``get_session`` to ``get_current_user_id``.
+
+    Called once from ``app.main`` after all modules (including ``app.auth``)
+    have been imported, so we avoid the circular-import risk of pulling
+    ``app.auth`` at module load time.
+    """
+
+    import inspect as _inspect
+
+    from app.auth import get_current_user_id
+
+    sig = _inspect.signature(get_session)
+    new_params = [
+        p.replace(default=Depends(get_current_user_id)) if p.name == "user_id" else p
+        for p in sig.parameters.values()
+    ]
+    get_session.__signature__ = sig.replace(parameters=new_params)  # type: ignore[attr-defined]
+
+
+def get_session_for_user(user_id: str) -> Generator[Session, None, None]:
+    """Helper for non-request contexts (scripts, tests, bootstrap)."""
+
+    from app.db_engines import user_engine
+
+    eng = user_engine(user_id)
+    with Session(eng) as session:
         yield session
 
 
@@ -380,19 +455,19 @@ def _ensure_columns(
     table_name: str,
     statements_by_column: dict[str, str],
     insp,
+    engine: Engine,
 ) -> None:
     cols = {c["name"] for c in insp.get_columns(table_name)}
     missing = [sql for col, sql in statements_by_column.items() if col not in cols]
     if not missing:
         return
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         for sql in missing:
             conn.execute(text(sql))
-        conn.commit()
 
 
-def _backfill_special_workout_sets():
-    with engine.connect() as conn:
+def _backfill_special_workout_sets(engine: Engine):
+    with engine.begin() as conn:
         conn.execute(
             text(
                 "UPDATE workout_sets "
@@ -415,11 +490,10 @@ def _backfill_special_workout_sets():
                 "  )"
             )
         )
-        conn.commit()
 
 
-def _backfill_historical_bodyweight_anchor():
-    with engine.connect() as conn:
+def _backfill_historical_bodyweight_anchor(engine: Engine):
+    with engine.begin() as conn:
         latest_weight = conn.execute(
             text(
                 "SELECT weight_lb FROM weight_logs "
@@ -463,17 +537,13 @@ def _backfill_historical_bodyweight_anchor():
                 "logged_at": f"{earliest_training_date} 12:00:00",
             },
         )
-        conn.commit()
 
 
-def _backfill_heavy_loading_defaults(session: Session | None = None):
+def _backfill_heavy_loading_defaults(engine: Engine):
     from app.exercise_rules import backfill_heavy_loading_defaults
 
-    if session is None:
-        with Session(engine) as runtime_session:
-            backfill_heavy_loading_defaults(runtime_session)
-        return
-    backfill_heavy_loading_defaults(session)
+    with Session(engine) as runtime_session:
+        backfill_heavy_loading_defaults(runtime_session)
 
 
 def _shared_progression_metric(
@@ -492,8 +562,8 @@ def _shared_progression_metric(
     return None
 
 
-def _backfill_progression_rep_completion():
-    with engine.connect() as conn:
+def _backfill_progression_rep_completion(engine: Engine):
+    with engine.begin() as conn:
         rows = conn.execute(
             text(
                 "SELECT ws.id, ws.session_id, ws.exercise_id, wses.date, ws.weight, "
@@ -584,9 +654,10 @@ def _backfill_progression_rep_completion():
                     )
                 changed = True
         if changed:
-            conn.commit()
+            pass  # auto-commits via engine.begin() context manager
 
 
 def _backfill_tracked_tissue_foundation():
     """Deprecated: rehab subsystem removed. Kept as no-op for safety."""
     return
+

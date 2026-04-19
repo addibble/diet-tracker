@@ -9,14 +9,23 @@ _env_file = Path(__file__).resolve().parents[2] / ".env"
 
 
 class Settings(BaseSettings):
-    app_password: str = "changeme"
     secret_key: str = "change-this-to-a-random-string"
     database_url: str = "sqlite:///./data/diet_tracker.db"
     openrouter_api_key: str | None = None
-    api_token: str | None = None  # Bearer token for Shortcuts/external integrations
     default_timezone: str = "America/Denver"
     logs_user: str = ""
     logs_password: str = ""
+
+    # Multi-user auth / WebAuthn ----------------------------------------
+    admin_email: str | None = None  # bootstrap admin email on first boot
+    webauthn_rp_id: str = "localhost"  # production domain, e.g. diet.example.com
+    webauthn_rp_name: str = "Diet Tracker"
+    webauthn_origin: str = "http://localhost:5173"  # full origin incl. scheme
+    session_cookie_name: str = "session"
+    session_ttl_days: int = 30
+    invite_ttl_days: int = 7
+    webauthn_challenge_ttl_seconds: int = 300
+    cookie_secure: bool = False  # set True in production
 
     model_config = {
         "env_file": str(_env_file) if _env_file.exists() else ".env",

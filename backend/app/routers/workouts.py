@@ -2,28 +2,15 @@
 
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.auth import get_current_user
-from app.config import settings
 from app.database import get_session
 from app.models import Workout
 
 router = APIRouter(prefix="/api/workouts", tags=["workouts"])
-
-
-def _require_auth(request: Request, session: Session = Depends(get_session)) -> str:
-    """Accept either a Bearer API token or the normal session cookie."""
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header[7:].strip()
-        if settings.api_token and token == settings.api_token:
-            return "api"
-        raise HTTPException(status_code=401, detail="Invalid API token")
-    # Fall back to cookie-based auth
-    return get_current_user(request)
 
 
 class WorkoutIn(BaseModel):
@@ -67,7 +54,7 @@ def _to_out(w: Workout) -> dict:
 def upsert_workouts(
     workouts: list[WorkoutIn],
     session: Session = Depends(get_session),
-    _user: str = Depends(_require_auth),
+    _user: str = Depends(get_current_user),
 ):
     """Upsert a batch of workouts. Idempotent — safe to re-run the Shortcut."""
     created = 0

@@ -1,22 +1,28 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { loginWithPasskey } from '../api'
+import { useNavigate, useParams } from 'react-router-dom'
+import { registerWithInvite } from '../api'
 
-export default function LoginPage() {
+export default function RegisterPage() {
+  const { token } = useParams<{ token: string }>()
   const [email, setEmail] = useState('')
+  const [displayName, setDisplayName] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const navigate = useNavigate()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!token) {
+      setError('Missing invite token')
+      return
+    }
     setError('')
     setBusy(true)
     try {
-      await loginWithPasskey(email)
+      await registerWithInvite(token, email, displayName || email.split('@')[0])
       navigate('/')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed')
+      setError(err instanceof Error ? err.message : 'Registration failed')
     } finally {
       setBusy(false)
     }
@@ -28,9 +34,9 @@ export default function LoginPage() {
         onSubmit={handleSubmit}
         className="bg-white p-8 rounded-lg shadow-sm border border-gray-200 w-96"
       >
-        <h1 className="text-xl font-semibold text-gray-900 mb-2">Diet Tracker</h1>
+        <h1 className="text-xl font-semibold text-gray-900 mb-2">Create account</h1>
         <p className="text-sm text-gray-500 mb-6">
-          Sign in with a passkey on this device.
+          You were invited to Diet Tracker. Finish setup by creating a passkey.
         </p>
         {error && <p className="text-red-500 text-sm mb-4">{error}</p>}
         <label className="block text-sm text-gray-700 mb-1">Email</label>
@@ -38,21 +44,24 @@ export default function LoginPage() {
           type="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          placeholder="you@example.com"
-          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          autoFocus
+          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm mb-3"
           required
+          autoFocus
+        />
+        <label className="block text-sm text-gray-700 mb-1">Display name (optional)</label>
+        <input
+          type="text"
+          value={displayName}
+          onChange={(e) => setDisplayName(e.target.value)}
+          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
         />
         <button
           type="submit"
           disabled={busy}
           className="w-full mt-4 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 disabled:bg-gray-400"
         >
-          {busy ? 'Waiting for passkey…' : 'Sign in with passkey'}
+          {busy ? 'Creating passkey…' : 'Create passkey & register'}
         </button>
-        <p className="text-xs text-gray-500 mt-4">
-          Need access? Ask an admin for an invite link.
-        </p>
       </form>
     </div>
   )

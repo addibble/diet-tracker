@@ -6,11 +6,10 @@ import app.database as database
 
 def test_create_db_and_tables_skips_manual_update_helpers(monkeypatch):
     engine = create_engine("sqlite://")
-    monkeypatch.setattr(database, "engine", engine)
-    monkeypatch.setattr(database, "_ensure_sqlite_dir", lambda: None)
+    monkeypatch.setattr(database, "_ensure_sqlite_dir", lambda e: None)
 
     def fail(name: str):
-        def _inner():
+        def _inner(*args, **kwargs):
             raise AssertionError(f"{name} should not run during startup bootstrap")
 
         return _inner
@@ -36,7 +35,7 @@ def test_create_db_and_tables_skips_manual_update_helpers(monkeypatch):
         fail("_backfill_progression_rep_completion"),
     )
 
-    database.create_db_and_tables()
+    database.create_db_and_tables(engine)
 
     table_names = set(inspect(engine).get_table_names())
     assert "exercises" in table_names
@@ -45,13 +44,12 @@ def test_create_db_and_tables_skips_manual_update_helpers(monkeypatch):
 
 def test_apply_db_updates_runs_manual_update_helpers(monkeypatch):
     engine = create_engine("sqlite://")
-    monkeypatch.setattr(database, "engine", engine)
-    monkeypatch.setattr(database, "_ensure_sqlite_dir", lambda: None)
+    monkeypatch.setattr(database, "_ensure_sqlite_dir", lambda e: None)
 
     calls: list[str] = []
 
     def record(name: str):
-        def _inner():
+        def _inner(*args, **kwargs):
             calls.append(name)
 
         return _inner
@@ -77,7 +75,7 @@ def test_apply_db_updates_runs_manual_update_helpers(monkeypatch):
         record("_backfill_progression_rep_completion"),
     )
 
-    database.apply_db_updates()
+    database.apply_db_updates(engine)
 
     assert calls == [
         "_backup_database",
@@ -92,14 +90,21 @@ def test_apply_db_updates_runs_manual_update_helpers(monkeypatch):
 
 
 def test_ensure_runtime_db_ready_runs_updates_when_schema_is_stale(monkeypatch):
+    engine = create_engine("sqlite://")
     calls: list[str] = []
 
-    monkeypatch.setattr(database, "_ensure_sqlite_dir", lambda: calls.append("_ensure_sqlite_dir"))
-    monkeypatch.setattr(database.SQLModel.metadata, "create_all", lambda engine: calls.append("create_all"))
-    monkeypatch.setattr(database, "_runtime_db_needs_manual_updates", lambda: True)
-    monkeypatch.setattr(database, "apply_db_updates", lambda: calls.append("apply_db_updates"))
+    monkeypatch.setattr(
+        database, "_ensure_sqlite_dir", lambda e: calls.append("_ensure_sqlite_dir")
+    )
+    monkeypatch.setattr(
+        database.SQLModel.metadata,
+        "create_all",
+        lambda engine, **kw: calls.append("create_all"),
+    )
+    monkeypatch.setattr(database, "_runtime_db_needs_manual_updates", lambda e: True)
+    monkeypatch.setattr(database, "apply_db_updates", lambda e: calls.append("apply_db_updates"))
 
-    database.ensure_runtime_db_ready()
+    database.ensure_runtime_db_ready(engine)
 
     assert calls == [
         "_ensure_sqlite_dir",
@@ -109,16 +114,24 @@ def test_ensure_runtime_db_ready_runs_updates_when_schema_is_stale(monkeypatch):
 
 
 def test_ensure_runtime_db_ready_skips_updates_when_schema_is_current(monkeypatch):
+    engine = create_engine("sqlite://")
     calls: list[str] = []
 
-    monkeypatch.setattr(database, "_ensure_sqlite_dir", lambda: calls.append("_ensure_sqlite_dir"))
-    monkeypatch.setattr(database.SQLModel.metadata, "create_all", lambda engine: calls.append("create_all"))
-    monkeypatch.setattr(database, "_runtime_db_needs_manual_updates", lambda: False)
-    monkeypatch.setattr(database, "apply_db_updates", lambda: calls.append("apply_db_updates"))
+    monkeypatch.setattr(
+        database, "_ensure_sqlite_dir", lambda e: calls.append("_ensure_sqlite_dir")
+    )
+    monkeypatch.setattr(
+        database.SQLModel.metadata,
+        "create_all",
+        lambda engine, **kw: calls.append("create_all"),
+    )
+    monkeypatch.setattr(database, "_runtime_db_needs_manual_updates", lambda e: False)
+    monkeypatch.setattr(database, "apply_db_updates", lambda e: calls.append("apply_db_updates"))
 
-    database.ensure_runtime_db_ready()
+    database.ensure_runtime_db_ready(engine)
 
     assert calls == [
         "_ensure_sqlite_dir",
         "create_all",
     ]
+

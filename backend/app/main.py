@@ -5,8 +5,9 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.auth import router as auth_router
-from app.database import ensure_runtime_db_ready
+from app.bootstrap import run_bootstrap
+from app.database import _wire_auth_dep
+from app.routers.admin import router as admin_router
 from app.routers.daily import router as daily_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.database import router as database_router
@@ -22,9 +23,13 @@ from app.routers.parse import router as parse_router
 from app.routers.planner import router as planner_router
 from app.routers.recipes import router as recipes_router
 from app.routers.tissues import router as tissues_router
+from app.routers.webauthn import router as webauthn_router
 from app.routers.workout_sessions import router as workout_sessions_router
 from app.routers.workout_sets import router as workout_sets_router
 from app.routers.workouts import router as workouts_router
+
+# Wire the auth dependency onto get_session now that all modules are loaded.
+_wire_auth_dep()
 
 # Configure parse logger to write to file
 _log_dir = Path(__file__).resolve().parent.parent / "logs"
@@ -43,7 +48,7 @@ logging.getLogger().setLevel(logging.INFO)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    ensure_runtime_db_ready()
+    run_bootstrap()
     yield
 
 
@@ -57,7 +62,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(auth_router)
+app.include_router(webauthn_router)
+app.include_router(admin_router)
 app.include_router(database_router)
 app.include_router(food_search_router)
 app.include_router(foods_router)
