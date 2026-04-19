@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import {
   predictReps,
@@ -115,11 +115,48 @@ export default function CurvePane({
   const svgRef = useRef<SVGSVGElement | null>(null)
   const rafRef = useRef<number | null>(null)
   const [dragging, setDragging] = useState(false)
+  // Drag reference point: pointer coords + spark values at pointerdown.
+  // Enables half-sensitivity delta dragging (rather than absolute tap-tracking).
+  const dragStart = useRef<{
+    cx: number
+    cy: number
+    w: number
+    r: number
+  } | null>(null)
 
-  const { xMin, xMax, yMax } = useMemo(
-    () => computeDomain(curve, sparkWeight, observations),
-    [curve, sparkWeight, observations],
+  // Sticky domain: seeded from curve + observations + initial spark, and
+  // only expanded when the spark approaches the edges. This keeps the graph
+  // from sliding around as the user drags.
+  const [domain, setDomain] = useState(() =>
+    computeDomain(curve, sparkWeight, observations),
   )
+
+  // Reset when the underlying fit or history changes (new prescription / refit).
+  useEffect(() => {
+    setDomain(computeDomain(curve, sparkWeight, observations))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [curve, observations])
+
+  // Expand the window only if the spark is near the very edge.
+  useEffect(() => {
+    if (sparkWeight <= 0) return
+    const span = domain.xMax - domain.xMin
+    if (span <= 0) return
+    const edge = span * 0.05
+    if (sparkWeight > domain.xMax - edge) {
+      setDomain(d => ({
+        ...d,
+        xMax: Math.ceil(sparkWeight + span * 0.15),
+      }))
+    } else if (sparkWeight < domain.xMin + edge) {
+      setDomain(d => ({
+        ...d,
+        xMin: Math.max(0, Math.floor(sparkWeight - span * 0.15)),
+      }))
+    }
+  }, [sparkWeight, domain.xMin, domain.xMax])
+
+  const { xMin, xMax, yMax } = domain
 
   const xToPx = useCallback(
     (x: number) => PAD_L + (clamp(x, xMin, xMax) - xMin) / (xMax - xMin) * PLOT_W,
@@ -144,40 +181,78 @@ export default function CurvePane({
     [sparkWeight, sparkReps, xMin, xMax, yMax],
   )
 
-  const updateFromPointer = useCallback(
-    (clientX: number, clientY: number) => {
-      const { w, r } = pxToData(clientX, clientY)
+  // Convert a pixel delta (in client coords) into a data delta, then halve it
+  // so the spark moves at half the pointer speed.
+  const DRAG_SENSITIVITY = 0.5
+
+  const deltaToData = useCallback(
+    (dxPx: number, dyPx: number): { dw: number; dr: number } => {
+      const svg = svgRef.current
+      if (!svg) return { dw: 0, dr: 0 }
+      const rect = svg.getBoundingClientRect()
+      const dwPx = (dxPx / rect.width) * VB_W
+      const drPx = (dyPx / rect.height) * VB_H
+      const dw = (dwPx / PLOT_W) * (xMax - xMin) * DRAG_SENSITIVITY
+      const dr = -(drPx / PLOT_H) * yMax * DRAG_SENSITIVITY
+      return { dw, dr }
+    },
+    [xMin, xMax, yMax],
+  )
+
+  const applySpark = useCallback(
+    (w: number, r: number) => {
       if (mode === 'pre') {
         const snapped = snapWeight(clamp(w, xMin, xMax))
         const newReps = curve ? predictReps(snapped, curve) : bootstrapTargetReps
         onSparkChange(snapped, newReps)
       } else {
-        // logging: only Y moves.
-        const newReps = Math.max(1, Math.round(r))
+        const newReps = Math.max(1, Math.round(clamp(r, 0, yMax)))
         onSparkChange(sparkWeight, newReps)
       }
     },
-    [mode, curve, bootstrapTargetReps, sparkWeight, xMin, xMax, pxToData, onSparkChange],
+    [mode, curve, bootstrapTargetReps, sparkWeight, xMin, xMax, yMax, onSparkChange],
   )
 
   const handlePointerDown = (e: ReactPointerEvent<SVGSVGElement>) => {
     if (submitting) return
     e.currentTarget.setPointerCapture(e.pointerId)
     setDragging(true)
-    updateFromPointer(e.clientX, e.clientY)
+    // Tap-to-place: snap the spark to wherever the user tapped, then record
+    // that as the drag reference. Subsequent drags use half-sensitivity deltas.
+    const { w, r } = pxToData(e.clientX, e.clientY)
+    let seedW = sparkWeight
+    let seedR = sparkReps
+    if (mode === 'pre') {
+      seedW = snapWeight(clamp(w, xMin, xMax))
+      seedR = curve ? predictReps(seedW, curve) : bootstrapTargetReps
+      onSparkChange(seedW, seedR)
+    } else {
+      seedR = Math.max(1, Math.round(clamp(r, 0, yMax)))
+      onSparkChange(sparkWeight, seedR)
+      seedW = sparkWeight
+    }
+    dragStart.current = { cx: e.clientX, cy: e.clientY, w: seedW, r: seedR }
   }
+
   const handlePointerMove = (e: ReactPointerEvent<SVGSVGElement>) => {
-    if (!dragging) return
+    if (!dragging || !dragStart.current) return
     if (rafRef.current != null) return
     const cx = e.clientX
     const cy = e.clientY
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = null
-      updateFromPointer(cx, cy)
+      if (!dragStart.current) return
+      const { dw, dr } = deltaToData(
+        cx - dragStart.current.cx,
+        cy - dragStart.current.cy,
+      )
+      applySpark(dragStart.current.w + dw, dragStart.current.r + dr)
     })
   }
+
   const handlePointerUp = (e: ReactPointerEvent<SVGSVGElement>) => {
     setDragging(false)
+    dragStart.current = null
     try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* ignore */ }
   }
 
@@ -220,17 +295,25 @@ export default function CurvePane({
         </button>
       )}
 
-      {/* Set + RIR banner */}
-      <div className="mb-1 flex items-center justify-between px-1 text-[11px]">
-        <span className="font-medium text-gray-700">
-          Set {schemeSetNumber}{' '}
-          <span className="text-gray-400">· target RIR {schemeRir}</span>
+      {/* Set + live readout banner */}
+      <div className="mb-1 flex items-end justify-between gap-2 px-1">
+        <span className="text-[11px] font-medium text-gray-500">
+          Set {schemeSetNumber}
+          <span className="ml-1 text-gray-400">· target RIR {schemeRir}</span>
+          {mode === 'logging' && (
+            <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+              log reps
+            </span>
+          )}
         </span>
-        {mode === 'logging' && (
-          <span className="rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-800">
-            RIR {schemeRir} — log reps
-          </span>
-        )}
+        <span
+          className={`text-xl font-bold tabular-nums ${
+            dragging ? 'text-emerald-600' : 'text-gray-900'
+          }`}
+        >
+          {Math.max(0, Math.round(sparkReps))} reps @{' '}
+          {sparkWeight % 1 === 0 ? sparkWeight : sparkWeight.toFixed(1)} lbs
+        </span>
       </div>
 
       <svg
