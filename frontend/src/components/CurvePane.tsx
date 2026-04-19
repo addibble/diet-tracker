@@ -58,34 +58,98 @@ function computeDomain(
   curve: CurveFit | null,
   sparkWeight: number,
   observations: CurveObservation[],
+  completedSets?: CompletedSet[],
 ): { xMin: number; xMax: number; yMax: number } {
-  const obsWeights = observations.map(o => o.weight).filter(w => w > 0)
-  const obsReps = observations.map(o => o.reps).filter(r => r > 0)
-
-  // X: auto ±30% around spark, expanded to cover observations so the user can see history.
-  let xMin = sparkWeight > 0 ? sparkWeight * 0.7 : 0
-  let xMax = sparkWeight > 0 ? sparkWeight * 1.3 : 100
-  if (obsWeights.length > 0) {
-    xMin = Math.min(xMin, Math.min(...obsWeights) * 0.95)
-    xMax = Math.max(xMax, Math.max(...obsWeights) * 1.05)
+  // "Primary" points = today's sets (completed) + the spark (if active in
+  // a pre/logging flow). Historical observations are secondary — included
+  // only if doing so doesn't push today's spread below 50% of the viewport.
+  const todayPts: { w: number; r: number }[] = (completedSets ?? [])
+    .filter(s => s.weight > 0 && s.reps > 0)
+    .map(s => ({ w: s.weight, r: s.reps }))
+  if (sparkWeight > 0) {
+    todayPts.push({
+      w: sparkWeight,
+      r: curve ? predictReps(sparkWeight, curve) : 15,
+    })
   }
-  // Cap xMax a bit below M so the curve doesn't asymptote off-chart.
-  if (curve && xMax > curve.M * 0.98) xMax = curve.M * 0.98
-  xMin = Math.max(0, xMin)
+  const histPts = observations
+    .filter(o => o.weight > 0 && o.reps > 0)
+    .map(o => ({ w: o.weight, r: o.reps }))
+
+  // X domain seeded from today's points.
+  let xLo: number
+  let xHi: number
+  let center: number
+  if (todayPts.length > 0) {
+    const ws = todayPts.map(p => p.w)
+    const pLo = Math.min(...ws)
+    const pHi = Math.max(...ws)
+    center = ws.reduce((a, b) => a + b, 0) / ws.length
+    const pad = Math.max(1, (pHi - pLo) * 0.25, pHi * 0.06)
+    xLo = pLo - pad
+    xHi = pHi + pad
+  } else if (histPts.length > 0) {
+    const ws = histPts.map(p => p.w)
+    const pLo = Math.min(...ws)
+    const pHi = Math.max(...ws)
+    center = ws.reduce((a, b) => a + b, 0) / ws.length
+    const pad = Math.max(1, (pHi - pLo) * 0.15, pHi * 0.05)
+    xLo = pLo - pad
+    xHi = pHi + pad
+  } else {
+    center = sparkWeight > 0 ? sparkWeight : 100
+    xLo = center * 0.7
+    xHi = center * 1.3
+  }
+
+  // Expand to include historical points, preferring those nearest to today's
+  // center; drop outliers that would shrink today's span below 50% of the
+  // domain. When there's no "today" data we always include.
+  const todaySpanX = todayPts.length >= 2
+    ? Math.max(...todayPts.map(p => p.w)) - Math.min(...todayPts.map(p => p.w))
+    : 0
+  const sortedHistX = [...histPts].sort(
+    (a, b) => Math.abs(a.w - center) - Math.abs(b.w - center),
+  )
+  for (const p of sortedHistX) {
+    const newLo = Math.min(xLo, p.w * 0.95)
+    const newHi = Math.max(xHi, p.w * 1.05)
+    if (todayPts.length > 0 && todaySpanX > 0) {
+      const newRange = newHi - newLo
+      if (todaySpanX < newRange * 0.5) continue
+    }
+    xLo = newLo
+    xHi = newHi
+  }
+  let xMin = Math.max(0, xLo)
+  let xMax = xHi
   if (xMax - xMin < weightStep(xMax) * 4) {
     xMax = xMin + weightStep(xMax) * 4 + 0.01
   }
   xMin = Math.floor(xMin)
   xMax = Math.ceil(xMax)
 
-  // Y: cap at 1.15x the largest reps we need to show.
-  const maxReps = Math.max(
-    sparkWeight > 0
-      ? (curve ? predictReps(xMin, curve) : (observations[0]?.reps ?? 20))
-      : 20,
-    ...obsReps,
-  )
-  const yMax = Math.max(8, Math.ceil(maxReps * 1.15))
+  // Y domain: anchor on today's max reps + a little headroom, grow for
+  // historical points only while today still occupies ≥50% of the viewport.
+  let yHi: number
+  if (todayPts.length > 0) {
+    yHi = Math.max(...todayPts.map(p => p.r)) * 1.2
+  } else if (histPts.length > 0) {
+    yHi = Math.max(...histPts.map(p => p.r)) * 1.15
+  } else {
+    yHi = 20
+  }
+  const todayMaxY = todayPts.length > 0 ? Math.max(...todayPts.map(p => p.r)) : 0
+  const sortedHistY = [...histPts].sort((a, b) => a.r - b.r)
+  for (const p of sortedHistY) {
+    const newHi = Math.max(yHi, p.r * 1.15)
+    if (todayPts.length > 0 && todayMaxY > 0) {
+      // Y starts at 0, so "today's spread ≥ 50% of viewport" ≈ todayMaxY ≥ 0.5 * newHi.
+      if (todayMaxY < newHi * 0.5) continue
+    }
+    yHi = newHi
+  }
+  const yMax = Math.max(8, Math.ceil(yHi))
   return { xMin, xMax, yMax }
 }
 
@@ -93,16 +157,18 @@ function curvePath(
   curve: CurveFit,
   xMin: number,
   xMax: number,
-  xToPx: (x: number) => number,
-  yToPx: (y: number) => number,
+  xToPxRaw: (x: number) => number,
+  yToPxRaw: (y: number) => number,
 ): string {
-  const n = 60
+  const n = 120
   const pts: string[] = []
   for (let i = 0; i <= n; i++) {
     const w = xMin + ((xMax - xMin) * i) / n
     const r = predictReps(w, curve)
-    pts.push(`${xToPx(w).toFixed(1)},${yToPx(r).toFixed(1)}`)
+    if (!Number.isFinite(r) || r <= 0) continue
+    pts.push(`${xToPxRaw(w).toFixed(1)},${yToPxRaw(r).toFixed(1)}`)
   }
+  if (pts.length < 2) return ''
   return `M ${pts.join(' L ')}`
 }
 
@@ -138,14 +204,14 @@ export default function CurvePane({
   // only expanded when the spark approaches the edges. This keeps the graph
   // from sliding around as the user drags.
   const [domain, setDomain] = useState(() =>
-    computeDomain(curve, sparkWeight, observations),
+    computeDomain(curve, sparkWeight, observations, completedSets),
   )
 
   // Reset when the underlying fit or history changes (new prescription / refit).
   useEffect(() => {
-    setDomain(computeDomain(curve, sparkWeight, observations))
+    setDomain(computeDomain(curve, sparkWeight, observations, completedSets))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [curve, observations])
+  }, [curve, observations, completedSets])
 
   // Expand the window only if the spark is near the very edge.
   useEffect(() => {
@@ -174,6 +240,17 @@ export default function CurvePane({
   )
   const yToPx = useCallback(
     (y: number) => PAD_T + (1 - clamp(y, 0, yMax) / yMax) * PLOT_H,
+    [yMax],
+  )
+  // Unclamped versions used to render curves: the path is clipped by the
+  // plot rect via <clipPath>, so asymptotes near x=0 / x=M stay hidden
+  // instead of being pinned to the chart edges.
+  const xToPxRaw = useCallback(
+    (x: number) => PAD_L + (x - xMin) / (xMax - xMin) * PLOT_W,
+    [xMin, xMax],
+  )
+  const yToPxRaw = useCallback(
+    (y: number) => PAD_T + (1 - y / yMax) * PLOT_H,
     [yMax],
   )
 
@@ -362,6 +439,11 @@ export default function CurvePane({
         onPointerUp={isCompleted ? undefined : handlePointerUp}
         onPointerCancel={isCompleted ? undefined : handlePointerUp}
       >
+        <defs>
+          <clipPath id="curve-pane-plot-clip">
+            <rect x={PAD_L} y={PAD_T} width={PLOT_W} height={PLOT_H} />
+          </clipPath>
+        </defs>
         {/* Plot background */}
         <rect
           x={PAD_L}
@@ -429,22 +511,24 @@ export default function CurvePane({
         {/* Prior curve (yellow, dashed) — drawn under the green curve */}
         {isCompleted && priorCurve && (
           <path
-            d={curvePath(priorCurve, xMin, xMax, xToPx, yToPx)}
+            d={curvePath(priorCurve, xMin, xMax, xToPxRaw, yToPxRaw)}
             fill="none"
             stroke="#eab308"
             strokeWidth={1.5}
             strokeDasharray="4 3"
             opacity={0.85}
+            clipPath="url(#curve-pane-plot-clip)"
           />
         )}
 
         {/* Curve or flat target line */}
         {curve ? (
           <path
-            d={curvePath(curve, xMin, xMax, xToPx, yToPx)}
+            d={curvePath(curve, xMin, xMax, xToPxRaw, yToPxRaw)}
             fill="none"
             stroke="#10b981"
             strokeWidth={1.5}
+            clipPath="url(#curve-pane-plot-clip)"
           />
         ) : (
           <line
