@@ -85,7 +85,7 @@ function computeDomain(
   // only if doing so doesn't push today's spread below 50% of the viewport.
   const todayPts: { w: number; r: number }[] = (completedSets ?? [])
     .filter(s => s.weight > 0 && s.reps > 0)
-    .map(s => ({ w: s.weight, r: s.reps }))
+    .map(s => ({ w: s.weight, r: s.reps + (s.rir ?? 0) }))
   if (sparkWeight > 0) {
     todayPts.push({
       w: sparkWeight,
@@ -94,7 +94,7 @@ function computeDomain(
   }
   const histPts = observations
     .filter(o => o.weight > 0 && o.reps > 0)
-    .map(o => ({ w: o.weight, r: o.reps }))
+    .map(o => ({ w: o.weight, r: o.reps + (o.rir ?? 0) }))
 
   // X domain seeded from today's points.
   let xLo: number
@@ -612,7 +612,8 @@ export default function CurvePane({
           />
         )}
 
-        {/* Historical observations */}
+        {/* Historical observations — plotted at reps-to-failure so they
+            live in the same y-space as the fitted curve. */}
         {visibleObservations.map((o, i) => {
           if (o.weight <= 0 || o.reps <= 0) return null
           const op = clamp(1 - o.age_days / 30, 0.25, 1)
@@ -620,7 +621,7 @@ export default function CurvePane({
             <circle
               key={`obs-${i}`}
               cx={xToPx(o.weight)}
-              cy={yToPx(o.reps)}
+              cy={yToPx(o.reps + (o.rir ?? 0))}
               r={3}
               fill="#9ca3af"
               opacity={op}
@@ -628,10 +629,12 @@ export default function CurvePane({
           )
         })}
 
-        {/* Completed-mode sparks for today's sets, with labels */}
+        {/* Completed-mode sparks for today's sets, with labels. Dots are
+            plotted at reps-to-failure (reps + RIR) so they share the y-axis
+            with the fitted curves; the label still shows actual reps. */}
         {isCompleted && completedSets?.map((s, i) => {
           const cx = xToPx(s.weight)
-          const cy = yToPx(s.reps)
+          const cy = yToPx(s.reps + s.rir)
           const color = SET_COLORS[i % SET_COLORS.length]
           // Alternate label above / below to reduce overlap.
           const above = cy > PAD_T + PLOT_H / 2
