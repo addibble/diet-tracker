@@ -542,16 +542,16 @@ export default function CurvePane({
           reps
         </text>
 
-        {/* Prior curve (black, dotted) — drawn under the green curve */}
+        {/* Prior curve (gray, dotted — matches history-point color) */}
         {isCompleted && priorCurve && (
           <path
             d={curvePath(priorCurve, xMin, xMax, xToPxRaw, yToPxRaw)}
             fill="none"
-            stroke="#111827"
+            stroke="#9ca3af"
             strokeWidth={1.25}
             strokeDasharray="1 3"
             strokeLinecap="round"
-            opacity={0.7}
+            opacity={0.85}
             clipPath="url(#curve-pane-plot-clip)"
           />
         )}
@@ -582,7 +582,6 @@ export default function CurvePane({
                     fill="none"
                     stroke={color}
                     strokeWidth={1.25}
-                    strokeDasharray="3 3"
                     opacity={opacity}
                     clipPath="url(#curve-pane-plot-clip)"
                   />
@@ -761,9 +760,7 @@ export default function CurvePane({
               <span
                 className="inline-block h-[2px] w-4"
                 style={{
-                  backgroundImage: `repeating-linear-gradient(to right, ${
-                    SET_COLORS[(i + 1) % SET_COLORS.length]
-                  } 0 3px, transparent 3px 6px)`,
+                  backgroundColor: SET_COLORS[(i + 1) % SET_COLORS.length],
                 }}
               />
               {`set ${i + 2}`}
@@ -774,7 +771,7 @@ export default function CurvePane({
               <span
                 className="inline-block h-[2px] w-4"
                 style={{
-                  backgroundImage: 'repeating-linear-gradient(to right, #111827 0 1px, transparent 1px 4px)',
+                  backgroundImage: 'repeating-linear-gradient(to right, #9ca3af 0 1px, transparent 1px 4px)',
                 }}
               />
               before today
