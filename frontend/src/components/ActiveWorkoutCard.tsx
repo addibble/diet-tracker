@@ -1,8 +1,8 @@
 import type { FocusEvent } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import WorkoutSetEditor from './WorkoutSetEditor'
-import CurvePane, { type ConfirmedRir } from './CurvePane'
-import FatiguePane from './FatiguePane'
+import { type ConfirmedRir } from './CurvePane'
+import CurvePaneWithFatigue from './CurvePaneWithFatigue'
 import { snapWeight } from '../lib/weight_grid'
 import {
   addPlanExercise,
@@ -872,9 +872,12 @@ function ExerciseWorkout({
         </div>
       )}
 
-      {/* Completed curve pane — colored sparks, today's + prior curves, history */}
+      {/* Completed curve pane — colored sparks, today's + prior curves, history.
+          CurvePaneWithFatigue draws the fatigue band as a companion envelope
+          on the same chart, replacing what used to be a separate FatiguePane. */}
       {useCompletedCurvePane && (
-        <CurvePane
+        <CurvePaneWithFatigue
+          exerciseId={state.exercise_id}
           mode="completed"
           curve={curveFit}
           priorCurve={priorCurveFit}
@@ -888,15 +891,6 @@ function ExerciseWorkout({
           onGo={() => {}}
           onConfirmRir={() => {}}
           completedSets={completedSetsData}
-        />
-      )}
-
-      {/* Fatigue companion pane — reps-by-set-index, useful when the curve
-          view degenerates (e.g. stacked dots for fatigue-dominated exercises). */}
-      {!rx?.is_bodyweight && state.sets.length > 0 && (
-        <FatiguePane
-          exerciseId={state.exercise_id}
-          setCount={state.sets.length}
         />
       )}
 
@@ -930,7 +924,8 @@ function ExerciseWorkout({
           )}
 
           {rx && useCurvePane ? (
-            <CurvePane
+            <CurvePaneWithFatigue
+              exerciseId={state.exercise_id}
               mode={curveMode}
               curve={curveFit}
               bootstrapTargetReps={bootstrapTargetReps}

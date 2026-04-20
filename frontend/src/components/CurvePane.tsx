@@ -39,6 +39,13 @@ interface Props {
   onConfirmRir: (rir: ConfirmedRir) => void
   submitting?: boolean
   completedSets?: CompletedSet[]
+  // Fatigue band: β_s (1-based, β[0] = 0 for set 1). If provided, a shaded
+  // band is drawn between the fresh curve and the curve shifted down by
+  // β at fatigueMaxSetIndex (default 3). Points above the band outperform
+  // history; points below underperform.
+  fatigueBetaPerSet?: readonly number[]
+  fatigueMaxSetIndex?: number
+  fatigueBetaSource?: 'learned' | 'fallback'
 }
 
 const VB_W = 320
@@ -172,6 +179,53 @@ function curvePath(
   return `M ${pts.join(' L ')}`
 }
 
+function shiftedCurvePath(
+  curve: CurveFit,
+  shiftReps: number,
+  xMin: number,
+  xMax: number,
+  xToPxRaw: (x: number) => number,
+  yToPxRaw: (y: number) => number,
+): string {
+  const n = 120
+  const pts: string[] = []
+  for (let i = 0; i <= n; i++) {
+    const w = xMin + ((xMax - xMin) * i) / n
+    const rFresh = predictReps(w, curve)
+    if (!Number.isFinite(rFresh) || rFresh <= 0) continue
+    const r = Math.max(0, rFresh + shiftReps)
+    pts.push(`${xToPxRaw(w).toFixed(1)},${yToPxRaw(r).toFixed(1)}`)
+  }
+  if (pts.length < 2) return ''
+  return `M ${pts.join(' L ')}`
+}
+
+function fatigueBandPath(
+  curve: CurveFit,
+  betaWorst: number,
+  xMin: number,
+  xMax: number,
+  xToPxRaw: (x: number) => number,
+  yToPxRaw: (y: number) => number,
+): string {
+  // Closed polygon: fresh curve on top, β-shifted curve on bottom.
+  const n = 120
+  const top: string[] = []
+  const bot: string[] = []
+  for (let i = 0; i <= n; i++) {
+    const w = xMin + ((xMax - xMin) * i) / n
+    const rTop = predictReps(w, curve)
+    if (!Number.isFinite(rTop) || rTop <= 0) continue
+    const rBot = Math.max(0, rTop + betaWorst)
+    const x = xToPxRaw(w).toFixed(1)
+    top.push(`${x},${yToPxRaw(rTop).toFixed(1)}`)
+    bot.push(`${x},${yToPxRaw(rBot).toFixed(1)}`)
+  }
+  if (top.length < 2) return ''
+  bot.reverse()
+  return `M ${top.join(' L ')} L ${bot.join(' L ')} Z`
+}
+
 export default function CurvePane({
   mode,
   curve,
@@ -187,6 +241,9 @@ export default function CurvePane({
   onConfirmRir,
   submitting = false,
   completedSets,
+  fatigueBetaPerSet,
+  fatigueMaxSetIndex = 3,
+  fatigueBetaSource,
 }: Props) {
   const svgRef = useRef<SVGSVGElement | null>(null)
   const rafRef = useRef<number | null>(null)
@@ -508,18 +565,62 @@ export default function CurvePane({
           reps
         </text>
 
-        {/* Prior curve (yellow, dashed) — drawn under the green curve */}
+        {/* Prior curve (black, dotted) — drawn under the green curve */}
         {isCompleted && priorCurve && (
           <path
             d={curvePath(priorCurve, xMin, xMax, xToPxRaw, yToPxRaw)}
             fill="none"
-            stroke="#eab308"
-            strokeWidth={1.5}
-            strokeDasharray="4 3"
-            opacity={0.85}
+            stroke="#111827"
+            strokeWidth={1.25}
+            strokeDasharray="1 3"
+            strokeLinecap="round"
+            opacity={0.7}
             clipPath="url(#curve-pane-plot-clip)"
           />
         )}
+
+        {/* Fatigue band — shaded envelope between fresh curve (set 1) and the
+            worst-case set curve (β at fatigueMaxSetIndex). Points above the
+            band outperform historical sets; below, underperform. */}
+        {curve && fatigueBetaPerSet && fatigueBetaPerSet.length > 0 && (() => {
+          const lastIdx = Math.min(
+            fatigueMaxSetIndex,
+            fatigueBetaPerSet.length,
+          )
+          const betaWorst = fatigueBetaPerSet[lastIdx - 1] ?? 0
+          if (!(betaWorst < 0)) return null
+          const fillOpacity = fatigueBetaSource === 'learned' ? 0.14 : 0.09
+          return (
+            <g>
+              <path
+                d={fatigueBandPath(
+                  curve, betaWorst, xMin, xMax, xToPxRaw, yToPxRaw,
+                )}
+                fill="#f59e0b"
+                fillOpacity={fillOpacity}
+                clipPath="url(#curve-pane-plot-clip)"
+              />
+              {/* Intermediate set-index curves (dashed, faint) so the band
+                  visibly steps through set 2, 3, ... */}
+              {fatigueBetaPerSet.slice(1, lastIdx).map((b, i) =>
+                b < 0 ? (
+                  <path
+                    key={`beta-${i + 2}`}
+                    d={shiftedCurvePath(
+                      curve, b, xMin, xMax, xToPxRaw, yToPxRaw,
+                    )}
+                    fill="none"
+                    stroke="#f59e0b"
+                    strokeWidth={0.75}
+                    strokeDasharray="2 2"
+                    opacity={0.55}
+                    clipPath="url(#curve-pane-plot-clip)"
+                  />
+                ) : null,
+              )}
+            </g>
+          )
+        })()}
 
         {/* Curve or flat target line */}
         {curve ? (

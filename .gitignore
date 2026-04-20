@@ -24,6 +24,10 @@ config.yaml
 
 # Model exploration artifacts
 tools/model_exploration/plots/
+tools/model_exploration/prod_dbs_*/
+tools/model_exploration/*.parquet
+tools/model_exploration/*.csv
+tools/model_exploration/*.pkl
 
 # IDE
 .vscode/
