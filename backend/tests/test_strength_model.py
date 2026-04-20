@@ -435,20 +435,27 @@ class TestDetectInflection:
                         load_input_mode="external_weight",
                         bodyweight_fraction=0.0, external_load_multiplier=1.0)
 
-    def test_fatigue_inflection_detected(self):
-        """When per-set 1RM declines, fatigue inflection is detected."""
-        fit = CurveFit(M=200, k=20, gamma=0.7, n_obs=10, rmse=1.0,
+    def test_declining_1rm_alone_does_not_stop(self):
+        """A declining per-set Brzycki 1RM is not a stopping criterion.
+
+        Heavy-mode sessions stop only when the last effective weight is past
+        the curve's concave-down inflection ``M*(γ+1)/2``. A drifting 1RM
+        estimate on its own (even at RPE 10) just reflects the refinement
+        that comes with heavier sets, not that the ceiling has been found.
+        """
+        # gamma=0.9, M=300 → inflection at 300*1.9/2 = 285. Last set at 170
+        # is well below inflection.
+        fit = CurveFit(M=300, k=20, gamma=0.9, n_obs=10, rmse=1.0,
                         max_observed_weight=180, fit_tier="tier1")
         ex = self._make_heavy_exercise()
-        # Set 3 shows declining 1RM (fatigue)
         sets = [
             {"weight": 100, "reps": 15, "rpe": 7.0},
             {"weight": 140, "reps": 10, "rpe": 8.0},
-            {"weight": 170, "reps": 3, "rpe": 10.0},  # very fatigued
+            {"weight": 170, "reps": 3, "rpe": 10.0},  # low Brzycki 1RM
         ]
         result = detect_inflection(fit, sets, ex, bodyweight_lb=180)
-        assert result.inflecting is True
-        assert result.estimated_1rm is not None
+        assert result.inflecting is False
+        assert result.suggested_set4 is not None
 
     def test_curve_inflection_past_inflection_point(self):
         """When last set is past M*(γ+1)/2, curve inflection stops exercise."""

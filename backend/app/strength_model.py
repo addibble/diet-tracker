@@ -771,23 +771,27 @@ def detect_inflection(
     bodyweight_lb: float,
     max_entered_weight: float | None = None,
 ) -> InflectionResult:
-    """Check if fatigue is visible or if we need more data past the inflection.
+    """Check whether heavy-mode exercise should stop or prescribe another set.
 
     Requires 3+ session sets.
     session_sets: [{"weight": float, "reps": int, "rpe": float}] (entered weights)
 
-    Two stopping criteria (either triggers exercise_complete):
-    1. **Fatigue inflection**: last set's Brzycki 1RM < previous set's → fatigue visible.
-    2. **Curve inflection**: last set weight > M*(γ+1)/2 → we're in the concave-down
-       region and γ is constrained. Only checked for allow_heavy exercises.
+    Single stopping criterion: the last set's effective weight is past the
+    concave-down bend of the fitted curve, i.e. ``last_ew > M*(γ+1)/2``. This
+    is the exact second-derivative zero of ``r(W) = k*(M/W − 1)^γ`` and is
+    only meaningful when γ is constrained (``allow_heavy_loading=True``).
 
-    If neither criterion is met and allow_heavy, suggests a heavier set.
+    If we're not yet past the inflection, suggests a heavier set.
     Non-heavy exercises always return inflecting=False with no suggestion.
     """
     if len(session_sets) < 3:
         return InflectionResult(inflecting=False, estimated_1rm=None, suggested_set4=None)
 
-    # Compute per-set 1RM estimates from raw data (model-independent)
+    # Compute per-set 1RM estimates from raw data (model-independent).
+    # Only used to report estimated_1rm when we stop — no longer consulted
+    # as a stopping criterion (Brzycki 1RM is expected to drift downward
+    # across a heavy session as each set refines our estimate, and that
+    # drift is not evidence that we've found the real ceiling).
     set_1rms: list[float] = []
     last_ew = 0.0
     for s in session_sets:
@@ -804,25 +808,6 @@ def detect_inflection(
 
     if len(set_1rms) < 3:
         return InflectionResult(inflecting=False, estimated_1rm=None, suggested_set4=None)
-
-    # Criterion 1: fatigue inflection — 1RM declining AND the last set was
-    # actually near failure (RPE ≥ 9). Requiring high RPE here prevents a
-    # noisy Brzycki estimate on a comfortable set from prematurely ending
-    # the exercise. The user-facing rule is "do sets until your weight is
-    # past the inflection point", so this criterion only catches the
-    # obvious case where the athlete is visibly gassed.
-    last_1rm = set_1rms[-1]
-    prev_1rm = set_1rms[-2]
-    last_rpe = session_sets[-1].get("rpe") or 7.0
-    fatigue_inflecting = last_1rm < prev_1rm and last_rpe >= 9.0
-
-    if fatigue_inflecting:
-        avg_1rm = sum(set_1rms) / len(set_1rms)
-        return InflectionResult(
-            inflecting=True,
-            estimated_1rm=round(avg_1rm, 1),
-            suggested_set4=None,
-        )
 
     # Non-heavy exercises: no further escalation
     if not exercise.allow_heavy_loading:
