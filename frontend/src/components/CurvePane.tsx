@@ -39,14 +39,27 @@ interface Props {
   onConfirmRir: (rir: ConfirmedRir) => void
   submitting?: boolean
   completedSets?: CompletedSet[]
-  // Fatigue band: β_s (1-based, β[0] = 0 for set 1). If provided, a shaded
-  // band is drawn between the fresh curve and the curve shifted down by
-  // β at fatigueMaxSetIndex (default 3). Points above the band outperform
-  // history; points below underperform.
+  // Fatigue curves: β_s (1-based, β[0] = 0 for set 1). When provided, a
+  // set-index-colored curve is drawn at each β offset so the athlete can
+  // see where sets 1..N are expected to land relative to today's fit. The
+  // dot for each set spark uses the same color as its curve.
   fatigueBetaPerSet?: readonly number[]
   fatigueMaxSetIndex?: number
   fatigueBetaSource?: 'learned' | 'fallback'
 }
+
+// Cool-palette colors for today's sets, in set order. Chosen to avoid
+// red/orange/yellow (which clashed with historical curve colors) and to
+// progress from fresh → deeply fatigued. SET_COLORS[0] matches the
+// emerald "today" fit curve so set 1 reads as "fresh".
+const SET_COLORS = [
+  '#10b981', // emerald — set 1 (fresh)
+  '#0ea5e9', // sky     — set 2
+  '#6366f1', // indigo  — set 3
+  '#a855f7', // violet  — set 4
+  '#ec4899', // pink    — set 5
+  '#64748b', // slate   — set 6+
+]
 
 const VB_W = 320
 const VB_H = 200
@@ -198,32 +211,6 @@ function shiftedCurvePath(
   }
   if (pts.length < 2) return ''
   return `M ${pts.join(' L ')}`
-}
-
-function fatigueBandPath(
-  curve: CurveFit,
-  betaWorst: number,
-  xMin: number,
-  xMax: number,
-  xToPxRaw: (x: number) => number,
-  yToPxRaw: (y: number) => number,
-): string {
-  // Closed polygon: fresh curve on top, β-shifted curve on bottom.
-  const n = 120
-  const top: string[] = []
-  const bot: string[] = []
-  for (let i = 0; i <= n; i++) {
-    const w = xMin + ((xMax - xMin) * i) / n
-    const rTop = predictReps(w, curve)
-    if (!Number.isFinite(rTop) || rTop <= 0) continue
-    const rBot = Math.max(0, rTop + betaWorst)
-    const x = xToPxRaw(w).toFixed(1)
-    top.push(`${x},${yToPxRaw(rTop).toFixed(1)}`)
-    bot.push(`${x},${yToPxRaw(rBot).toFixed(1)}`)
-  }
-  if (top.length < 2) return ''
-  bot.reverse()
-  return `M ${top.join(' L ')} L ${bot.join(' L ')} Z`
 }
 
 export default function CurvePane({
@@ -424,16 +411,6 @@ export default function CurvePane({
   const sparkX = xToPx(sparkWeight)
   const sparkY = yToPx(sparkReps)
 
-  // Colors for today's completed sets (in set order). Up to 6 distinct hues.
-  const SET_COLORS = [
-    '#ef4444', // red
-    '#f97316', // orange
-    '#eab308', // yellow
-    '#22c55e', // green
-    '#3b82f6', // blue
-    '#a855f7', // purple
-  ]
-
   const isCompleted = mode === 'completed'
   // In completed mode hide today's gray dots so they don't duplicate the
   // colored sparks rendered from completedSets.
@@ -579,45 +556,38 @@ export default function CurvePane({
           />
         )}
 
-        {/* Fatigue band — shaded envelope between fresh curve (set 1) and the
-            worst-case set curve (β at fatigueMaxSetIndex). Points above the
-            band outperform historical sets; below, underperform. */}
+        {/* Per-set fatigue curves — one colored line per set index up to
+            fatigueMaxSetIndex. Each line is the fresh curve shifted down
+            by β_s reps. Colors match the set-spark dots so a dot near its
+            set curve means "on pace with historical fatigue", above means
+            "outperforming", below means "underperforming". Set 1 (β=0)
+            coincides with the fresh fit curve rendered below. */}
         {curve && fatigueBetaPerSet && fatigueBetaPerSet.length > 0 && (() => {
           const lastIdx = Math.min(
             fatigueMaxSetIndex,
             fatigueBetaPerSet.length,
           )
-          const betaWorst = fatigueBetaPerSet[lastIdx - 1] ?? 0
-          if (!(betaWorst < 0)) return null
-          const fillOpacity = fatigueBetaSource === 'learned' ? 0.14 : 0.09
+          const opacity = fatigueBetaSource === 'learned' ? 0.75 : 0.45
           return (
             <g>
-              <path
-                d={fatigueBandPath(
-                  curve, betaWorst, xMin, xMax, xToPxRaw, yToPxRaw,
-                )}
-                fill="#f59e0b"
-                fillOpacity={fillOpacity}
-                clipPath="url(#curve-pane-plot-clip)"
-              />
-              {/* Intermediate set-index curves (dashed, faint) so the band
-                  visibly steps through set 2, 3, ... */}
-              {fatigueBetaPerSet.slice(1, lastIdx).map((b, i) =>
-                b < 0 ? (
+              {fatigueBetaPerSet.slice(1, lastIdx).map((b, i) => {
+                if (!(b < 0)) return null
+                const color = SET_COLORS[(i + 1) % SET_COLORS.length]
+                return (
                   <path
                     key={`beta-${i + 2}`}
                     d={shiftedCurvePath(
                       curve, b, xMin, xMax, xToPxRaw, yToPxRaw,
                     )}
                     fill="none"
-                    stroke="#f59e0b"
-                    strokeWidth={0.75}
-                    strokeDasharray="2 2"
-                    opacity={0.55}
+                    stroke={color}
+                    strokeWidth={1.25}
+                    strokeDasharray="3 3"
+                    opacity={opacity}
                     clipPath="url(#curve-pane-plot-clip)"
                   />
-                ) : null,
-              )}
+                )
+              })}
             </g>
           )
         })()}
@@ -782,14 +752,29 @@ export default function CurvePane({
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-[10px] text-gray-500">
           <span className="flex items-center gap-1">
             <span className="inline-block h-[2px] w-4 bg-emerald-500" />
-            today
+            set 1 (fresh)
           </span>
+          {fatigueBetaPerSet && fatigueBetaPerSet.slice(1, Math.min(
+            fatigueMaxSetIndex, fatigueBetaPerSet.length,
+          )).map((b, i) => b < 0 ? (
+            <span key={`legend-set-${i + 2}`} className="flex items-center gap-1">
+              <span
+                className="inline-block h-[2px] w-4"
+                style={{
+                  backgroundImage: `repeating-linear-gradient(to right, ${
+                    SET_COLORS[(i + 1) % SET_COLORS.length]
+                  } 0 3px, transparent 3px 6px)`,
+                }}
+              />
+              {`set ${i + 2}`}
+            </span>
+          ) : null)}
           {priorCurve && (
             <span className="flex items-center gap-1">
               <span
                 className="inline-block h-[2px] w-4"
                 style={{
-                  backgroundImage: 'repeating-linear-gradient(to right, #eab308 0 4px, transparent 4px 7px)',
+                  backgroundImage: 'repeating-linear-gradient(to right, #111827 0 1px, transparent 1px 4px)',
                 }}
               />
               before today

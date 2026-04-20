@@ -805,10 +805,16 @@ def detect_inflection(
     if len(set_1rms) < 3:
         return InflectionResult(inflecting=False, estimated_1rm=None, suggested_set4=None)
 
-    # Criterion 1: fatigue inflection (1RM declining)
+    # Criterion 1: fatigue inflection — 1RM declining AND the last set was
+    # actually near failure (RPE ≥ 9). Requiring high RPE here prevents a
+    # noisy Brzycki estimate on a comfortable set from prematurely ending
+    # the exercise. The user-facing rule is "do sets until your weight is
+    # past the inflection point", so this criterion only catches the
+    # obvious case where the athlete is visibly gassed.
     last_1rm = set_1rms[-1]
     prev_1rm = set_1rms[-2]
-    fatigue_inflecting = last_1rm < prev_1rm
+    last_rpe = session_sets[-1].get("rpe") or 7.0
+    fatigue_inflecting = last_1rm < prev_1rm and last_rpe >= 9.0
 
     if fatigue_inflecting:
         avg_1rm = sum(set_1rms) / len(set_1rms)
@@ -981,6 +987,19 @@ def prescribe_next_set(
     # After 3+ sets: only heavy mode gets inflection checks + set 4+
     if n_done >= 3:
         if is_heavy_mode:
+            # Hard cap: never prescribe more than 6 sets even if the curve
+            # inflection criterion hasn't triggered. Protects against runaway
+            # escalation when the athlete's curve is unusually flat.
+            HEAVY_MAX_SETS = 6
+            if n_done >= HEAVY_MAX_SETS:
+                return _with_curve({
+                    "has_curve": True,
+                    "exercise_complete": True,
+                    "inflection_detected": False,
+                    "estimated_1rm": round(fit.M, 1),
+                    "next_set": None,
+                    "training_mode": training_mode,
+                })
             inflection = detect_inflection(
                 fit, prior_sets, exercise, bodyweight_lb, max_weight
             )
