@@ -934,6 +934,14 @@ function ExerciseWorkout({
               sparkReps={sparkReps}
               schemeRir={schemeRir}
               schemeSetNumber={schemeSetNumber}
+              acceptableRepMin={
+                rx?.next_set?.acceptable_rep_min
+                ?? rx?.scheme?.acceptable_rep_min
+              }
+              acceptableRepMax={
+                rx?.next_set?.acceptable_rep_max
+                ?? rx?.scheme?.acceptable_rep_max
+              }
               onSparkChange={handleSparkChange}
               onGo={handleGo}
               onConfirmRir={handleConfirmRir}

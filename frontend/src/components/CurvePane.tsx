@@ -35,6 +35,12 @@ interface Props {
   sparkReps: number
   schemeRir: number
   schemeSetNumber: number
+  // Acceptable completed-rep window for the current set (from backend's
+  // scheme). Used to color the top readout emerald when the predicted
+  // actual reps at the chosen weight fall within the window, amber when
+  // they don't. Falls back to bootstrapTargetReps ± 3 when absent.
+  acceptableRepMin?: number
+  acceptableRepMax?: number
   onSparkChange: (weight: number, reps: number) => void
   onGo: () => void
   onConfirmRir: (rir: ConfirmedRir) => void
@@ -236,6 +242,8 @@ export default function CurvePane({
   sparkReps,
   schemeRir,
   schemeSetNumber,
+  acceptableRepMin,
+  acceptableRepMax,
   onSparkChange,
   onGo,
   onConfirmRir,
@@ -300,7 +308,9 @@ export default function CurvePane({
     // Also grow yMax when the curve/spark runs above the visible range so
     // the dot stays on the curve when scrolling left into lighter weights.
     if (curve) {
-      const rtfAtSpark = predictReps(sparkWeight, curve)
+      const betaIdx = Math.max(0, schemeSetNumber - 1)
+      const betaHere = fatigueBetaPerSet?.[betaIdx] ?? 0
+      const rtfAtSpark = Math.max(0, predictReps(sparkWeight, curve) + betaHere)
       if (Number.isFinite(rtfAtSpark) && rtfAtSpark > domain.yMax * 0.92) {
         setDomain(d => ({
           ...d,
@@ -308,7 +318,7 @@ export default function CurvePane({
         }))
       }
     }
-  }, [sparkWeight, domain.xMin, domain.xMax, domain.yMax, curve])
+  }, [sparkWeight, domain.xMin, domain.xMax, domain.yMax, curve, schemeSetNumber, fatigueBetaPerSet])
 
   const { xMin, xMax, yMax } = domain
 
@@ -491,13 +501,33 @@ export default function CurvePane({
   }, [yMax])
 
   const sparkX = xToPx(sparkWeight)
-  // In pre mode we're picking weight only, so force the dot to sit on the
-  // fresh-set curve (predictReps gives rtf at the chosen weight). This
-  // prevents the dot from appearing "below" the curve at first paint.
+  // Fatigue offset for the current set — β for set 2+ is negative, so the
+  // set-N curve sits below the fresh curve. In pre mode we want the dot
+  // to live on *its* set's colored curve (not always the fresh one), so
+  // that dragging visibly tracks the set-2 / set-3 line.
+  const setIdx = Math.max(0, schemeSetNumber - 1)
+  const betaForSet = (fatigueBetaPerSet && fatigueBetaPerSet[setIdx] != null)
+    ? fatigueBetaPerSet[setIdx]
+    : 0
+  const setColor = SET_COLORS[setIdx % SET_COLORS.length]
   const effectiveSparkY = mode === 'pre' && curve
-    ? predictReps(sparkWeight, curve)
+    ? Math.max(0, predictReps(sparkWeight, curve) + betaForSet)
     : sparkReps
   const sparkY = yToPx(effectiveSparkY)
+  // Predicted actual reps at this weight + RIR = rtf − rir. This is what
+  // the user will actually complete if they honor the target RIR.
+  const predictedReps = Math.max(0, Math.round(effectiveSparkY - schemeRir))
+  // Color the top readout emerald when predictedReps is inside the
+  // acceptable window (backend-provided, or target ± 3), amber when it's
+  // not. Outside of pre mode we keep the default neutral color.
+  const repMin = acceptableRepMin ?? Math.max(1, Math.round(bootstrapTargetReps - 3))
+  const repMax = acceptableRepMax ?? Math.round(bootstrapTargetReps + 3)
+  const inRepRange = predictedReps >= repMin && predictedReps <= repMax
+  const readoutColor = mode !== 'pre'
+    ? 'text-gray-900'
+    : inRepRange
+      ? (dragging ? 'text-emerald-600' : 'text-emerald-700')
+      : (dragging ? 'text-amber-600' : 'text-amber-700')
 
   const isCompleted = mode === 'completed'
   // In completed mode hide today's gray dots so they don't duplicate the
@@ -508,7 +538,7 @@ export default function CurvePane({
 
   return (
     <div className="relative">
-      {/* Top bar: {weight} lbs {reps} reps + {rir} RIR (+ Go in pre mode) */}
+      {/* Top bar: {weight} lbs · {reps} reps + {rir} RIR (+ Go in pre mode) */}
       <div className="mb-1 flex items-center justify-between gap-2 px-1">
         <span className="text-sm font-semibold tabular-nums text-gray-900">
           {isCompleted ? (
@@ -517,12 +547,12 @@ export default function CurvePane({
             </span>
           ) : (
             <>
-              <span className={dragging ? 'text-emerald-600' : 'text-gray-900'}>
+              <span className={readoutColor}>
                 {sparkWeight % 1 === 0 ? sparkWeight : sparkWeight.toFixed(1)} lbs
               </span>
               <span className="mx-1.5 text-gray-300">·</span>
-              <span className={dragging ? 'text-emerald-600' : 'text-gray-900'}>
-                {Math.max(0, Math.round(effectiveSparkY))} reps + {schemeRir} RIR
+              <span className={readoutColor}>
+                {predictedReps} reps + {schemeRir} RIR
               </span>
             </>
           )}
@@ -774,8 +804,8 @@ export default function CurvePane({
                 x2={sparkX}
                 y1={PAD_T}
                 y2={PAD_T + PLOT_H}
-                stroke="#10b981"
-                strokeOpacity="0.25"
+                stroke={setColor}
+                strokeOpacity="0.3"
                 strokeDasharray="2 3"
               />
             ) : (
@@ -804,14 +834,14 @@ export default function CurvePane({
               cx={sparkX}
               cy={sparkY}
               r={10}
-              fill={mode === 'pre' ? '#10b981' : '#f59e0b'}
-              fillOpacity="0.2"
+              fill={mode === 'pre' ? setColor : '#f59e0b'}
+              fillOpacity="0.22"
             />
             <circle
               cx={sparkX}
               cy={sparkY}
               r={6}
-              fill={mode === 'pre' ? '#10b981' : '#f59e0b'}
+              fill={mode === 'pre' ? setColor : '#f59e0b'}
               stroke="#fff"
               strokeWidth={1.5}
             />
