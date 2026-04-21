@@ -114,6 +114,13 @@ export interface PrescribeNextResponse {
     r_fail: number;
     acceptable_rep_min: number;
     acceptable_rep_max: number;
+    // Space-explicit aliases emitted alongside the legacy fields. Prefer
+    // these in new code: suffixes make the weight space and rep space
+    // unambiguous. See backend/app/units.py for the canonical definitions.
+    proposed_entered_weight_lb?: number | null;
+    effective_weight_lb?: number;
+    target_reps_done?: number;
+    r_fail_rtf?: number;
   } | null;
   // Fallback / bodyweight
   fallback_weight?: number | null;
@@ -128,6 +135,7 @@ export interface PrescribeNextResponse {
     fit_tier?: string;
     n_obs?: number;
     max_observed_weight?: number;
+    weight_space?: 'entered' | 'effective';
   } | null;
   // Curve fit over observations strictly before today (for the completed view).
   curve_prior?: {
@@ -137,6 +145,7 @@ export interface PrescribeNextResponse {
     fit_tier?: string;
     n_obs?: number;
     max_observed_weight?: number;
+    weight_space?: 'entered' | 'effective';
   } | null;
   observations?: {
     weight: number;
@@ -233,6 +242,7 @@ export interface CurveSnapshotResponse {
     fit_tier?: string;
     n_obs?: number;
     max_observed_weight?: number;
+    weight_space?: 'entered' | 'effective';
   } | null;
   curve_prior?: {
     M: number;
@@ -241,6 +251,7 @@ export interface CurveSnapshotResponse {
     fit_tier?: string;
     n_obs?: number;
     max_observed_weight?: number;
+    weight_space?: 'entered' | 'effective';
   } | null;
   observations?: {
     weight: number;

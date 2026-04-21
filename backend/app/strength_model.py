@@ -10,6 +10,7 @@ import math
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
+from typing import Literal
 
 import numpy as np
 from scipy.optimize import minimize
@@ -59,16 +60,29 @@ TTEST_ALPHA = 0.05
 
 @dataclass
 class CurveFit:
-    """Result of fitting r_fresh(W) = k * (M/W - 1)^gamma."""
+    """Result of fitting r_fresh(W) = k * (M/W - 1)^gamma.
 
-    M: float  # estimated 1RM ceiling (effective weight)
+    The parameters (M, k) are always stored in *effective*-weight space, which
+    is the space `fit_curve` / `refit_with_observations` produce. When surfacing
+    the fit to the frontend the backend reprojects into entered-weight space
+    (see `_curve_dict`) so plot coordinates align with the user's entered
+    weights — but the internal `CurveFit` instances in this module are
+    uniformly effective-space. `predict_reps` / `solve_weight` assume the
+    argument is in the same space as `fit.weight_space`.
+    """
+
+    M: float  # estimated 1RM ceiling
     k: float  # endurance scaling
     gamma: float  # curve shape exponent
     n_obs: int
     rmse: float
-    max_observed_weight: float  # max effective weight in fitting data
+    max_observed_weight: float
     fit_tier: str  # "tier1" or "tier2"
     identifiability: float = 1.0  # 0-1 quality score
+    # Weight space in which (M, max_observed_weight) are expressed. Backend
+    # fitting always produces "effective"; `_curve_dict` reprojects to
+    # "entered" before exposing to the frontend.
+    weight_space: Literal["effective", "entered"] = "effective"
 
 
 @dataclass
@@ -129,16 +143,41 @@ def fresh_curve(
     return k * (ratio**gamma) if ratio > 0 else 0.0
 
 
-def predict_reps(weight: float, fit: CurveFit) -> float:
-    """Predict reps-to-failure at a given effective weight."""
+def predict_reps(
+    weight: float, fit: CurveFit,
+    *, space: Literal["effective", "entered"] = "effective",
+) -> float:
+    """Predict reps-to-failure at a given weight.
+
+    `space` asserts which weight space the argument is in; it must match
+    `fit.weight_space`. Defaults to "effective" because all internal callers
+    pass effective weights. Frontend callers should use the reprojected curve
+    produced by `_curve_dict` and pass entered weights with `space="entered"`.
+    """
+    if fit.weight_space != space:
+        raise ValueError(
+            f"predict_reps called with space={space!r} but fit.weight_space="
+            f"{fit.weight_space!r}; weight arguments must match the curve's "
+            "stored weight space"
+        )
     return float(fresh_curve(weight, fit.M, fit.k, fit.gamma))
 
 
-def solve_weight(target_reps: float, fit: CurveFit) -> float:
-    """Invert the curve: find effective weight W where r_fresh(W) = target_reps.
+def solve_weight(
+    target_reps: float, fit: CurveFit,
+    *, space: Literal["effective", "entered"] = "effective",
+) -> float:
+    """Invert the curve: find weight W where r_fresh(W) = target_reps.
+
+    Returns weight in `fit.weight_space` (asserted to equal `space`).
 
     W = M / (1 + (target_reps / k)^(1/gamma))
     """
+    if fit.weight_space != space:
+        raise ValueError(
+            f"solve_weight called with space={space!r} but fit.weight_space="
+            f"{fit.weight_space!r}; returned weight must match caller's space"
+        )
     if target_reps <= 0 or fit.k <= 0:
         return fit.M * 0.95
     ratio = (target_reps / fit.k) ** (1.0 / fit.gamma)
@@ -1121,17 +1160,34 @@ def prescribe_next_set(
 
 
 def _set_prescription_dict(p: SetPrescription) -> dict:
-    """Convert SetPrescription to API-friendly dict."""
+    """Convert SetPrescription to API-friendly dict.
+
+    Emits BOTH legacy field names and new space-explicit names so existing
+    consumers keep working while new consumers can prefer the explicit names.
+    New names:
+
+    - ``proposed_entered_weight_lb`` — entered weight to display to athlete
+    - ``effective_weight_lb`` — effective-space weight (body load)
+    - ``target_reps_done`` — reps the athlete should perform (= rtf - rir)
+    - ``r_fail_rtf`` — reps-to-failure prediction in rtf space
+    """
+    target_rir = round(10.0 - p.target_rpe)
     return {
         "set_number": p.set_number,
+        # Legacy names (unchanged).
         "proposed_weight": p.entered_weight,
         "effective_weight": p.effective_weight,
         "target_reps": p.target_reps,
         "target_rpe": p.target_rpe,
-        "target_rir": round(10.0 - p.target_rpe),
+        "target_rir": target_rir,
         "r_fail": p.r_fail,
         "acceptable_rep_min": p.acceptable_rep_min,
         "acceptable_rep_max": p.acceptable_rep_max,
+        # New space-explicit names (additive; consumers may prefer these).
+        "proposed_entered_weight_lb": p.entered_weight,
+        "effective_weight_lb": p.effective_weight,
+        "target_reps_done": p.target_reps,
+        "r_fail_rtf": p.r_fail,
     }
 
 
@@ -1147,10 +1203,13 @@ def _curve_dict(fit: CurveFit, exercise: Exercise | None = None,
     the plotted dots. For pure ``external_weight``/``carry`` modes this
     reprojection is mathematically exact; for ``mixed`` mode it's an affine
     approximation that preserves the x-intercept but distorts shape (the
-    resulting k in entered space is no longer rigorously equivalent).
+    resulting k in entered space is no longer rigorously equivalent, so
+    frontend predictReps output for mixed-mode exercises should be treated
+    as display-only — authoritative prescription math stays on the backend).
     """
     M_entered = fit.M
     max_ew_entered = fit.max_observed_weight
+    reprojected = False
     if exercise is not None:
         mode = exercise.load_input_mode or "external_weight"
         mult = exercise.external_load_multiplier or 1.0
@@ -1160,10 +1219,12 @@ def _curve_dict(fit: CurveFit, exercise: Exercise | None = None,
         if mode in ("external_weight", "carry") and mult != 1.0:
             M_entered = fit.M / mult
             max_ew_entered = fit.max_observed_weight / mult
+            reprojected = True
         elif mode == "mixed":
             # Approximate: shift x-axis intercept into entered space.
             M_entered = max(0.1, (fit.M - bw_comp) / mult)
             max_ew_entered = max(0.0, (fit.max_observed_weight - bw_comp) / mult)
+            reprojected = True
     return {
         "M": round(float(M_entered), 2),
         "k": round(float(fit.k), 4),
@@ -1171,6 +1232,9 @@ def _curve_dict(fit: CurveFit, exercise: Exercise | None = None,
         "fit_tier": fit.fit_tier,
         "n_obs": fit.n_obs,
         "max_observed_weight": round(float(max_ew_entered), 2),
+        # Always "entered" in exposed dicts — frontend plot coordinates are
+        # entered-weight. Kept explicit so TS branded types can assert.
+        "weight_space": "entered" if reprojected or exercise is not None else "effective",
     }
 
 
@@ -1503,6 +1567,10 @@ def bootstrap_prescription(
                 "r_fail": target_rtf,
                 "acceptable_rep_min": max(1, target_reps - 3),
                 "acceptable_rep_max": target_reps + 3,
+                "proposed_entered_weight_lb": None,
+                "effective_weight_lb": None,
+                "target_reps_done": target_reps,
+                "r_fail_rtf": target_rtf,
             },
             "scheme": {
                 "set_number": set_idx + 1,
@@ -1607,6 +1675,11 @@ def bootstrap_prescription(
             "r_fail": round(predicted_rtf, 1),
             "acceptable_rep_min": max(1, expected_reps - 3),
             "acceptable_rep_max": expected_reps + 3,
+            # Space-explicit aliases (see _set_prescription_dict).
+            "proposed_entered_weight_lb": round(entered_rounded, 1),
+            "effective_weight_lb": round(final_ew, 2),
+            "target_reps_done": expected_reps,
+            "r_fail_rtf": round(predicted_rtf, 1),
         },
         "scheme": {
             "set_number": set_idx + 1,

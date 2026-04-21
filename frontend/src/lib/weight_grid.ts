@@ -9,6 +9,14 @@ export interface CurveFit {
   M: number
   k: number
   gamma: number
+  /**
+   * Which weight space the curve parameters live in. Backend-emitted curves
+   * passed through `_curve_dict` are always "entered" (reprojected to match
+   * the frontend's plot coordinates). Kept optional so legacy callers still
+   * typecheck; predictReps / solveWeight default to treating the curve as
+   * entered-space.
+   */
+  weight_space?: "entered" | "effective"
 }
 
 function snapLow(w: number): number {
@@ -66,7 +74,14 @@ export function weightGrid(min: number, max: number): number[] {
   return out
 }
 
-// r_fresh(W) = k * (M/W - 1)^gamma. 0 when W >= M.
+/**
+ * r_fresh(W) = k * (M/W - 1)^gamma. 0 when W >= M.
+ *
+ * `w` must be in the same weight space as `fit.weight_space` (entered-space
+ * for any curve coming from the backend via `_curve_dict`). Frontend code
+ * should never call this with effective weights; the backend owns
+ * effective-space prescription math.
+ */
 export function predictReps(w: number, fit: CurveFit): number {
   if (w <= 0 || w >= fit.M || fit.k <= 0) return 0
   const ratio = fit.M / w - 1
@@ -74,8 +89,13 @@ export function predictReps(w: number, fit: CurveFit): number {
   return fit.k * Math.pow(ratio, fit.gamma)
 }
 
-// Invert the curve: find W such that predictReps(W) ≈ targetReps.
-// W = M / (1 + (target/k)^(1/gamma))
+/**
+ * Invert the curve: find W such that predictReps(W) ≈ targetReps.
+ * W = M / (1 + (target/k)^(1/gamma))
+ *
+ * `targetReps` is rtf (reps-to-failure), not reps_done. Returns weight in
+ * `fit.weight_space`.
+ */
 export function solveWeight(targetReps: number, fit: CurveFit): number {
   if (targetReps <= 0 || fit.k <= 0) return fit.M * 0.95
   const ratio = Math.pow(targetReps / fit.k, 1 / fit.gamma)
