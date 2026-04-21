@@ -26,6 +26,18 @@ from app.exercise_loads import (
     supports_strength_estimate,
 )
 from app.models import Exercise, ExerciseTissue, Tissue, WeightLog, WorkoutSession, WorkoutSet
+from app.units import (
+    entered_to_effective_lb as _entered_to_effective,
+)
+from app.units import (
+    reps_done_to_rtf as _reps_done_to_rtf,
+)
+from app.units import (
+    rpe_to_rir as _rpe_to_rir,
+)
+from app.units import (
+    rtf_to_reps_done as _rtf_to_reps_done,
+)
 
 BODYWEIGHT_MODES = {"bodyweight", "assisted_bodyweight"}
 
@@ -189,7 +201,7 @@ def solve_weight(
 
 def _rpe_confidence(rpe: float) -> float:
     """Higher confidence for sets closer to failure."""
-    rir = 10.0 - rpe
+    rir = _rpe_to_rir(rpe)
     return max(0.2, math.exp(-0.25 * rir))
 
 
@@ -512,8 +524,8 @@ def fit_curve(
         if ew <= 0:
             continue
 
-        rir = 10.0 - ws.rpe
-        r_fail = ws.reps + rir
+        rir = _rpe_to_rir(ws.rpe)
+        r_fail = _reps_done_to_rtf(ws.reps, rir)
 
         eff_weights.append(ew)
         reps_to_failure.append(r_fail)
@@ -741,7 +753,7 @@ def plan_progressive_sets(
             ew = _entered_to_effective(exercise, entered, bodyweight_lb)
             # Recompute expected reps at the clipped weight
             r_fail = predict_reps(ew, fit)
-            expected_reps = max(1, round(r_fail - rir))
+            expected_reps = _rtf_to_reps_done(r_fail, rir)
             rep_min = max(1, expected_reps - 3)
             rep_max = expected_reps + 3
 
@@ -756,7 +768,7 @@ def plan_progressive_sets(
                 entered = prev.entered_weight * 1.1
                 ew = _entered_to_effective(exercise, entered, bodyweight_lb)
                 r_fail = predict_reps(ew, fit)
-                expected_reps = max(1, round(r_fail - rir))
+                expected_reps = _rtf_to_reps_done(r_fail, rir)
                 rep_min = max(1, expected_reps - 3)
                 rep_max = expected_reps + 3
 
@@ -789,7 +801,7 @@ def adjust_prescription(
     scheme = HEAVY_SCHEME if allow_heavy else LIGHT_SCHEME
     _, rir, target_rpe, _, _, _ = scheme[set_number - 1]
 
-    expected_reps = max(1, round(r_fail - rir))
+    expected_reps = _rtf_to_reps_done(r_fail, rir)
 
     return SetPrescription(
         set_number=set_number,
@@ -838,8 +850,8 @@ def detect_inflection(
         if ew <= 0:
             continue
         rpe = s.get("rpe") or 7.0
-        rir = 10.0 - rpe
-        r_fail = s["reps"] + rir
+        rir = _rpe_to_rir(rpe)
+        r_fail = _reps_done_to_rtf(s["reps"], rir)
         denom = max(1.0 - r_fail / 37.0, 0.05)
         est_1rm = ew / denom
         set_1rms.append(est_1rm)
@@ -887,7 +899,7 @@ def detect_inflection(
     if entered is not None:
         ew = _entered_to_effective(exercise, entered, bodyweight_lb)
         target_r_fail = predict_reps(ew, fit)
-        target_actual = max(1, round(target_r_fail - rir))
+        target_actual = _rtf_to_reps_done(target_r_fail, rir)
 
     return InflectionResult(
         inflecting=False,
@@ -1168,7 +1180,7 @@ def _set_prescription_dict(p: SetPrescription) -> dict:
 
     - ``proposed_entered_weight_lb`` — entered weight to display to athlete
     - ``effective_weight_lb`` — effective-space weight (body load)
-    - ``target_reps_done`` — reps the athlete should perform (= rtf - rir)
+    - ``target_reps_done`` — reps the athlete should perform
     - ``r_fail_rtf`` — reps-to-failure prediction in rtf space
     """
     target_rir = round(10.0 - p.target_rpe)
@@ -1532,7 +1544,7 @@ def bootstrap_prescription(
     stage = min(set_idx, len(targets) - 1)
     target_rtf = float(targets[stage])
     rir = int(rirs[stage])
-    target_reps = max(1, int(target_rtf - rir))
+    target_reps = _rtf_to_reps_done(target_rtf, rir)
     target_rpe = 10.0 - rir
 
     bootstrap_block: dict = {
@@ -1608,7 +1620,7 @@ def bootstrap_prescription(
     # Safety clamp based on severity of the previous set's outcome.
     prev_stage = max(0, stage - 1)
     prev_target_rtf = float(targets[prev_stage])
-    prev_target_reps = max(1, int(prev_target_rtf - rirs[prev_stage]))
+    prev_target_reps = _rtf_to_reps_done(prev_target_rtf, rirs[prev_stage])
     severe_over, severe_under = _severity_flags(
         prev, prev_target_rtf, prev_target_reps,
     )
@@ -1642,7 +1654,7 @@ def bootstrap_prescription(
     if final_ew <= 0:
         final_ew = max(1.0, entered_rounded)
     predicted_rtf = float(fresh_curve(final_ew, M_guess, BOOT_K, BOOT_GAMMA))
-    expected_reps = max(1, int(round(predicted_rtf - rir)))
+    expected_reps = _rtf_to_reps_done(predicted_rtf, rir)
 
     reason = "standard step"
     if severe_over:
@@ -1944,9 +1956,9 @@ def refit_with_observations(
         if ew <= 0:
             continue
 
-        rir = 10.0 - ws.rpe
+        rir = _rpe_to_rir(ws.rpe)
         eff_weights.append(ew)
-        reps_to_failure.append(ws.reps + rir)
+        reps_to_failure.append(_reps_done_to_rtf(ws.reps, rir))
         confidences.append(_rpe_confidence(ws.rpe))
         ages_days.append((today - ws_date).days)
 
@@ -2258,27 +2270,6 @@ def get_bodyweight_suggestion(
 
 
 # ── Internal helpers ──
-
-
-def _entered_to_effective(
-    exercise: Exercise, entered_weight: float, bodyweight_lb: float
-) -> float:
-    """Convert entered weight to effective weight (inverse of entered_weight_for_effective_weight)."""
-    mode = exercise.load_input_mode or "external_weight"
-    multiplier = exercise.external_load_multiplier or 1.0
-    if multiplier <= 0:
-        multiplier = 1.0
-    bw_component = bodyweight_lb * (exercise.bodyweight_fraction or 0.0)
-
-    if mode == "bodyweight":
-        return bw_component
-    if mode == "mixed":
-        return entered_weight * multiplier + bw_component
-    if mode == "assisted_bodyweight":
-        return max(0.0, bw_component - entered_weight * multiplier)
-    if mode == "carry":
-        return entered_weight * multiplier
-    return entered_weight * multiplier
 
 
 def get_max_recent_entered_weight(
