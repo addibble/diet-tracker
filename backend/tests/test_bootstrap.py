@@ -179,15 +179,17 @@ class TestBootstrapProbing:
         assert result["bootstrap"]["severe_over"] is True
 
     def test_clamp_prevents_absurd_jump(self, session):
-        """Set 1 landed way below target (low RPE, tons of reps): the normal
-        clamp should cap upward correction at 1.55x (severe-under) to avoid
-        wild jumps."""
+        """Set 1 landed way below target (low RPE, tons of reps): the severe-
+        under clamp should cap upward correction at 3.0× to permit aggressive
+        catch-up from a drastically underloaded anchor while still bounding
+        the jump (historically this was 1.55× but that stalled exit from
+        bootstrap on anchor sets done at ~30% of true capacity)."""
         ex = _make_exercise(session)
         prior = [{"weight": 50, "reps": 30, "rpe": 6.0, "set_order": 1}]
         result = bootstrap_prescription(ex.id, session, prior, bodyweight_lb=180)
         ns = result["next_set"]
-        # Must not exceed 1.55 × prior (the severe-undershoot ceiling).
-        assert ns["proposed_weight"] <= 50 * 1.55 + 0.01
+        # Must not exceed 3.0 × prior (the severe-undershoot ceiling).
+        assert ns["proposed_weight"] <= 50 * 3.00 + 0.01
 
     def test_set2_rounds_away_from_set1(self, session):
         """Set 2's rounded weight must differ from set 1 — same rounded

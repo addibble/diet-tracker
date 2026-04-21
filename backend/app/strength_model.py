@@ -1233,7 +1233,13 @@ _BOOT_RIR = (3, 2, 2)
 # system can recover in one step rather than chasing a bad anchor.
 _BOOT_CLAMP_NORMAL = (0.80, 1.35)
 _BOOT_CLAMP_SEVERE_OVER = (0.50, 1.35)
-_BOOT_CLAMP_SEVERE_UNDER = (0.80, 1.55)
+# When the previous set was way too light (lots of reps at low RPE), trust the
+# M-guess and let the prescription jump substantially. The universal curve's
+# inversion from (rtf, weight) is reasonably accurate, and refusing to step
+# up more than 1.55× means we stall on drastically underloaded anchor sets
+# (e.g. a 7 lb dumbbell done for 20 reps at RPE 5 should jump to ~17.5 lb,
+# not be clipped to ~10 lb).
+_BOOT_CLAMP_SEVERE_UNDER = (0.80, 3.00)
 
 # rtf cap — Brzycki-style 1RM explodes as rtf → 37, and the universal curve
 # gets twitchy at very high rtf too. Cap the inferred rtf for M estimation.
@@ -1354,6 +1360,34 @@ def _round_to_increment(weight: float, increment: float = 5.0) -> float:
     if increment <= 0:
         return weight
     return round(weight / increment) * increment
+
+
+def _snap_to_grid(weight: float) -> float:
+    """Snap to the same dynamic weight grid the frontend uses.
+
+    Bands:
+      0 ≤ w < 15  → integer lbs plus {2.5, 7.5, 12.5}
+      15 ≤ w < 100 → 2.5 lb
+      w ≥ 100     → 5 lb
+    """
+    if weight <= 0:
+        return 0.0
+    if weight < 15:
+        candidates = [
+            0, 1, 2, 2.5, 3, 4, 5, 6, 7, 7.5, 8, 9, 10, 11, 12, 12.5, 13, 14,
+        ]
+        return min(candidates, key=lambda c: abs(c - weight))
+    if weight < 100:
+        return round(weight / 2.5) * 2.5
+    return round(weight / 5.0) * 5.0
+
+
+def _grid_step(weight: float) -> float:
+    if weight < 15:
+        return 1.0
+    if weight < 100:
+        return 2.5
+    return 5.0
 
 
 def bootstrap_prescription(
@@ -1485,15 +1519,18 @@ def bootstrap_prescription(
     clamp_ceil = prev_w * hi
     entered_clamped = float(np.clip(entered, clamp_floor, clamp_ceil))
 
-    # Round to a useful increment (5 lb default). Avoid prescribing the same
-    # rounded weight as the previous set — that yields a third stacked dot
-    # with no new information and stalls exit from bootstrap.
-    entered_rounded = _round_to_increment(entered_clamped, 5.0)
-    if abs(entered_rounded - prev_w) < 2.5:
-        bump = 5.0 if entered_clamped >= prev_w else -5.0
-        entered_rounded = prev_w + bump
+    # Round to the dynamic frontend grid (integers + {2.5, 7.5, 12.5} below
+    # 15 lb, 2.5 lb band to 100 lb, 5 lb above). Avoid prescribing the same
+    # grid point as the previous set — that yields a third stacked dot with
+    # no new information and stalls exit from bootstrap.
+    entered_rounded = _snap_to_grid(entered_clamped)
+    step = _grid_step(prev_w)
+    if abs(entered_rounded - prev_w) < step / 2:
+        bump = step if entered_clamped >= prev_w else -step
+        entered_rounded = _snap_to_grid(prev_w + bump)
     # Re-clamp after rounding/bumping so the hard safety rail always holds.
     entered_rounded = float(np.clip(entered_rounded, clamp_floor, clamp_ceil))
+    entered_rounded = _snap_to_grid(entered_rounded)
 
     # Recompute the effective weight and forward-predict rtf from the final
     # entered weight so the UI's "expected reps" matches what we'll prescribe.

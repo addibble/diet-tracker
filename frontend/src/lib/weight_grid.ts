@@ -1,7 +1,7 @@
 // Dynamic weight-snap grid for dragging the strength-curve "spark".
 //
 // Bands:
-//   0  ≤ w < 15  → 1 lb integer grid plus the half-pound points 2.5 and 7.5.
+//   0  ≤ w < 15  → 1 lb integer grid plus the half-pound points 2.5, 7.5, 12.5.
 //   15 ≤ w < 100 → 2.5 lb.
 //   w  ≥ 100     → 5 lb.
 
@@ -12,8 +12,8 @@ export interface CurveFit {
 }
 
 function snapLow(w: number): number {
-  // Allowed points: every integer 0..14 plus {2.5, 7.5}.
-  const candidates = [0, 1, 2, 2.5, 3, 4, 5, 6, 7, 7.5, 8, 9, 10, 11, 12, 13, 14]
+  // Allowed points: every integer 0..14 plus {2.5, 7.5, 12.5}.
+  const candidates = [0, 1, 2, 2.5, 3, 4, 5, 6, 7, 7.5, 8, 9, 10, 11, 12, 12.5, 13, 14]
   let best = candidates[0]
   let bestDist = Math.abs(w - best)
   for (const c of candidates) {
