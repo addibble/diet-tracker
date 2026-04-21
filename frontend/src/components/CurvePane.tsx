@@ -297,7 +297,18 @@ export default function CurvePane({
         xMin: Math.max(0, Math.floor(sparkWeight - span * 0.15)),
       }))
     }
-  }, [sparkWeight, domain.xMin, domain.xMax])
+    // Also grow yMax when the curve/spark runs above the visible range so
+    // the dot stays on the curve when scrolling left into lighter weights.
+    if (curve) {
+      const rtfAtSpark = predictReps(sparkWeight, curve)
+      if (Number.isFinite(rtfAtSpark) && rtfAtSpark > domain.yMax * 0.92) {
+        setDomain(d => ({
+          ...d,
+          yMax: Math.max(d.yMax, Math.ceil(rtfAtSpark * 1.2)),
+        }))
+      }
+    }
+  }, [sparkWeight, domain.xMin, domain.xMax, domain.yMax, curve])
 
   const { xMin, xMax, yMax } = domain
 
@@ -497,7 +508,7 @@ export default function CurvePane({
 
   return (
     <div className="relative">
-      {/* Top bar: Set N · RIR X · weight (+ Go button in pre mode) */}
+      {/* Top bar: {weight} lbs {reps} reps + {rir} RIR (+ Go in pre mode) */}
       <div className="mb-1 flex items-center justify-between gap-2 px-1">
         <span className="text-sm font-semibold tabular-nums text-gray-900">
           {isCompleted ? (
@@ -506,12 +517,12 @@ export default function CurvePane({
             </span>
           ) : (
             <>
-              <span className="text-gray-500">Set {schemeSetNumber}</span>
-              <span className="mx-1.5 text-gray-300">·</span>
-              <span className="text-gray-500">RIR {schemeRir}</span>
-              <span className="mx-1.5 text-gray-300">·</span>
               <span className={dragging ? 'text-emerald-600' : 'text-gray-900'}>
                 {sparkWeight % 1 === 0 ? sparkWeight : sparkWeight.toFixed(1)} lbs
+              </span>
+              <span className="mx-1.5 text-gray-300">·</span>
+              <span className={dragging ? 'text-emerald-600' : 'text-gray-900'}>
+                {Math.max(0, Math.round(effectiveSparkY))} reps + {schemeRir} RIR
               </span>
             </>
           )}
@@ -808,13 +819,13 @@ export default function CurvePane({
         )}
       </svg>
 
-      {/* Spark tooltip (pre: target + hint; logging: reps + hint) */}
+      {/* Spark tooltip (pre: set + target; logging: reps + hint) */}
       {!isCompleted && (
         <div className="mt-1 flex items-baseline justify-between px-1 text-[10px] text-gray-500">
           {mode === 'pre' ? (
             <>
               <span>
-                Target: {Math.max(0, Math.round(bootstrapTargetReps))} reps + {schemeRir} RIR
+                Set {schemeSetNumber} · Target {Math.max(0, Math.round(bootstrapTargetReps))} reps + {schemeRir} RIR
               </span>
               <span className="text-gray-400">drag to pick weight</span>
             </>
