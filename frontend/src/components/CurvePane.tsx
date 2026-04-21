@@ -514,9 +514,15 @@ export default function CurvePane({
     ? Math.max(0, predictReps(sparkWeight, curve) + betaForSet)
     : sparkReps
   const sparkY = yToPx(effectiveSparkY)
-  // Predicted actual reps at this weight + RIR = rtf − rir. This is what
-  // the user will actually complete if they honor the target RIR.
-  const predictedReps = Math.max(0, Math.round(effectiveSparkY - schemeRir))
+  // Predicted actual reps at this weight + RIR. When we have a curve,
+  // effectiveSparkY lives in rtf space and we subtract schemeRir. In
+  // bootstrap mode there's no curve, and sparkReps is seeded from the
+  // backend's target_reps (already actual reps, not rtf), so we use it
+  // directly to avoid a double-subtraction ("17 reps target" showing as
+  // "14 reps + 3 RIR" in the top bar).
+  const predictedReps = curve
+    ? Math.max(0, Math.round(effectiveSparkY - schemeRir))
+    : Math.max(0, Math.round(sparkReps))
   // Color the top readout emerald when predictedReps is inside the
   // acceptable window (backend-provided, or target ± 3), amber when it's
   // not. Outside of pre mode we keep the default neutral color.

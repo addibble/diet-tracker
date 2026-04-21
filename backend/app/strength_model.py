@@ -1052,18 +1052,21 @@ def prescribe_next_set(
         exercise, effective_weight_lb=ew, bodyweight_lb=bodyweight_lb
     )
 
-    # Soft cap: allow up to 125% of the highest weight ever used.
-    # This prevents wildly extrapolated prescriptions while still
-    # permitting progressive overload beyond recent history.
+    # Soft cap: allow up to 125% of the heaviest weight completed *in this
+    # session*. This protects against runaway escalation on set 2+ if the
+    # curve happens to prescribe much heavier than the athlete has already
+    # handled today. For set 1, we trust the curve: clipping to 1.25× of
+    # some stale 90-day max underweighted exercises whose curve now says a
+    # heavier load is appropriate (e.g. athlete was historically warming
+    # up an exercise they're now ready to push).
     if prior_sets:
         session_max = max(
             (s["weight"] for s in prior_sets if s.get("weight")),
             default=0,
         )
+        weight_ceiling = session_max * 1.25 if session_max > 0 else None
     else:
-        session_max = 0
-    effective_max = max(max_weight or 0, session_max)
-    weight_ceiling = effective_max * 1.25 if effective_max > 0 else None
+        weight_ceiling = None
 
     if entered is not None and weight_ceiling is not None:
         entered = min(entered, weight_ceiling)
