@@ -3,6 +3,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 import {
   predictReps,
   snapWeight,
+  solveWeight,
   weightStep,
   type CurveFit,
 } from '../lib/weight_grid'
@@ -79,6 +80,8 @@ function computeDomain(
   sparkWeight: number,
   observations: CurveObservation[],
   completedSets?: CompletedSet[],
+  targetReps?: number,
+  schemeRir?: number,
 ): { xMin: number; xMax: number; yMax: number } {
   // "Primary" points = today's sets (completed) + the spark (if active in
   // a pre/logging flow). Historical observations are secondary — included
@@ -91,6 +94,16 @@ function computeDomain(
       w: sparkWeight,
       r: curve ? predictReps(sparkWeight, curve) : 15,
     })
+  }
+  // If we have a curve and a known target (reps + RIR = target rtf), include
+  // the weight that actually hits that target so the curve is visible even
+  // when the initial prescription happens to be far from target.
+  if (curve && targetReps && targetReps > 0) {
+    const targetRtf = targetReps + (schemeRir ?? 0)
+    const wTarget = solveWeight(targetRtf, curve)
+    if (Number.isFinite(wTarget) && wTarget > 0 && wTarget < curve.M) {
+      todayPts.push({ w: wTarget, r: targetRtf })
+    }
   }
   const histPts = observations
     .filter(o => o.weight > 0 && o.reps > 0)
@@ -243,19 +256,29 @@ export default function CurvePane({
     w: number
     r: number
   } | null>(null)
+  // Continuous edge-hold auto-scroll (pre mode only). When the pointer is
+  // parked near either edge of the plot during a drag, we advance the spark
+  // weight one snap step every ~140ms toward that edge so the user can
+  // simply hold rather than repeatedly tap.
+  const edgeDirRef = useRef<-1 | 0 | 1>(0)
+  const edgeIntervalRef = useRef<number | null>(null)
+  const sparkRef = useRef({ w: sparkWeight, r: sparkReps })
+  useEffect(() => {
+    sparkRef.current = { w: sparkWeight, r: sparkReps }
+  }, [sparkWeight, sparkReps])
 
   // Sticky domain: seeded from curve + observations + initial spark, and
   // only expanded when the spark approaches the edges. This keeps the graph
   // from sliding around as the user drags.
   const [domain, setDomain] = useState(() =>
-    computeDomain(curve, sparkWeight, observations, completedSets),
+    computeDomain(curve, sparkWeight, observations, completedSets, bootstrapTargetReps, schemeRir),
   )
 
   // Reset when the underlying fit or history changes (new prescription / refit).
   useEffect(() => {
-    setDomain(computeDomain(curve, sparkWeight, observations, completedSets))
+    setDomain(computeDomain(curve, sparkWeight, observations, completedSets, bootstrapTargetReps, schemeRir))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [curve, observations, completedSets])
+  }, [curve, observations, completedSets, bootstrapTargetReps, schemeRir])
 
   // Expand the window only if the spark is near the very edge.
   useEffect(() => {
@@ -333,7 +356,9 @@ export default function CurvePane({
   const applySpark = useCallback(
     (w: number, r: number) => {
       if (mode === 'pre') {
-        const snapped = snapWeight(clamp(w, xMin, xMax))
+        // Don't clamp to [xMin,xMax] — the edge-expand effect will grow the
+        // domain when the spark runs past an edge, enabling auto-scroll.
+        const snapped = snapWeight(Math.max(0, w))
         const newReps = curve ? predictReps(snapped, curve) : bootstrapTargetReps
         onSparkChange(snapped, newReps)
       } else {
@@ -341,8 +366,50 @@ export default function CurvePane({
         onSparkChange(sparkWeight, newReps)
       }
     },
-    [mode, curve, bootstrapTargetReps, sparkWeight, xMin, xMax, yMax, onSparkChange],
+    [mode, curve, bootstrapTargetReps, sparkWeight, yMax, onSparkChange],
   )
+
+  const stopEdgeScroll = useCallback(() => {
+    edgeDirRef.current = 0
+    if (edgeIntervalRef.current != null) {
+      window.clearInterval(edgeIntervalRef.current)
+      edgeIntervalRef.current = null
+    }
+  }, [])
+
+  const ensureEdgeScroll = useCallback(() => {
+    if (edgeIntervalRef.current != null) return
+    edgeIntervalRef.current = window.setInterval(() => {
+      if (mode !== 'pre') return
+      const dir = edgeDirRef.current
+      if (dir === 0) return
+      const curW = sparkRef.current.w
+      const step = weightStep(curW > 0 ? curW : 10)
+      const nextW = Math.max(0, curW + dir * step)
+      // Keep drag reference in sync so deltaToData remains correct when the
+      // user resumes moving their finger.
+      if (dragStart.current) {
+        dragStart.current.w += dir * step
+      }
+      applySpark(nextW, sparkRef.current.r)
+    }, 140)
+  }, [applySpark, mode])
+
+  const updateEdgeDir = useCallback((clientX: number) => {
+    const svg = svgRef.current
+    if (!svg || mode !== 'pre') {
+      edgeDirRef.current = 0
+      return
+    }
+    const rect = svg.getBoundingClientRect()
+    const px = ((clientX - rect.left) / rect.width) * VB_W
+    const zone = PLOT_W * 0.08
+    if (px < PAD_L + zone) edgeDirRef.current = -1
+    else if (px > PAD_L + PLOT_W - zone) edgeDirRef.current = 1
+    else edgeDirRef.current = 0
+  }, [mode])
+
+  useEffect(() => () => stopEdgeScroll(), [stopEdgeScroll])
 
   const handlePointerDown = (e: ReactPointerEvent<SVGSVGElement>) => {
     if (submitting) return
@@ -363,10 +430,13 @@ export default function CurvePane({
       seedW = sparkWeight
     }
     dragStart.current = { cx: e.clientX, cy: e.clientY, w: seedW, r: seedR }
+    updateEdgeDir(e.clientX)
+    ensureEdgeScroll()
   }
 
   const handlePointerMove = (e: ReactPointerEvent<SVGSVGElement>) => {
     if (!dragging || !dragStart.current) return
+    updateEdgeDir(e.clientX)
     if (rafRef.current != null) return
     const cx = e.clientX
     const cy = e.clientY
@@ -384,6 +454,7 @@ export default function CurvePane({
   const handlePointerUp = (e: ReactPointerEvent<SVGSVGElement>) => {
     setDragging(false)
     dragStart.current = null
+    stopEdgeScroll()
     try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* ignore */ }
   }
 
@@ -409,7 +480,13 @@ export default function CurvePane({
   }, [yMax])
 
   const sparkX = xToPx(sparkWeight)
-  const sparkY = yToPx(sparkReps)
+  // In pre mode we're picking weight only, so force the dot to sit on the
+  // fresh-set curve (predictReps gives rtf at the chosen weight). This
+  // prevents the dot from appearing "below" the curve at first paint.
+  const effectiveSparkY = mode === 'pre' && curve
+    ? predictReps(sparkWeight, curve)
+    : sparkReps
+  const sparkY = yToPx(effectiveSparkY)
 
   const isCompleted = mode === 'completed'
   // In completed mode hide today's gray dots so they don't duplicate the
@@ -420,44 +497,38 @@ export default function CurvePane({
 
   return (
     <div className="relative">
-      {/* Go button (pre mode only) */}
-      {mode === 'pre' && (
-        <button
-          type="button"
-          onClick={onGo}
-          disabled={submitting || sparkWeight <= 0}
-          className="absolute right-2 top-2 z-10 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:opacity-50"
-          style={{ minHeight: 40 }}
-        >
-          Go →
-        </button>
-      )}
-
-      {/* Set + live readout banner */}
-      <div className="mb-1 flex items-end justify-between gap-2 px-1">
-        <span className="text-[11px] font-medium text-gray-500">
+      {/* Top bar: Set N · RIR X · weight (+ Go button in pre mode) */}
+      <div className="mb-1 flex items-center justify-between gap-2 px-1">
+        <span className="text-sm font-semibold tabular-nums text-gray-900">
           {isCompleted ? (
-            <>Exercise complete · {completedSets?.length ?? 0} sets</>
+            <span className="text-[11px] font-medium text-gray-500">
+              Exercise complete · {completedSets?.length ?? 0} sets
+            </span>
           ) : (
             <>
-              Set {schemeSetNumber}
-              <span className="ml-1 text-gray-400">· target RIR {schemeRir}</span>
-              {mode === 'logging' && (
-                <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
-                  log reps
-                </span>
-              )}
+              <span className="text-gray-500">Set {schemeSetNumber}</span>
+              <span className="mx-1.5 text-gray-300">·</span>
+              <span className="text-gray-500">RIR {schemeRir}</span>
+              <span className="mx-1.5 text-gray-300">·</span>
+              <span className={dragging ? 'text-emerald-600' : 'text-gray-900'}>
+                {sparkWeight % 1 === 0 ? sparkWeight : sparkWeight.toFixed(1)} lbs
+              </span>
             </>
           )}
         </span>
-        {!isCompleted && (
-          <span
-            className={`text-xl font-bold tabular-nums ${
-              dragging ? 'text-emerald-600' : 'text-gray-900'
-            }`}
+        {mode === 'pre' && (
+          <button
+            type="button"
+            onClick={onGo}
+            disabled={submitting || sparkWeight <= 0}
+            className="rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:opacity-50"
           >
-            {Math.max(0, Math.round(sparkReps))} reps @{' '}
-            {sparkWeight % 1 === 0 ? sparkWeight : sparkWeight.toFixed(1)} lbs
+            Go →
+          </button>
+        )}
+        {mode === 'logging' && (
+          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+            log reps
           </span>
         )}
       </div>
@@ -737,15 +808,24 @@ export default function CurvePane({
         )}
       </svg>
 
-      {/* Spark readout (drag-mode only) */}
+      {/* Spark tooltip (pre: target + hint; logging: reps + hint) */}
       {!isCompleted && (
-        <div className="mt-2 flex items-baseline justify-between px-1 text-sm">
-          <span className="font-semibold tabular-nums text-gray-900">
-            {snapWeight(sparkWeight)} lb × {Math.max(0, Math.round(sparkReps))} reps
-          </span>
-          <span className="text-[11px] text-gray-500">
-            {mode === 'pre' ? 'drag to pick weight' : 'drag to set reps achieved'}
-          </span>
+        <div className="mt-1 flex items-baseline justify-between px-1 text-[10px] text-gray-500">
+          {mode === 'pre' ? (
+            <>
+              <span>
+                Target: {Math.max(0, Math.round(bootstrapTargetReps))} reps + {schemeRir} RIR
+              </span>
+              <span className="text-gray-400">drag to pick weight</span>
+            </>
+          ) : (
+            <>
+              <span className="font-semibold tabular-nums text-gray-900">
+                {Math.max(0, Math.round(sparkReps))} reps
+              </span>
+              <span className="text-gray-400">drag to set reps achieved</span>
+            </>
+          )}
         </div>
       )}
 
