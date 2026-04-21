@@ -219,7 +219,9 @@ def curve_snapshot(
     _user: str = Depends(get_current_user),
 ):
     """Historical curve fit for the completed-exercise view (Recent Sessions)."""
-    return curve_snapshot_for_date(exercise_id, session, date)
+    bw_lookup = _get_bw_lookup(session)
+    bw_lb = latest_bodyweight(bw_lookup, date)
+    return curve_snapshot_for_date(exercise_id, session, date, bodyweight_lb=bw_lb)
 
 
 @router.get("/fatigue-profile/{exercise_id}")

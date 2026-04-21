@@ -948,11 +948,15 @@ def prescribe_next_set(
         }
 
     n_done = len(prior_sets)
-    curve_block = _curve_dict(fit)
+    curve_block = _curve_dict(fit, exercise, bodyweight_lb)
     observations = _build_observations(exercise_id, session)
     # Prior-day curve (excludes today's sets) — for the post-complete display.
     prior_fit = fit_curve(exercise_id, session, allow_heavy=allow_heavy, exclude_today=True)
-    curve_prior_block = _curve_dict(prior_fit) if prior_fit is not None else None
+    curve_prior_block = (
+        _curve_dict(prior_fit, exercise, bodyweight_lb)
+        if prior_fit is not None
+        else None
+    )
 
     def _with_curve(d: dict) -> dict:
         d["curve"] = curve_block
@@ -1131,15 +1135,42 @@ def _set_prescription_dict(p: SetPrescription) -> dict:
     }
 
 
-def _curve_dict(fit: CurveFit) -> dict:
-    """Expose fit parameters for the frontend curve chart."""
+def _curve_dict(fit: CurveFit, exercise: Exercise | None = None,
+                bodyweight_lb: float = 0.0) -> dict:
+    """Expose fit parameters for the frontend curve chart.
+
+    The curve is fit in *effective*-weight space but the frontend plots
+    everything (observations, spark weight, prescription) in *entered*-weight
+    space. When the exercise has a load multiplier (e.g. dumbbells with
+    ``external_load_multiplier=2.0``) or a bodyweight component, we reproject
+    ``(M, k, γ)`` into entered-weight space so the plotted curve aligns with
+    the plotted dots. For pure ``external_weight``/``carry`` modes this
+    reprojection is mathematically exact; for ``mixed`` mode it's an affine
+    approximation that preserves the x-intercept but distorts shape (the
+    resulting k in entered space is no longer rigorously equivalent).
+    """
+    M_entered = fit.M
+    max_ew_entered = fit.max_observed_weight
+    if exercise is not None:
+        mode = exercise.load_input_mode or "external_weight"
+        mult = exercise.external_load_multiplier or 1.0
+        if mult <= 0:
+            mult = 1.0
+        bw_comp = bodyweight_lb * (exercise.bodyweight_fraction or 0.0)
+        if mode in ("external_weight", "carry") and mult != 1.0:
+            M_entered = fit.M / mult
+            max_ew_entered = fit.max_observed_weight / mult
+        elif mode == "mixed":
+            # Approximate: shift x-axis intercept into entered space.
+            M_entered = max(0.1, (fit.M - bw_comp) / mult)
+            max_ew_entered = max(0.0, (fit.max_observed_weight - bw_comp) / mult)
     return {
-        "M": round(fit.M, 2),
-        "k": round(fit.k, 4),
-        "gamma": round(fit.gamma, 4),
+        "M": round(float(M_entered), 2),
+        "k": round(float(fit.k), 4),
+        "gamma": round(float(fit.gamma), 4),
         "fit_tier": fit.fit_tier,
         "n_obs": fit.n_obs,
-        "max_observed_weight": round(fit.max_observed_weight, 2),
+        "max_observed_weight": round(float(max_ew_entered), 2),
     }
 
 
@@ -1175,6 +1206,7 @@ def _build_observations(
 
 def curve_snapshot_for_date(
     exercise_id: int, session: Session, on_date: date,
+    *, bodyweight_lb: float = 0.0,
 ) -> dict:
     """Fit the strength curve as of ``on_date`` for the completed-exercise view.
 
@@ -1200,8 +1232,12 @@ def curve_snapshot_for_date(
     )
     return {
         "has_curve": fit is not None,
-        "curve": _curve_dict(fit) if fit is not None else None,
-        "curve_prior": _curve_dict(prior_fit) if prior_fit is not None else None,
+        "curve": _curve_dict(fit, exercise, bodyweight_lb) if fit is not None else None,
+        "curve_prior": (
+            _curve_dict(prior_fit, exercise, bodyweight_lb)
+            if prior_fit is not None
+            else None
+        ),
         "observations": observations,
     }
 
@@ -1660,6 +1696,7 @@ def fatigue_profile(
 
     _, set_rows = _load_recent_sets(exercise_id, session, days)
     bw_lookup = _load_bodyweight_lookup(session)
+    bodyweight_lb_now = latest_bodyweight(bw_lookup, user_today()) or 0.0
 
     # Group by session_date in reverse-chronological order. ``_load_recent_sets``
     # already orders by date desc, set_order asc.
@@ -1768,7 +1805,7 @@ def fatigue_profile(
         "beta_learned_flags": beta_learned_flags,
         "beta_source": beta_source,
         "n_history_sessions": len(history_session_dates),
-        "curve": _curve_dict(fit) if fit is not None else None,
+        "curve": _curve_dict(fit, exercise, bodyweight_lb_now) if fit is not None else None,
     }
 
 
