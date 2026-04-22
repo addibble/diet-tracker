@@ -774,6 +774,9 @@ function ExerciseWorkout({
   const handleConfirmRir = useCallback(async (rirVal: ConfirmedRir) => {
     if (logging) return
     const w = snapWeight(sparkWeight)
+    // sparkReps is maintained in reps_done units by CurvePane (β-shifted
+    // reps expected for the current set). Store it directly; the athlete's
+    // reported RIR is stored separately.
     const r = Math.max(1, Math.round(sparkReps))
     const minReps = rx?.next_set?.acceptable_rep_min ?? rx?.scheme?.acceptable_rep_min
     const repCompletion = minReps != null

@@ -377,17 +377,33 @@ export default function CurvePane({
   const applySpark = useCallback(
     (w: number, r: number) => {
       if (mode === 'pre') {
-        // Don't clamp to [xMin,xMax] — the edge-expand effect will grow the
-        // domain when the spark runs past an edge, enabling auto-scroll.
         const snapped = snapWeight(Math.max(0, w))
-        const newReps = curve ? predictReps(snapped, curve) : bootstrapTargetReps
+        const setIdx = Math.max(0, schemeSetNumber - 1)
+        const betaHere = (fatigueBetaPerSet && fatigueBetaPerSet[setIdx] != null)
+          ? fatigueBetaPerSet[setIdx]
+          : 0
+        // sparkReps is reps_done (what gets stored): β-shifted predicted
+        // reps for the current set, minus the scheme RIR. Keeping it in
+        // reps_done units means the dot stays aligned across pre → logging
+        // (it's always rendered at sparkReps + schemeRir on the rtf y-axis)
+        // and handleConfirmRir can send sparkReps directly without further
+        // conversion.
+        let newReps: number
+        if (curve) {
+          const freshRtf = predictReps(snapped, curve)
+          newReps = Math.max(1, Math.round(freshRtf + betaHere - schemeRir))
+        } else {
+          newReps = bootstrapTargetReps
+        }
         onSparkChange(snapped, newReps)
       } else {
-        const newReps = Math.max(1, Math.round(clamp(r, 0, yMax)))
+        // Drag y is in rtf pixel coordinates; convert to reps_done.
+        const newReps = Math.max(1, Math.round(clamp(r, 0, yMax) - schemeRir))
         onSparkChange(sparkWeight, newReps)
       }
     },
-    [mode, curve, bootstrapTargetReps, sparkWeight, yMax, onSparkChange],
+    [mode, curve, bootstrapTargetReps, sparkWeight, yMax, onSparkChange,
+     schemeSetNumber, schemeRir, fatigueBetaPerSet],
   )
 
   const stopEdgeScroll = useCallback(() => {
@@ -397,6 +413,27 @@ export default function CurvePane({
       edgeIntervalRef.current = null
     }
   }, [])
+
+  // Sync seed: when the caller seeds sparkReps from the backend's target_reps
+  // (already reps_done), it's already in the right space, but if the user
+  // drags sparkWeight via the x-axis in pre mode we need to realign
+  // sparkReps to the β-shifted reps_done at the new weight. Fires in pre
+  // mode with a curve; guarded by a round(1) threshold to avoid loops.
+  useEffect(() => {
+    if (mode !== 'pre' || !curve || sparkWeight <= 0) return
+    const setIdx = Math.max(0, schemeSetNumber - 1)
+    const betaHere = (fatigueBetaPerSet && fatigueBetaPerSet[setIdx] != null)
+      ? fatigueBetaPerSet[setIdx]
+      : 0
+    const expected = Math.max(
+      1,
+      Math.round(predictReps(sparkWeight, curve) + betaHere - schemeRir),
+    )
+    if (Math.abs(expected - sparkReps) >= 1) {
+      onSparkChange(sparkWeight, expected)
+    }
+  }, [mode, curve, sparkWeight, sparkReps, schemeSetNumber, schemeRir,
+      fatigueBetaPerSet, onSparkChange])
 
   const ensureEdgeScroll = useCallback(() => {
     if (edgeIntervalRef.current != null) return
@@ -443,10 +480,19 @@ export default function CurvePane({
     let seedR = sparkReps
     if (mode === 'pre') {
       seedW = snapWeight(clamp(w, xMin, xMax))
-      seedR = curve ? predictReps(seedW, curve) : bootstrapTargetReps
+      const setIdx = Math.max(0, schemeSetNumber - 1)
+      const betaHere = (fatigueBetaPerSet && fatigueBetaPerSet[setIdx] != null)
+        ? fatigueBetaPerSet[setIdx]
+        : 0
+      if (curve) {
+        const freshRtf = predictReps(seedW, curve)
+        seedR = Math.max(1, Math.round(freshRtf + betaHere - schemeRir))
+      } else {
+        seedR = bootstrapTargetReps
+      }
       onSparkChange(seedW, seedR)
     } else {
-      seedR = Math.max(1, Math.round(clamp(r, 0, yMax)))
+      seedR = Math.max(1, Math.round(clamp(r, 0, yMax) - schemeRir))
       onSparkChange(sparkWeight, seedR)
       seedW = sparkWeight
     }
@@ -501,28 +547,14 @@ export default function CurvePane({
   }, [yMax])
 
   const sparkX = xToPx(sparkWeight)
-  // Fatigue offset for the current set — β for set 2+ is negative, so the
-  // set-N curve sits below the fresh curve. In pre mode we want the dot
-  // to live on *its* set's colored curve (not always the fresh one), so
-  // that dragging visibly tracks the set-2 / set-3 line.
   const setIdx = Math.max(0, schemeSetNumber - 1)
-  const betaForSet = (fatigueBetaPerSet && fatigueBetaPerSet[setIdx] != null)
-    ? fatigueBetaPerSet[setIdx]
-    : 0
   const setColor = SET_COLORS[setIdx % SET_COLORS.length]
-  const effectiveSparkY = mode === 'pre' && curve
-    ? Math.max(0, predictReps(sparkWeight, curve) + betaForSet)
-    : sparkReps
+  // sparkReps is reps_done (what the DB stores). The y-axis is rtf, so add
+  // the scheme RIR when placing the dot. This keeps pre and logging modes
+  // in sync and gives handleConfirmRir a trivially-correct payload.
+  const effectiveSparkY = sparkReps + schemeRir
   const sparkY = yToPx(effectiveSparkY)
-  // Predicted actual reps at this weight + RIR. When we have a curve,
-  // effectiveSparkY lives in rtf space and we subtract schemeRir. In
-  // bootstrap mode there's no curve, and sparkReps is seeded from the
-  // backend's target_reps (already actual reps, not rtf), so we use it
-  // directly to avoid a double-subtraction ("17 reps target" showing as
-  // "14 reps + 3 RIR" in the top bar).
-  const predictedReps = curve
-    ? Math.max(0, Math.round(effectiveSparkY - schemeRir))
-    : Math.max(0, Math.round(sparkReps))
+  const predictedReps = Math.max(0, Math.round(sparkReps))
   // Color the top readout emerald when predictedReps is inside the
   // acceptable window (backend-provided, or target ± 3), amber when it's
   // not. Outside of pre mode we keep the default neutral color.
@@ -722,8 +754,8 @@ export default function CurvePane({
           <line
             x1={PAD_L}
             x2={PAD_L + PLOT_W}
-            y1={yToPx(bootstrapTargetReps)}
-            y2={yToPx(bootstrapTargetReps)}
+            y1={yToPx(bootstrapTargetReps + schemeRir)}
+            y2={yToPx(bootstrapTargetReps + schemeRir)}
             stroke="#10b981"
             strokeWidth={1.5}
             strokeDasharray="4 3"
