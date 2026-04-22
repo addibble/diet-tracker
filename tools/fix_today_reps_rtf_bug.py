@@ -9,15 +9,23 @@ unaffected.
 
 For each affected WorkoutSet on a target date, the correction is:
 
-    reps_corrected = reps_stored - scheme_rir_for_set_order
+    reps_corrected = reps_stored - scheme_rir_for_within_exercise_index
 
-where scheme_rir_for_set_order is 3 for set_order=1, 2 for set_order=2,
-1 for set_order=3. Sets with set_order >= 4 are left alone (they do not
-match the three-set scheme pattern).
+where scheme_rir_for_within_exercise_index is 3/2/1 for the 1st/2nd/3rd
+set of the exercise in that session. Extra sets beyond 3 (set_order 4+
+within the exercise) are left alone — the bug only shifted the three
+scheme-driven sets.
 
-"Curve-mode" detection (conservative):
+Note that `workout_sets.set_order` is the GLOBAL order within a whole
+workout session (not per-exercise), so we have to compute the per-
+exercise index ourselves, grouping by (session_id, exercise_id) and
+sorting by set_order ascending.
+
+"Curve-mode" detection matches the backend's strength model:
   - exercise.load_input_mode is NOT in {bodyweight, assisted_bodyweight}
-  - exercise has >= 6 sets with an RPE recorded **before** the target date
+  - >= MIN_SETS_TIER2 (=3) observations exist with weight+reps+
+    (rpe OR rep_completion) across >= 2 distinct prior sessions, counting
+    sets from sessions strictly before the target date.
 
 Usage
 -----
@@ -43,19 +51,43 @@ import datetime as dt
 import shutil
 import sqlite3
 import sys
+from collections import defaultdict
 from pathlib import Path
 
-SCHEME_RIR_BY_SET = {1: 3, 2: 2, 3: 1}
-MIN_SETS_CURVE = 6
+SCHEME_RIR_BY_INDEX = {1: 3, 2: 2, 3: 1}
+MIN_SETS_TIER2 = 3  # matches backend/app/strength_model.py
+MIN_SESSIONS_TIER2 = 2
 BODYWEIGHT_MODES = {"bodyweight", "assisted_bodyweight"}
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p.add_argument("db", type=Path, help="path to user's diet_tracker.db")
     p.add_argument("--date", default=None, help="target date YYYY-MM-DD (default: today)")
     p.add_argument("--apply", action="store_true", help="write changes (default: dry-run)")
     return p.parse_args()
+
+
+def has_curve_eligible_history(conn: sqlite3.Connection, exercise_id: int, before_date: str) -> bool:
+    """Mirror backend/app/strength_model.py: curve fit requires >= 3 obs
+    from >= 2 distinct sessions, with weight+reps+(rpe OR rep_completion)."""
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS n_obs, COUNT(DISTINCT s.id) AS n_sess
+        FROM workout_sets ws
+        JOIN workout_sessions s ON s.id = ws.session_id
+        WHERE ws.exercise_id = ?
+          AND s.date < ?
+          AND ws.reps IS NOT NULL
+          AND ws.weight IS NOT NULL
+          AND (ws.rpe IS NOT NULL OR ws.rep_completion IS NOT NULL)
+        """,
+        (exercise_id, before_date),
+    ).fetchone()
+    return row["n_obs"] >= MIN_SETS_TIER2 and row["n_sess"] >= MIN_SESSIONS_TIER2
 
 
 def main() -> int:
@@ -68,7 +100,8 @@ def main() -> int:
     conn = sqlite3.connect(str(args.db))
     conn.row_factory = sqlite3.Row
 
-    # 1. Today's sets joined to session date and exercise metadata.
+    # All reps-bearing sets on target date, ordered so we can assign a
+    # within-exercise index per (session, exercise).
     rows = conn.execute(
         """
         SELECT ws.id AS set_id,
@@ -77,72 +110,72 @@ def main() -> int:
                ws.set_order,
                ws.reps,
                ws.rpe,
+               ws.rep_completion,
                e.name AS exercise_name,
-               e.load_input_mode AS load_mode,
-               s.date AS session_date
+               e.load_input_mode AS load_mode
         FROM workout_sets ws
         JOIN workout_sessions s ON s.id = ws.session_id
         JOIN exercises e ON e.id = ws.exercise_id
         WHERE s.date = ?
           AND ws.reps IS NOT NULL
-          AND ws.set_order IN (1, 2, 3)
         ORDER BY ws.session_id, ws.exercise_id, ws.set_order
         """,
         (target_date,),
     ).fetchall()
 
     if not rows:
-        print(f"No candidate sets on {target_date}.")
+        print(f"No sets found on {target_date}.")
         return 0
 
-    # 2. Pre-date RPE-count per exercise (to decide curve vs bootstrap).
-    rpe_counts: dict[int, int] = {}
-    ex_ids = {r["exercise_id"] for r in rows}
-    for ex_id in ex_ids:
-        n = conn.execute(
-            """
-            SELECT COUNT(*) AS n
-            FROM workout_sets ws
-            JOIN workout_sessions s ON s.id = ws.session_id
-            WHERE ws.exercise_id = ?
-              AND ws.rpe IS NOT NULL
-              AND s.date < ?
-            """,
-            (ex_id, target_date),
-        ).fetchone()
-        rpe_counts[ex_id] = int(n["n"])
+    # Assign per-exercise index and classify curve/bootstrap.
+    groups: dict[tuple[int, int], list[sqlite3.Row]] = defaultdict(list)
+    for r in rows:
+        groups[(r["session_id"], r["exercise_id"])].append(r)
 
-    # 3. Classify and plan corrections.
     corrections: list[tuple[int, int, int, str, int]] = []
     skipped_bootstrap: list[str] = []
-    for r in rows:
-        is_bw = (r["load_mode"] or "external_weight") in BODYWEIGHT_MODES
-        has_curve = (not is_bw) and rpe_counts[r["exercise_id"]] >= MIN_SETS_CURVE
-        if not has_curve:
-            skipped_bootstrap.append(f"  skip bootstrap: set={r['set_id']} ex={r['exercise_name']!r} order={r['set_order']}")
-            continue
-        delta = SCHEME_RIR_BY_SET[r["set_order"]]
-        new_reps = int(r["reps"]) - delta
-        if new_reps < 1:
-            print(
-                f"  WARN: set={r['set_id']} {r['exercise_name']!r} order={r['set_order']} "
-                f"reps={r['reps']} → {new_reps} clamped to 1",
-                file=sys.stderr,
-            )
-            new_reps = 1
-        corrections.append(
-            (r["set_id"], int(r["reps"]), new_reps, r["exercise_name"], r["set_order"])
-        )
+    skipped_extra_set: list[str] = []
+
+    for (sess_id, ex_id), group in groups.items():
+        ex_name = group[0]["exercise_name"]
+        load_mode = group[0]["load_mode"] or "external_weight"
+        is_bw = load_mode in BODYWEIGHT_MODES
+        curve_eligible = (not is_bw) and has_curve_eligible_history(conn, ex_id, target_date)
+
+        for within_idx, r in enumerate(group, start=1):
+            if not curve_eligible:
+                skipped_bootstrap.append(
+                    f"  skip bootstrap: set={r['set_id']} ex={ex_name!r} pos={within_idx}"
+                )
+                continue
+            if within_idx not in SCHEME_RIR_BY_INDEX:
+                skipped_extra_set.append(
+                    f"  skip extra:     set={r['set_id']} ex={ex_name!r} pos={within_idx}"
+                )
+                continue
+            delta = SCHEME_RIR_BY_INDEX[within_idx]
+            old_reps = int(r["reps"])
+            new_reps = max(1, old_reps - delta)
+            if old_reps - delta < 1:
+                print(
+                    f"  WARN: set={r['set_id']} {ex_name!r} pos={within_idx} "
+                    f"reps={old_reps} → {old_reps - delta} clamped to 1",
+                    file=sys.stderr,
+                )
+            corrections.append((r["set_id"], old_reps, new_reps, ex_name, within_idx))
 
     print(f"Target date: {target_date}")
-    print(f"Candidate sets: {len(rows)} (set_order 1-3 on that date)")
+    print(f"Candidate sets: {len(rows)}")
+    print(f"Exercise-groups: {len(groups)}")
     print(f"Bootstrap/Tier-3 skipped: {len(skipped_bootstrap)}")
-    if skipped_bootstrap:
-        for line in skipped_bootstrap:
-            print(line)
+    for line in skipped_bootstrap:
+        print(line)
+    print(f"Extra sets (position > 3) skipped: {len(skipped_extra_set)}")
+    for line in skipped_extra_set:
+        print(line)
     print(f"Curve-mode corrections: {len(corrections)}")
-    for set_id, old, new, name, order in corrections:
-        print(f"  set={set_id:<6} order={order} {name!r:<45} reps {old} → {new}")
+    for set_id, old, new, name, pos in corrections:
+        print(f"  set={set_id:<6} pos={pos} {name[:40]!r:<42} reps {old} → {new}")
 
     if not corrections:
         return 0
@@ -158,7 +191,7 @@ def main() -> int:
 
     cur = conn.cursor()
     try:
-        for set_id, _old, new_reps, _name, _order in corrections:
+        for set_id, _old, new_reps, _name, _pos in corrections:
             cur.execute("UPDATE workout_sets SET reps = ? WHERE id = ?", (new_reps, set_id))
         conn.commit()
     except Exception:
