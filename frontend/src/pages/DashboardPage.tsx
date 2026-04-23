@@ -26,6 +26,7 @@ import MealItemEditor from '../components/MealItemEditor'
 import WorkoutSetEditor from '../components/WorkoutSetEditor'
 import { type CompletedSet } from '../components/CurvePane'
 import CurvePaneWithFatigue from '../components/CurvePaneWithFatigue'
+import { asEntered, asRepsDone, asRir } from '../lib/units'
 import { getCurveSnapshot, type CurveSnapshotResponse } from '../api/planner'
 
 function today() {
@@ -837,9 +838,9 @@ function RecentSessionsCard({
                               s.weight != null && s.reps != null && s.rpe != null,
                           )
                           .map((s) => ({
-                            weight: s.weight as number,
-                            reps: s.reps as number,
-                            rir: Math.max(0, Math.round(10 - (s.rpe as number))),
+                            weight: asEntered(s.weight as number),
+                            reps: asRepsDone(s.reps as number),
+                            rir: asRir(Math.max(0, Math.round(10 - (s.rpe as number)))),
                           }))
                         const showCurve =
                           snapData?.has_curve &&
@@ -868,10 +869,15 @@ function RecentSessionsCard({
                                   mode="completed"
                                   curve={snapData.curve ?? null}
                                   priorCurve={snapData.curve_prior ?? null}
-                                  observations={snapData.observations ?? []}
-                                  sparkWeight={0}
-                                  sparkReps={0}
-                                  schemeRir={0}
+                                  observations={(snapData.observations ?? []).map(o => ({
+                                    weight: asEntered(o.weight),
+                                    reps: asRepsDone(o.reps),
+                                    rir: o.rir == null ? undefined : asRir(o.rir),
+                                    age_days: o.age_days,
+                                  }))}
+                                  sparkWeight={asEntered(0)}
+                                  sparkReps={asRepsDone(0)}
+                                  schemeRir={asRir(0)}
                                   schemeSetNumber={completedSets.length}
                                   onSparkChange={() => {}}
                                   onGo={() => {}}

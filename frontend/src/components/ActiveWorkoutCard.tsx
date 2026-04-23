@@ -5,6 +5,14 @@ import { type ConfirmedRir } from './CurvePane'
 import CurvePaneWithFatigue from './CurvePaneWithFatigue'
 import { snapWeight } from '../lib/weight_grid'
 import {
+  asEntered,
+  asRepsDone,
+  asRir,
+  type EnteredWeightLb,
+  type RepsDone,
+  type Rir,
+} from '../lib/units'
+import {
   addPlanExercise,
   addWorkoutSet,
   completeActivePlan,
@@ -707,23 +715,23 @@ function ExerciseWorkout({
   // ── Curve-first UI state (only for reps + external-weight exercises) ──
   const useCurvePane = repsOnlyMode && !rx?.is_bodyweight && !state.complete
   const [curveMode, setCurveMode] = useState<'pre' | 'logging'>('pre')
-  const [sparkWeight, setSparkWeight] = useState(0)
-  const [sparkReps, setSparkReps] = useState(0)
+  const [sparkWeight, setSparkWeight] = useState<EnteredWeightLb>(asEntered(0))
+  const [sparkReps, setSparkReps] = useState<RepsDone>(asRepsDone(0))
 
   // Seed spark whenever prescription changes (new set / refit).
   useEffect(() => {
     if (!useCurvePane || !rx) return
-    let w = 0
-    let r = 0
+    let w: EnteredWeightLb = asEntered(0)
+    let r: RepsDone = asRepsDone(0)
     if (rx.next_set?.proposed_weight != null) {
       w = snapWeight(rx.next_set.proposed_weight)
-      r = rx.next_set.target_reps
+      r = asRepsDone(rx.next_set.target_reps)
     } else if (rx.fallback_weight != null) {
       w = snapWeight(rx.fallback_weight)
-      r = rx.scheme?.target_reps ?? 15
+      r = asRepsDone(rx.scheme?.target_reps ?? 15)
     } else if (rx.scheme?.target_reps != null) {
-      w = 0
-      r = rx.scheme.target_reps
+      w = asEntered(0)
+      r = asRepsDone(rx.scheme.target_reps)
     }
     setSparkWeight(w)
     setSparkReps(r)
@@ -739,21 +747,34 @@ function ExerciseWorkout({
       : null
   ), [rx?.curve_prior])
   const completedSetsData = useMemo(() => (
-    state.sets.map(s => ({ weight: s.weight, reps: s.reps, rir: s.rir }))
+    state.sets.map(s => ({
+      weight: asEntered(s.weight),
+      reps: asRepsDone(s.reps),
+      rir: asRir(s.rir),
+    }))
   ), [state.sets])
   const useCompletedCurvePane = (
     repsOnlyMode && !rx?.is_bodyweight && state.complete && !!rx?.curve
   )
-  const observations = rx?.observations ?? []
-  const schemeRir = rx?.next_set?.target_rir ?? rx?.scheme?.target_rir ?? 3
+  const observations = useMemo(() => (
+    (rx?.observations ?? []).map(o => ({
+      weight: asEntered(o.weight),
+      reps: asRepsDone(o.reps),
+      rir: o.rir == null ? undefined : asRir(o.rir),
+      age_days: o.age_days,
+    }))
+  ), [rx?.observations])
+  const schemeRir: Rir = asRir(rx?.next_set?.target_rir ?? rx?.scheme?.target_rir ?? 3)
   const schemeSetNumber = (
     rx?.next_set?.set_number
     ?? rx?.scheme?.set_number
     ?? state.sets.length + 1
   )
-  const bootstrapTargetReps = rx?.scheme?.target_reps ?? rx?.next_set?.target_reps ?? 15
+  const bootstrapTargetReps: RepsDone = asRepsDone(
+    rx?.scheme?.target_reps ?? rx?.next_set?.target_reps ?? 15,
+  )
 
-  const handleSparkChange = useCallback((w: number, r: number) => {
+  const handleSparkChange = useCallback((w: EnteredWeightLb, r: RepsDone) => {
     setSparkWeight(w)
     setSparkReps(r)
   }, [])
@@ -761,9 +782,9 @@ function ExerciseWorkout({
   const handleGo = useCallback(() => {
     // In bootstrap mode reps are the scheme target until the user drags them;
     // in curve mode the Y is already the predicted reps.
-    if (!curveFit && sparkReps <= 0) setSparkReps(bootstrapTargetReps)
+    if (!curveFit && (sparkReps as number) <= 0) setSparkReps(bootstrapTargetReps)
     // Solve a cleaner starting Y using the curve at the snapped weight.
-    if (curveFit && sparkWeight > 0) {
+    if (curveFit && (sparkWeight as number) > 0) {
       // Keep the rep target at what the curve predicts at the chosen weight
       // minus the scheme RIR, so the user's first logged-reps estimate is honest.
       // We don't overwrite sparkReps here; CurvePane already kept it in sync.
@@ -776,18 +797,20 @@ function ExerciseWorkout({
     const w = snapWeight(sparkWeight)
     // sparkReps is maintained in reps_done units by CurvePane (β-shifted
     // reps expected for the current set). Store it directly; the athlete's
-    // reported RIR is stored separately.
-    const r = Math.max(1, Math.round(sparkReps))
+    // reported RIR is stored separately. Because sparkReps is typed
+    // `RepsDone` (branded), this line cannot accidentally be fed an rtf
+    // value — the whole point of the brand.
+    const r: RepsDone = asRepsDone(Math.max(1, Math.round(sparkReps as number)))
     const minReps = rx?.next_set?.acceptable_rep_min ?? rx?.scheme?.acceptable_rep_min
     const repCompletion = minReps != null
-      ? (r >= minReps ? 'full' : 'partial')
+      ? ((r as number) >= minReps ? 'full' : 'partial')
       : 'full'
     setLogging(true)
     try {
       const result = await addWorkoutSet(sessionId, {
         exercise_id: state.exercise_id,
-        weight: w,
-        reps: r,
+        weight: w as number,
+        reps: r as number,
         duration_secs: null,
         rir: rirVal,
         training_mode: state.training_mode,
@@ -795,8 +818,8 @@ function ExerciseWorkout({
       })
       onSetLogged({
         id: result.id,
-        weight: w,
-        reps: r,
+        weight: w as number,
+        reps: r as number,
         rir: rirVal,
         duration_secs: null,
       })
@@ -886,8 +909,8 @@ function ExerciseWorkout({
           priorCurve={priorCurveFit}
           bootstrapTargetReps={bootstrapTargetReps}
           observations={observations}
-          sparkWeight={0}
-          sparkReps={0}
+          sparkWeight={asEntered(0)}
+          sparkReps={asRepsDone(0)}
           schemeRir={schemeRir}
           schemeSetNumber={schemeSetNumber}
           onSparkChange={() => {}}
@@ -938,12 +961,18 @@ function ExerciseWorkout({
               schemeRir={schemeRir}
               schemeSetNumber={schemeSetNumber}
               acceptableRepMin={
-                rx?.next_set?.acceptable_rep_min
-                ?? rx?.scheme?.acceptable_rep_min
+                (rx?.next_set?.acceptable_rep_min
+                 ?? rx?.scheme?.acceptable_rep_min) != null
+                  ? asRepsDone(rx?.next_set?.acceptable_rep_min
+                      ?? rx?.scheme?.acceptable_rep_min as number)
+                  : undefined
               }
               acceptableRepMax={
-                rx?.next_set?.acceptable_rep_max
-                ?? rx?.scheme?.acceptable_rep_max
+                (rx?.next_set?.acceptable_rep_max
+                 ?? rx?.scheme?.acceptable_rep_max) != null
+                  ? asRepsDone(rx?.next_set?.acceptable_rep_max
+                      ?? rx?.scheme?.acceptable_rep_max as number)
+                  : undefined
               }
               onSparkChange={handleSparkChange}
               onGo={handleGo}

@@ -7,11 +7,19 @@ import {
   weightStep,
   type CurveFit,
 } from '../lib/weight_grid'
+import {
+  asRepsDone,
+  asRtf,
+  rtfToRepsDone,
+  type EnteredWeightLb,
+  type RepsDone,
+  type Rir,
+} from '../lib/units'
 
 export interface CurveObservation {
-  weight: number
-  reps: number
-  rir?: number
+  weight: EnteredWeightLb
+  reps: RepsDone
+  rir?: Rir
   age_days: number
 }
 
@@ -20,28 +28,28 @@ export type CurvePaneMode = 'pre' | 'logging' | 'completed'
 export type ConfirmedRir = 0 | 1 | 2 | 3 | 5
 
 export interface CompletedSet {
-  weight: number
-  reps: number
-  rir: number
+  weight: EnteredWeightLb
+  reps: RepsDone
+  rir: Rir
 }
 
 interface Props {
   mode: CurvePaneMode
   curve: CurveFit | null
   priorCurve?: CurveFit | null
-  bootstrapTargetReps?: number  // used when curve == null
+  bootstrapTargetReps?: RepsDone  // used when curve == null
   observations: CurveObservation[]
-  sparkWeight: number
-  sparkReps: number
-  schemeRir: number
+  sparkWeight: EnteredWeightLb
+  sparkReps: RepsDone
+  schemeRir: Rir
   schemeSetNumber: number
   // Acceptable completed-rep window for the current set (from backend's
   // scheme). Used to color the top readout emerald when the predicted
   // actual reps at the chosen weight fall within the window, amber when
   // they don't. Falls back to bootstrapTargetReps ± 3 when absent.
-  acceptableRepMin?: number
-  acceptableRepMax?: number
-  onSparkChange: (weight: number, reps: number) => void
+  acceptableRepMin?: RepsDone
+  acceptableRepMax?: RepsDone
+  onSparkChange: (weight: EnteredWeightLb, reps: RepsDone) => void
   onGo: () => void
   onConfirmRir: (rir: ConfirmedRir) => void
   submitting?: boolean
@@ -236,7 +244,7 @@ export default function CurvePane({
   mode,
   curve,
   priorCurve = null,
-  bootstrapTargetReps = 15,
+  bootstrapTargetReps = asRepsDone(15),
   observations,
   sparkWeight,
   sparkReps,
@@ -388,18 +396,18 @@ export default function CurvePane({
         // (it's always rendered at sparkReps + schemeRir on the rtf y-axis)
         // and handleConfirmRir can send sparkReps directly without further
         // conversion.
-        let newReps: number
+        let newReps: RepsDone
         if (curve) {
           const freshRtf = predictReps(snapped, curve)
-          newReps = Math.max(1, Math.round(freshRtf + betaHere - schemeRir))
+          newReps = rtfToRepsDone(asRtf((freshRtf as number) + betaHere), schemeRir)
         } else {
           newReps = bootstrapTargetReps
         }
         onSparkChange(snapped, newReps)
       } else {
         // Drag y is in rtf pixel coordinates; convert to reps_done.
-        const newReps = Math.max(1, Math.round(clamp(r, 0, yMax) - schemeRir))
-        onSparkChange(sparkWeight, newReps)
+        const clampedRtf = asRtf(clamp(r, 0, yMax))
+        onSparkChange(sparkWeight, rtfToRepsDone(clampedRtf, schemeRir))
       }
     },
     [mode, curve, bootstrapTargetReps, sparkWeight, yMax, onSparkChange,
@@ -425,11 +433,9 @@ export default function CurvePane({
     const betaHere = (fatigueBetaPerSet && fatigueBetaPerSet[setIdx] != null)
       ? fatigueBetaPerSet[setIdx]
       : 0
-    const expected = Math.max(
-      1,
-      Math.round(predictReps(sparkWeight, curve) + betaHere - schemeRir),
-    )
-    if (Math.abs(expected - sparkReps) >= 1) {
+    const shiftedRtf = asRtf((predictReps(sparkWeight, curve) as number) + betaHere)
+    const expected = rtfToRepsDone(shiftedRtf, schemeRir)
+    if (Math.abs((expected as number) - (sparkReps as number)) >= 1) {
       onSparkChange(sparkWeight, expected)
     }
   }, [mode, curve, sparkWeight, sparkReps, schemeSetNumber, schemeRir,
@@ -476,8 +482,8 @@ export default function CurvePane({
     // Tap-to-place: snap the spark to wherever the user tapped, then record
     // that as the drag reference. Subsequent drags use half-sensitivity deltas.
     const { w, r } = pxToData(e.clientX, e.clientY)
-    let seedW = sparkWeight
-    let seedR = sparkReps
+    let seedW: EnteredWeightLb = sparkWeight
+    let seedR: RepsDone = sparkReps
     if (mode === 'pre') {
       seedW = snapWeight(clamp(w, xMin, xMax))
       const setIdx = Math.max(0, schemeSetNumber - 1)
@@ -486,17 +492,21 @@ export default function CurvePane({
         : 0
       if (curve) {
         const freshRtf = predictReps(seedW, curve)
-        seedR = Math.max(1, Math.round(freshRtf + betaHere - schemeRir))
+        seedR = rtfToRepsDone(asRtf((freshRtf as number) + betaHere), schemeRir)
       } else {
         seedR = bootstrapTargetReps
       }
       onSparkChange(seedW, seedR)
     } else {
-      seedR = Math.max(1, Math.round(clamp(r, 0, yMax) - schemeRir))
+      const clampedRtf = asRtf(clamp(r, 0, yMax))
+      seedR = rtfToRepsDone(clampedRtf, schemeRir)
       onSparkChange(sparkWeight, seedR)
       seedW = sparkWeight
     }
-    dragStart.current = { cx: e.clientX, cy: e.clientY, w: seedW, r: seedR }
+    dragStart.current = {
+      cx: e.clientX, cy: e.clientY,
+      w: seedW as number, r: seedR as number,
+    }
     updateEdgeDir(e.clientX)
     ensureEdgeScroll()
   }

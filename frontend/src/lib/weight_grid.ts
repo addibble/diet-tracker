@@ -5,6 +5,13 @@
 //   15 ≤ w < 100 → 2.5 lb.
 //   w  ≥ 100     → 5 lb.
 
+import {
+  asEntered,
+  asRtf,
+  type EnteredWeightLb,
+  type Rtf,
+} from "./units"
+
 export interface CurveFit {
   M: number
   k: number
@@ -34,39 +41,44 @@ function snapLow(w: number): number {
   return best
 }
 
-export function snapWeight(w: number): number {
-  if (!Number.isFinite(w) || w <= 0) return 0
-  if (w < 15) return snapLow(w)
-  if (w < 100) return Math.round(w / 2.5) * 2.5
-  return Math.round(w / 5) * 5
+export function snapWeight(w: number | EnteredWeightLb): EnteredWeightLb {
+  const raw = w as number
+  if (!Number.isFinite(raw) || raw <= 0) return asEntered(0)
+  if (raw < 15) return asEntered(snapLow(raw))
+  if (raw < 100) return asEntered(Math.round(raw / 2.5) * 2.5)
+  return asEntered(Math.round(raw / 5) * 5)
 }
 
-// Step at a given weight — useful for keyboard nudging.
-export function weightStep(w: number): number {
-  if (w < 15) return 1
-  if (w < 100) return 2.5
+// Step at a given weight — useful for keyboard nudging. Returns an
+// unbranded lb delta (not an absolute weight).
+export function weightStep(w: number | EnteredWeightLb): number {
+  const raw = w as number
+  if (raw < 15) return 1
+  if (raw < 100) return 2.5
   return 5
 }
 
 // Returns the snapped weight one step above the given weight.
-export function nextWeight(w: number): number {
-  return snapWeight(w + weightStep(w) + 1e-9)
+export function nextWeight(w: number | EnteredWeightLb): EnteredWeightLb {
+  const raw = w as number
+  return snapWeight(raw + weightStep(raw) + 1e-9)
 }
 
 // Returns the snapped weight one step below.
-export function prevWeight(w: number): number {
-  return snapWeight(Math.max(0, w - weightStep(w) - 1e-9))
+export function prevWeight(w: number | EnteredWeightLb): EnteredWeightLb {
+  const raw = w as number
+  return snapWeight(Math.max(0, raw - weightStep(raw) - 1e-9))
 }
 
 // Build the ordered list of snap points covering [min, max] inclusive.
-export function weightGrid(min: number, max: number): number[] {
-  const out: number[] = []
+export function weightGrid(min: number, max: number): EnteredWeightLb[] {
+  const out: EnteredWeightLb[] = []
   let w = snapWeight(Math.max(0, min))
   out.push(w)
   let guard = 0
-  while (w < max && guard < 2000) {
+  while ((w as number) < max && guard < 2000) {
     const next = nextWeight(w)
-    if (next <= w) break
+    if ((next as number) <= (w as number)) break
     w = next
     out.push(w)
     guard++
@@ -77,16 +89,20 @@ export function weightGrid(min: number, max: number): number[] {
 /**
  * r_fresh(W) = k * (M/W - 1)^gamma. 0 when W >= M.
  *
+ * Returns reps-to-failure (rtf), not reps_done. Callers who need reps_done
+ * must subtract the scheme RIR via `rtfToRepsDone()` in lib/units.
+ *
  * `w` must be in the same weight space as `fit.weight_space` (entered-space
  * for any curve coming from the backend via `_curve_dict`). Frontend code
  * should never call this with effective weights; the backend owns
  * effective-space prescription math.
  */
-export function predictReps(w: number, fit: CurveFit): number {
-  if (w <= 0 || w >= fit.M || fit.k <= 0) return 0
-  const ratio = fit.M / w - 1
-  if (ratio <= 0) return 0
-  return fit.k * Math.pow(ratio, fit.gamma)
+export function predictReps(w: number | EnteredWeightLb, fit: CurveFit): Rtf {
+  const raw = w as number
+  if (raw <= 0 || raw >= fit.M || fit.k <= 0) return asRtf(0)
+  const ratio = fit.M / raw - 1
+  if (ratio <= 0) return asRtf(0)
+  return asRtf(fit.k * Math.pow(ratio, fit.gamma))
 }
 
 /**
@@ -94,10 +110,11 @@ export function predictReps(w: number, fit: CurveFit): number {
  * W = M / (1 + (target/k)^(1/gamma))
  *
  * `targetReps` is rtf (reps-to-failure), not reps_done. Returns weight in
- * `fit.weight_space`.
+ * `fit.weight_space` (entered-space for backend-emitted curves).
  */
-export function solveWeight(targetReps: number, fit: CurveFit): number {
-  if (targetReps <= 0 || fit.k <= 0) return fit.M * 0.95
-  const ratio = Math.pow(targetReps / fit.k, 1 / fit.gamma)
-  return fit.M / (1 + ratio)
+export function solveWeight(targetReps: number | Rtf, fit: CurveFit): EnteredWeightLb {
+  const raw = targetReps as number
+  if (raw <= 0 || fit.k <= 0) return asEntered(fit.M * 0.95)
+  const ratio = Math.pow(raw / fit.k, 1 / fit.gamma)
+  return asEntered(fit.M / (1 + ratio))
 }
