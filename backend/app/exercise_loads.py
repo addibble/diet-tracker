@@ -42,8 +42,6 @@ def effective_weight(
         return external + bodyweight_component
     if mode == "assisted_bodyweight":
         return max(0.0, bodyweight_component - external)
-    if mode == "carry":
-        return external
     return external
 
 
@@ -98,12 +96,6 @@ def effective_set_units(exercise: Exercise, workout_set: WorkoutSet) -> float:
         if workout_set.duration_secs is not None and workout_set.duration_secs > 0:
             return max(1.0, workout_set.duration_secs / 5.0)
         return reps
-    if metric_mode == "hybrid":
-        if workout_set.distance_steps is not None and workout_set.distance_steps > 0:
-            return max(1.0, workout_set.distance_steps / 2.0)
-        if workout_set.duration_secs is not None and workout_set.duration_secs > 0:
-            return max(reps, workout_set.duration_secs / 5.0)
-        return reps
     if workout_set.distance_steps is not None and workout_set.distance_steps > 0:
         return max(1.0, workout_set.distance_steps / 2.0)
     if workout_set.duration_secs is not None and workout_set.duration_secs > 0:
@@ -136,8 +128,8 @@ def supports_strength_estimate(exercise: Exercise, workout_set: WorkoutSet) -> b
     metric_mode = exercise.set_metric_mode or "reps"
     if metric_mode in {"duration", "distance"}:
         return False
-    if workout_set.duration_secs is not None and metric_mode != "hybrid":
+    if workout_set.duration_secs is not None:
         return False
-    if workout_set.distance_steps is not None and metric_mode != "hybrid":
+    if workout_set.distance_steps is not None:
         return False
-    return (exercise.load_input_mode or "external_weight") != "carry"
+    return True

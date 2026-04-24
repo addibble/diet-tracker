@@ -179,7 +179,7 @@ REFERENCE_EXERCISE_FIXUPS: dict[str, dict[str, object]] = {
         ],
     },
     "Farmers Carry": {
-        "load_input_mode": "carry",
+        "load_input_mode": "external_weight",
         "external_load_multiplier": 2.0,
         "variant_group": "loaded_carry",
         "grip_style": "neutral",

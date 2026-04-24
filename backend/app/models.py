@@ -108,7 +108,7 @@ class Exercise(SQLModel, table=True):
     grip_style: str = "none"  # "none", "neutral", "pronated", "supinated", "mixed"
     grip_width: str = "none"  # "none", "narrow", "shoulder_width", "wide", "variable"
     support_style: str = "none"  # "none", "unsupported", "chest_supported", "bench_supported", "cable_stabilized", "machine"
-    set_metric_mode: str = "reps"  # "reps", "duration", "distance", "hybrid"
+    set_metric_mode: str = "reps"  # "reps", "duration", "distance"
     estimated_minutes_per_set: float = 2.0
     notes: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
@@ -208,6 +208,10 @@ class WorkoutSet(SQLModel, table=True):
     weight: float | None = None  # lbs, null for bodyweight
     duration_secs: int | None = None
     distance_steps: int | None = None
+    # Unified endurance-to-failure value. Unit is determined by the owning
+    # exercise's ``set_metric_mode`` (reps / seconds / steps). Populated on
+    # write alongside the legacy metric-specific columns until readers migrate.
+    endurance_value: float | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     rpe: float | None = None  # 1-10

@@ -25,6 +25,7 @@ from app.models import (
     WorkoutSession,
     WorkoutSet,
 )
+from app.units import endurance_value_from_legacy
 from app.workout_queries import (
     get_current_exercise_tissues,
     get_current_tissues,
@@ -284,6 +285,7 @@ def _build_session_summary(
                     "reps": s.reps,
                     "weight": s.weight,
                     "duration_secs": s.duration_secs,
+                    "endurance_value": s.endurance_value,
                     "rpe": s.rpe,
                     "rep_completion": s.rep_completion,
                     "notes": s.notes,
@@ -1476,6 +1478,7 @@ def _write_session_sets(
                 )
 
         order = rec.get("set_order", set_order)
+        exercise_obj = session.get(Exercise, exercise_id)
         session.add(WorkoutSet(
             session_id=ws.id,
             exercise_id=exercise_id,
@@ -1484,6 +1487,15 @@ def _write_session_sets(
             weight=rec.get("weight"),
             duration_secs=rec.get("duration_secs"),
             distance_steps=rec.get("distance_steps"),
+            endurance_value=(
+                endurance_value_from_legacy(
+                    exercise_obj,
+                    reps=rec.get("reps"),
+                    duration_secs=rec.get("duration_secs"),
+                    distance_steps=rec.get("distance_steps"),
+                )
+                if exercise_obj is not None else None
+            ),
             rpe=rec.get("rpe"),
             rep_completion=rep_completion,
             notes=rec.get("notes"),

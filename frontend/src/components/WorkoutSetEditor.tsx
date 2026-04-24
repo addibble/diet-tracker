@@ -97,7 +97,6 @@ function useDebouncedCallback<T extends (...args: never[]) => unknown>(
 function weightFieldLabel(loadInputMode: string): string {
   if (loadInputMode === 'assisted_bodyweight') return 'Assist'
   if (loadInputMode === 'mixed') return 'Load'
-  if (loadInputMode === 'carry') return 'Carry'
   return 'Weight'
 }
 
@@ -107,9 +106,9 @@ function usesWeightInput(loadInputMode: string): boolean {
 
 function primaryMetricFlags(setMetricMode: string) {
   return {
-    showReps: setMetricMode === 'reps' || setMetricMode === 'hybrid',
-    showDuration: setMetricMode === 'duration' || setMetricMode === 'hybrid',
-    showDistance: setMetricMode === 'distance' || setMetricMode === 'hybrid',
+    showReps: setMetricMode === 'reps',
+    showDuration: setMetricMode === 'duration',
+    showDistance: setMetricMode === 'distance',
   }
 }
 

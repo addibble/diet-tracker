@@ -252,6 +252,7 @@ def _summarize_exercise_session(
                 "weight": workout_set.weight,
                 "duration_secs": workout_set.duration_secs,
                 "distance_steps": workout_set.distance_steps,
+                "endurance_value": workout_set.endurance_value,
                 "rpe": workout_set.rpe,
                 "rep_completion": workout_set.rep_completion,
                 "notes": workout_set.notes,

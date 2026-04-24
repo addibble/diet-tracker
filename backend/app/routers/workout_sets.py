@@ -18,6 +18,7 @@ from app.models import (
     WorkoutSession,
     WorkoutSet,
 )
+from app.units import endurance_value_from_legacy
 
 router = APIRouter(tags=["workout-sets"])
 
@@ -103,6 +104,7 @@ def _set_response(s: WorkoutSet, session: Session) -> dict:
         "weight": s.weight,
         "duration_secs": s.duration_secs,
         "distance_steps": s.distance_steps,
+        "endurance_value": s.endurance_value,
         "started_at": s.started_at,
         "completed_at": s.completed_at,
         "rpe": s.rpe,
@@ -168,6 +170,19 @@ def update_set(
         updates["started_at"] = ws.started_at or updates["completed_at"]
     for key, value in updates.items():
         setattr(ws, key, value)
+    # Recompute endurance_value from the resulting legacy fields whenever any
+    # metric-carrying field changed. Always mirror the legacy column for the
+    # exercise's current metric_mode so a later mode change picks up
+    # something reasonable.
+    if exercise and any(
+        key in updates for key in ("reps", "duration_secs", "distance_steps")
+    ):
+        ws.endurance_value = endurance_value_from_legacy(
+            exercise,
+            reps=ws.reps,
+            duration_secs=ws.duration_secs,
+            distance_steps=ws.distance_steps,
+        )
     session.add(ws)
     _normalize_session_set_order(session, ws.session_id)
     session.commit()
@@ -227,6 +242,12 @@ def add_set(
         weight=data.weight,
         duration_secs=data.duration_secs,
         distance_steps=data.distance_steps,
+        endurance_value=endurance_value_from_legacy(
+            exercise,
+            reps=data.reps,
+            duration_secs=data.duration_secs,
+            distance_steps=data.distance_steps,
+        ),
         started_at=started_at,
         completed_at=completed_at,
         rpe=rpe_val,

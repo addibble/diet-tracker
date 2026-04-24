@@ -132,6 +132,8 @@ def apply_db_updates(engine: Engine) -> None:
     _backfill_special_workout_sets(engine)
     _backfill_historical_bodyweight_anchor(engine)
     _backfill_progression_rep_completion(engine)
+    _migrate_legacy_metric_modes(engine)
+    _backfill_endurance_value(engine)
 
 
 def _runtime_db_needs_manual_updates(engine: Engine) -> bool:
@@ -256,6 +258,7 @@ def _migrate_add_columns(engine: Engine):
                 "started_at": "ALTER TABLE workout_sets ADD COLUMN started_at TIMESTAMP",
                 "completed_at": "ALTER TABLE workout_sets ADD COLUMN completed_at TIMESTAMP",
                 "training_mode": "ALTER TABLE workout_sets ADD COLUMN training_mode TEXT",
+                "endurance_value": "ALTER TABLE workout_sets ADD COLUMN endurance_value REAL",
             },
             insp,
             engine,
@@ -660,4 +663,81 @@ def _backfill_progression_rep_completion(engine: Engine):
 def _backfill_tracked_tissue_foundation():
     """Deprecated: rehab subsystem removed. Kept as no-op for safety."""
     return
+
+
+def _migrate_legacy_metric_modes(engine: Engine) -> None:
+    """Collapse obsolete Exercise modes:
+
+    - ``set_metric_mode='hybrid'`` → ``'reps'`` (tempo work is out of scope)
+    - ``load_input_mode='carry'`` → ``'external_weight'``
+      (mathematically identical; ``set_metric_mode='distance'`` carries the
+      UI signal). ``external_load_multiplier`` is left untouched — carries
+      already have mult=2 for paired DBs.
+    """
+    with engine.begin() as conn:
+        insp = inspect(engine)
+        if "exercises" not in insp.get_table_names():
+            return
+        conn.execute(text(
+            "UPDATE exercises SET set_metric_mode = 'reps' "
+            "WHERE set_metric_mode = 'hybrid'"
+        ))
+        conn.execute(text(
+            "UPDATE exercises SET load_input_mode = 'external_weight' "
+            "WHERE load_input_mode = 'carry'"
+        ))
+
+
+def _backfill_endurance_value(engine: Engine) -> None:
+    """Populate ``workout_sets.endurance_value`` from legacy metric columns.
+
+    The unit is determined by the owning exercise's ``set_metric_mode``:
+
+    - ``reps``     → ``endurance_value = reps``
+    - ``duration`` → ``endurance_value = COALESCE(duration_secs, reps)``
+      (Weighted Plank historically logged seconds in the ``reps`` column.)
+    - ``distance`` → ``endurance_value = COALESCE(distance_steps, reps)``
+
+    Idempotent — only writes rows where ``endurance_value IS NULL``, so
+    running this multiple times is safe and ongoing writes through the
+    application-layer dual-write path are never overwritten.
+    """
+    with engine.begin() as conn:
+        insp = inspect(engine)
+        if "workout_sets" not in insp.get_table_names():
+            return
+        cols = {c["name"] for c in insp.get_columns("workout_sets")}
+        if "endurance_value" not in cols:
+            return
+
+        # reps mode: prefer reps
+        conn.execute(text(
+            "UPDATE workout_sets SET endurance_value = reps "
+            "WHERE endurance_value IS NULL AND reps IS NOT NULL "
+            "  AND exercise_id IN ("
+            "    SELECT id FROM exercises "
+            "    WHERE COALESCE(set_metric_mode, 'reps') = 'reps'"
+            "  )"
+        ))
+        # duration mode: prefer duration_secs, fall back to reps (Weighted Plank legacy)
+        conn.execute(text(
+            "UPDATE workout_sets "
+            "SET endurance_value = COALESCE(duration_secs, reps) "
+            "WHERE endurance_value IS NULL "
+            "  AND COALESCE(duration_secs, reps) IS NOT NULL "
+            "  AND exercise_id IN ("
+            "    SELECT id FROM exercises WHERE set_metric_mode = 'duration'"
+            "  )"
+        ))
+        # distance mode: prefer distance_steps, fall back to reps
+        conn.execute(text(
+            "UPDATE workout_sets "
+            "SET endurance_value = COALESCE(distance_steps, reps) "
+            "WHERE endurance_value IS NULL "
+            "  AND COALESCE(distance_steps, reps) IS NOT NULL "
+            "  AND exercise_id IN ("
+            "    SELECT id FROM exercises WHERE set_metric_mode = 'distance'"
+            "  )"
+        ))
+
 

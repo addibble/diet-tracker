@@ -20,6 +20,7 @@ from app.models import (
     WorkoutSession,
     WorkoutSet,
 )
+from app.units import endurance_value_from_legacy
 
 router = APIRouter(prefix="/api/workout-sessions", tags=["workout-sessions"])
 
@@ -102,6 +103,7 @@ def _build_session_response(ws: WorkoutSession, session: Session) -> dict:
             "weight": s.weight,
             "duration_secs": s.duration_secs,
             "distance_steps": s.distance_steps,
+            "endurance_value": s.endurance_value,
             "started_at": s.started_at,
             "completed_at": s.completed_at,
             "rpe": s.rpe,
@@ -184,6 +186,12 @@ def create_session(
             weight=s.weight,
             duration_secs=s.duration_secs,
             distance_steps=s.distance_steps,
+            endurance_value=endurance_value_from_legacy(
+                exercise,
+                reps=s.reps,
+                duration_secs=s.duration_secs,
+                distance_steps=s.distance_steps,
+            ),
             started_at=s.started_at,
             completed_at=s.completed_at,
             rpe=s.rpe,
@@ -232,6 +240,12 @@ def update_session(
                 weight=s.weight,
                 duration_secs=s.duration_secs,
                 distance_steps=s.distance_steps,
+                endurance_value=endurance_value_from_legacy(
+                    exercise,
+                    reps=s.reps,
+                    duration_secs=s.duration_secs,
+                    distance_steps=s.distance_steps,
+                ),
                 started_at=s.started_at,
                 completed_at=s.completed_at,
                 rpe=s.rpe,

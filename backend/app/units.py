@@ -51,11 +51,45 @@ __all__ = [
     "rpe_to_rir",
     "rir_to_rpe",
     "bodyweight_component_lb",
+    "endurance_value_from_legacy",
     # Re-exports of the canonical helpers in exercise_loads so callers have
     # one import path for unit-aware code.
     "effective_weight",
     "entered_weight_for_effective_weight",
 ]
+
+
+def endurance_value_from_legacy(
+    exercise: Exercise,
+    *,
+    reps: int | float | None,
+    duration_secs: int | float | None,
+    distance_steps: int | float | None,
+) -> float | None:
+    """Pick the correct endurance-to-failure value for a new/updated set.
+
+    The result is the value we store in ``WorkoutSet.endurance_value``; its
+    unit is determined by the exercise's ``set_metric_mode``. Falls back to
+    ``reps`` when the mode-specific column is missing (matches the backfill's
+    tolerance for Weighted Plank's legacy seconds-as-reps rows).
+    """
+    mode = (exercise.set_metric_mode or "reps").lower()
+    if mode == "duration":
+        if duration_secs is not None:
+            return float(duration_secs)
+        if reps is not None:
+            return float(reps)
+        return None
+    if mode == "distance":
+        if distance_steps is not None:
+            return float(distance_steps)
+        if reps is not None:
+            return float(reps)
+        return None
+    # reps / anything else
+    if reps is not None:
+        return float(reps)
+    return None
 
 
 def entered_to_effective_lb(
@@ -74,7 +108,7 @@ def entered_to_effective_lb(
         return entered_weight_lb * multiplier + bw_component
     if mode == "assisted_bodyweight":
         return max(0.0, bw_component - entered_weight_lb * multiplier)
-    # external_weight / carry / default
+    # external_weight / default
     return entered_weight_lb * multiplier
 
 

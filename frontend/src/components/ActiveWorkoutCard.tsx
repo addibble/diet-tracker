@@ -241,8 +241,8 @@ export default function ActiveWorkoutCard({
   const fetchPrescription = (idx: number, states: typeof exStates) => {
     const ex = states[idx]
     if (!ex || ex.prescription) return
-    // Non-rep metric exercises have no strength curve; skip prescription.
-    if (ex.set_metric_mode && ex.set_metric_mode !== 'reps' && ex.set_metric_mode !== 'hybrid') return
+    // Non-rep metric exercises don't have curve-based prescriptions yet.
+    if (ex.set_metric_mode && ex.set_metric_mode !== 'reps') return
     if (fetchingRef.current === ex.exercise_id) return
 
     fetchingRef.current = ex.exercise_id
@@ -581,8 +581,8 @@ function ExerciseWorkout({
 }) {
   const metricMode = state.set_metric_mode || 'reps'
   const loadMode = state.load_input_mode || 'external_weight'
-  const showSecs = metricMode === 'duration' || metricMode === 'hybrid'
-  const showReps = metricMode === 'reps' || metricMode === 'hybrid'
+  const showSecs = metricMode === 'duration'
+  const showReps = metricMode === 'reps'
   const showWeight = loadMode !== 'bodyweight'
   const repsOnlyMode = metricMode === 'reps'
 

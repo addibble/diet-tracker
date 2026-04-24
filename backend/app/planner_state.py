@@ -221,6 +221,7 @@ def _serialize_saved_plan(session: Session, planned: PlannedSession) -> dict:
                 "weight": s.weight,
                 "duration_secs": s.duration_secs,
                 "distance_steps": s.distance_steps,
+                "endurance_value": s.endurance_value,
                 "started_at": s.started_at,
                 "completed_at": s.completed_at,
                 "rpe": s.rpe,
