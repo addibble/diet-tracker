@@ -96,7 +96,7 @@ function computeDomain(
   completedSets?: CompletedSet[],
   targetReps?: number,
   schemeRir?: number,
-): { xMin: number; xMax: number; yMax: number } {
+): { xMin: number; xMax: number; yMin: number; yMax: number } {
   // "Primary" points = today's sets (completed) + the spark (if active in
   // a pre/logging flow). Historical observations are secondary — included
   // only if doing so doesn't push today's spread below 50% of the viewport.
@@ -201,7 +201,7 @@ function computeDomain(
     yHi = newHi
   }
   const yMax = Math.max(8, Math.ceil(yHi))
-  return { xMin, xMax, yMax }
+  return { xMin, xMax, yMin: 0, yMax }
 }
 
 function curvePath(
@@ -300,47 +300,66 @@ export default function CurvePane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [curve, observations, completedSets, bootstrapTargetReps, schemeRir])
 
-  // Expand the window only if the spark is near the very edge.
+  // Pan (never expand) the window when the spark approaches an edge. This
+  // keeps the x/y ranges constant so the chart never zooms out to a scale
+  // where selecting a precise weight or reps value is awkward.
   useEffect(() => {
     if (sparkWeight <= 0) return
-    const span = domain.xMax - domain.xMin
-    if (span <= 0) return
-    const edge = span * 0.05
-    if (sparkWeight > domain.xMax - edge) {
-      setDomain(d => ({
-        ...d,
-        xMax: Math.ceil(sparkWeight + span * 0.15),
-      }))
-    } else if (sparkWeight < domain.xMin + edge) {
-      setDomain(d => ({
-        ...d,
-        xMin: Math.max(0, Math.floor(sparkWeight - span * 0.15)),
-      }))
+    const xSpan = domain.xMax - domain.xMin
+    if (xSpan <= 0) return
+    let next = domain
+
+    // X pan: shift the window by the minimum amount needed to keep the
+    // spark inside the inner 84% of the plot.
+    const xEdge = xSpan * 0.08
+    if (sparkWeight > next.xMax - xEdge) {
+      const shift = sparkWeight - (next.xMax - xEdge)
+      next = { ...next, xMin: next.xMin + shift, xMax: next.xMax + shift }
+    } else if (sparkWeight < next.xMin + xEdge) {
+      const shift = (next.xMin + xEdge) - sparkWeight
+      const newXMin = Math.max(0, next.xMin - shift)
+      next = { ...next, xMin: newXMin, xMax: newXMin + xSpan }
     }
-    // Also grow yMax when the curve/spark runs above the visible range so
-    // the dot stays on the curve when scrolling left into lighter weights.
-    if (curve) {
+
+    // Y pan: anchor on the dot's current y (effectiveSparkY for logging
+    // mode, or the curve/β-shifted rtf at sparkWeight in pre mode) so
+    // dragging weight never pushes the dot off the top or bottom of the
+    // visible range.
+    let targetY: number | null = null
+    if (mode === 'pre' && curve) {
       const betaIdx = Math.max(0, schemeSetNumber - 1)
       const betaHere = fatigueBetaPerSet?.[betaIdx] ?? 0
-      const rtfAtSpark = Math.max(0, predictReps(sparkWeight, curve) + betaHere)
-      if (Number.isFinite(rtfAtSpark) && rtfAtSpark > domain.yMax * 0.92) {
-        setDomain(d => ({
-          ...d,
-          yMax: Math.max(d.yMax, Math.ceil(rtfAtSpark * 1.2)),
-        }))
+      const rtfAtSpark = predictReps(sparkWeight, curve) + betaHere
+      if (Number.isFinite(rtfAtSpark)) targetY = Math.max(0, rtfAtSpark)
+    } else if (mode !== 'completed') {
+      targetY = Math.max(0, sparkReps + schemeRir)
+    }
+    if (targetY != null) {
+      const ySpan = next.yMax - next.yMin
+      const yEdge = ySpan * 0.08
+      if (targetY > next.yMax - yEdge) {
+        const shift = targetY - (next.yMax - yEdge)
+        next = { ...next, yMin: next.yMin + shift, yMax: next.yMax + shift }
+      } else if (targetY < next.yMin + yEdge) {
+        const shift = (next.yMin + yEdge) - targetY
+        const newYMin = Math.max(0, next.yMin - shift)
+        next = { ...next, yMin: newYMin, yMax: newYMin + ySpan }
       }
     }
-  }, [sparkWeight, domain.xMin, domain.xMax, domain.yMax, curve, schemeSetNumber, fatigueBetaPerSet])
 
-  const { xMin, xMax, yMax } = domain
+    if (next !== domain) setDomain(next)
+  }, [sparkWeight, sparkReps, schemeRir, mode, curve, schemeSetNumber,
+      fatigueBetaPerSet, domain])
+
+  const { xMin, xMax, yMin, yMax } = domain
 
   const xToPx = useCallback(
     (x: number) => PAD_L + (clamp(x, xMin, xMax) - xMin) / (xMax - xMin) * PLOT_W,
     [xMin, xMax],
   )
   const yToPx = useCallback(
-    (y: number) => PAD_T + (1 - clamp(y, 0, yMax) / yMax) * PLOT_H,
-    [yMax],
+    (y: number) => PAD_T + (1 - (clamp(y, yMin, yMax) - yMin) / (yMax - yMin)) * PLOT_H,
+    [yMin, yMax],
   )
   // Unclamped versions used to render curves: the path is clipped by the
   // plot rect via <clipPath>, so asymptotes near x=0 / x=M stay hidden
@@ -350,8 +369,8 @@ export default function CurvePane({
     [xMin, xMax],
   )
   const yToPxRaw = useCallback(
-    (y: number) => PAD_T + (1 - y / yMax) * PLOT_H,
-    [yMax],
+    (y: number) => PAD_T + (1 - (y - yMin) / (yMax - yMin)) * PLOT_H,
+    [yMin, yMax],
   )
 
   const pxToData = useCallback(
@@ -362,10 +381,10 @@ export default function CurvePane({
       const px = ((clientX - rect.left) / rect.width) * VB_W
       const py = ((clientY - rect.top) / rect.height) * VB_H
       const wRaw = xMin + ((clamp(px, PAD_L, VB_W - PAD_R) - PAD_L) / PLOT_W) * (xMax - xMin)
-      const rRaw = (1 - (clamp(py, PAD_T, VB_H - PAD_B) - PAD_T) / PLOT_H) * yMax
+      const rRaw = yMin + (1 - (clamp(py, PAD_T, VB_H - PAD_B) - PAD_T) / PLOT_H) * (yMax - yMin)
       return { w: wRaw, r: rRaw }
     },
-    [sparkWeight, sparkReps, xMin, xMax, yMax],
+    [sparkWeight, sparkReps, xMin, xMax, yMin, yMax],
   )
 
   // Convert a pixel delta (in client coords) into a data delta, then halve it
@@ -380,10 +399,10 @@ export default function CurvePane({
       const dwPx = (dxPx / rect.width) * VB_W
       const drPx = (dyPx / rect.height) * VB_H
       const dw = (dwPx / PLOT_W) * (xMax - xMin) * DRAG_SENSITIVITY
-      const dr = -(drPx / PLOT_H) * yMax * DRAG_SENSITIVITY
+      const dr = -(drPx / PLOT_H) * (yMax - yMin) * DRAG_SENSITIVITY
       return { dw, dr }
     },
-    [xMin, xMax, yMax],
+    [xMin, xMax, yMin, yMax],
   )
 
   const applySpark = useCallback(
@@ -410,11 +429,11 @@ export default function CurvePane({
         onSparkChange(snapped, newReps)
       } else {
         // Drag y is in rtf pixel coordinates; convert to reps_done.
-        const clampedRtf = asRtf(clamp(r, 0, yMax))
+        const clampedRtf = asRtf(Math.max(0, r))
         onSparkChange(sparkWeight, rtfToRepsDone(clampedRtf, schemeRir))
       }
     },
-    [mode, curve, bootstrapTargetReps, sparkWeight, yMax, onSparkChange,
+    [mode, curve, bootstrapTargetReps, sparkWeight, onSparkChange,
      schemeSetNumber, schemeRir, fatigueBetaPerSet],
   )
 
@@ -489,7 +508,7 @@ export default function CurvePane({
     let seedW: EnteredWeightLb = sparkWeight
     let seedR: RepsDone = sparkReps
     if (mode === 'pre') {
-      seedW = snapWeight(clamp(w, xMin, xMax))
+      seedW = snapWeight(Math.max(0, w))
       const setIdx = Math.max(0, schemeSetNumber - 1)
       const betaHere = (fatigueBetaPerSet && fatigueBetaPerSet[setIdx] != null)
         ? fatigueBetaPerSet[setIdx]
@@ -502,7 +521,7 @@ export default function CurvePane({
       }
       onSparkChange(seedW, seedR)
     } else {
-      const clampedRtf = asRtf(clamp(r, 0, yMax))
+      const clampedRtf = asRtf(Math.max(0, r))
       seedR = rtfToRepsDone(clampedRtf, schemeRir)
       onSparkChange(sparkWeight, seedR)
       seedW = sparkWeight
@@ -537,6 +556,28 @@ export default function CurvePane({
     dragStart.current = null
     stopEdgeScroll()
     try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* ignore */ }
+
+    // Re-center the domain around the final spark position (preserving the
+    // current span) so lines + dot settle nicely in the middle of the plot.
+    if (mode !== 'completed') {
+      setDomain(d => {
+        const xSpan = d.xMax - d.xMin
+        const ySpan = d.yMax - d.yMin
+        const w = sparkRef.current.w
+        const r = mode === 'pre' && curve
+          ? Math.max(0, (predictReps(w, curve) as number) +
+              (fatigueBetaPerSet?.[Math.max(0, schemeSetNumber - 1)] ?? 0))
+          : Math.max(0, sparkRef.current.r + schemeRir)
+        const newXMin = Math.max(0, w - xSpan / 2)
+        const newYMin = Math.max(0, r - ySpan / 2)
+        return {
+          xMin: newXMin,
+          xMax: newXMin + xSpan,
+          yMin: newYMin,
+          yMax: newYMin + ySpan,
+        }
+      })
+    }
   }
 
   // X-axis tick labels: ~5 ticks.
@@ -550,15 +591,15 @@ export default function CurvePane({
     return ticks
   }, [xMin, xMax])
 
-  // Y-axis tick labels: 0, mid, max.
+  // Y-axis tick labels: span yMin..yMax in 4 steps.
   const yTicks = useMemo(() => {
     const n = 4
     const ticks: number[] = []
     for (let i = 0; i <= n; i++) {
-      ticks.push(Math.round((yMax * i) / n))
+      ticks.push(Math.round(yMin + ((yMax - yMin) * i) / n))
     }
     return ticks
-  }, [yMax])
+  }, [yMin, yMax])
 
   const sparkX = xToPx(sparkWeight)
   const setIdx = Math.max(0, schemeSetNumber - 1)

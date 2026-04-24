@@ -10,6 +10,7 @@ import {
   type ChatProgressEvent,
   type ChatMessage, type ChatModelOption, type ChatProposedItem, type ChatResponse, type Meal, type FoodImportResult,
 } from '../api'
+import { me } from '../api/auth'
 
 interface SpeechRecognitionAlternativeLike {
   transcript: string
@@ -468,6 +469,7 @@ export default function MealLogPage() {
   const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem(CHAT_MODEL_KEY) ?? '')
   const [modelLoadError, setModelLoadError] = useState<string | null>(null)
   const [modelsLoading, setModelsLoading] = useState(true)
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(null)
   const [saved, setSaved] = useState(initial.saved)
   const [progressElapsedMs, setProgressElapsedMs] = useState(0)
   const [progressSystemLog, setProgressSystemLog] = useState<{ time: number; text: string }[]>([])
@@ -506,6 +508,18 @@ export default function MealLogPage() {
   useEffect(() => {
     saveChatState(messages, saved)
   }, [messages, saved])
+
+  useEffect(() => {
+    let cancelled = false
+    me()
+      .then((data) => {
+        if (!cancelled) setIsAdmin(!!data.user.is_admin)
+      })
+      .catch(() => {
+        if (!cancelled) setIsAdmin(false)
+      })
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -830,20 +844,24 @@ export default function MealLogPage() {
       {/* Header */}
       <div className="flex items-center gap-2 mb-3 shrink-0">
         <h1 className="text-lg font-semibold text-gray-900 shrink-0">Chat</h1>
-        <select
-          id="chat-model-select"
-          value={selectedModel}
-          onChange={(e) => { setSelectedModel(e.target.value); localStorage.setItem(CHAT_MODEL_KEY, e.target.value) }}
-          disabled={modelsLoading || loading || importingImage}
-          className="min-w-0 flex-1 px-2 py-1.5 border border-gray-300 rounded-md text-xs bg-white disabled:bg-gray-50"
-        >
-          {chatModels.length === 0 && <option value="">Default model</option>}
-          {chatModels.map((model) => (
-            <option key={model.id} value={model.id}>
-              {modelOptionLabel(model)}
-            </option>
-          ))}
-        </select>
+        {isAdmin ? (
+          <select
+            id="chat-model-select"
+            value={selectedModel}
+            onChange={(e) => { setSelectedModel(e.target.value); localStorage.setItem(CHAT_MODEL_KEY, e.target.value) }}
+            disabled={modelsLoading || loading || importingImage}
+            className="min-w-0 flex-1 px-2 py-1.5 border border-gray-300 rounded-md text-xs bg-white disabled:bg-gray-50"
+          >
+            {chatModels.length === 0 && <option value="">Default model</option>}
+            {chatModels.map((model) => (
+              <option key={model.id} value={model.id}>
+                {modelOptionLabel(model)}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="min-w-0 flex-1" />
+        )}
         <button
           onClick={handleClearChat}
           className="shrink-0 px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-md hover:bg-blue-700 active:bg-blue-800"

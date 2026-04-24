@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.auth import get_current_user
+from app.auth_models import User
 from app.database import get_session
 from app.llm import (
     MODEL,
@@ -42,6 +43,10 @@ router = APIRouter(prefix="/api/meals", tags=["parse"])
 
 SERVING_FIELDS = [f"{m}_per_serving" for m in MACRO_FIELDS]
 CHAT_STREAM_HEARTBEAT_SECONDS = 2.5
+
+# Non-admin users are restricted to a single cheap model in the chat
+# interface. Admins see the full CHAT_ALLOWED_MODELS list in the dropdown.
+NON_ADMIN_CHAT_MODEL = "qwen/qwen3.5-flash-02-23"
 
 
 def _chat_activity_source(event_name: str | None) -> str | None:
@@ -180,17 +185,27 @@ class ChatRequest(BaseModel):
 
 @router.get("/chat/models")
 async def chat_models_endpoint(
-    _user: str = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    """List affordable chat models for the Log Meal interface."""
+    """List affordable chat models for the Log Meal interface.
+
+    Non-admin users are restricted to a single model (NON_ADMIN_CHAT_MODEL);
+    admins see the full allow-list.
+    """
     try:
         models = await get_chat_models()
     except Exception as e:
         logger.exception("Chat model list fetch failed")
         raise HTTPException(status_code=502, detail=f"Model list fetch failed: {e}")
 
+    if not user.is_admin:
+        models = [m for m in models if m.get("id") == NON_ADMIN_CHAT_MODEL]
+        default_model = NON_ADMIN_CHAT_MODEL
+    else:
+        default_model = MODEL
+
     return {
-        "default_model": MODEL,
+        "default_model": default_model,
         "models": models,
     }
 
@@ -400,7 +415,7 @@ def _ndjson_line(payload: dict) -> str:
 async def chat_meal_stream_endpoint(
     data: ChatRequest,
     session: Session = Depends(get_session),
-    _user: str = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
     """Stream chat progress heartbeats, then emit the final chat response payload."""
     if not data.messages:
@@ -518,7 +533,7 @@ async def chat_meal_stream_endpoint(
 
         async def _run_chat_with_status():
             with chat_status_callback(_on_chat_status):
-                return await chat_meal_endpoint(data, session, _user)
+                return await chat_meal_endpoint(data, session, user)
 
         task = asyncio.create_task(_run_chat_with_status())
         try:
@@ -587,11 +602,16 @@ async def chat_meal_stream_endpoint(
 async def chat_meal_endpoint(
     data: ChatRequest,
     session: Session = Depends(get_session),
-    _user: str = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
     """Conversational meal logging with LLM."""
     if not data.messages:
         raise HTTPException(status_code=400, detail="messages cannot be empty")
+
+    # Enforce the non-admin model restriction server-side so a crafted
+    # request can't pick a pricier model than the UI allows.
+    if not user.is_admin:
+        data.model = NON_ADMIN_CHAT_MODEL
 
     # Fetch known foods and recipes for LLM context
     all_foods = session.exec(select(Food).order_by(Food.name)).all()
