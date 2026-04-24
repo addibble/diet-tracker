@@ -739,12 +739,26 @@ function ExerciseWorkout({
   }, [rx, useCurvePane])
 
   const curveFit = useMemo(() => (
-    rx?.curve ? { M: rx.curve.M, k: rx.curve.k, gamma: rx.curve.gamma } : null
+    rx?.curve ? {
+      M: rx.curve.M,
+      k: rx.curve.k,
+      gamma: rx.curve.gamma,
+      weight_space: rx.curve.weight_space,
+      bw_offset: rx.curve.bw_offset,
+      ext_mult: rx.curve.ext_mult,
+      max_observed_weight: rx.curve.max_observed_weight,
+    } : null
   ), [rx?.curve])
   const priorCurveFit = useMemo(() => (
-    rx?.curve_prior
-      ? { M: rx.curve_prior.M, k: rx.curve_prior.k, gamma: rx.curve_prior.gamma }
-      : null
+    rx?.curve_prior ? {
+      M: rx.curve_prior.M,
+      k: rx.curve_prior.k,
+      gamma: rx.curve_prior.gamma,
+      weight_space: rx.curve_prior.weight_space,
+      bw_offset: rx.curve_prior.bw_offset,
+      ext_mult: rx.curve_prior.ext_mult,
+      max_observed_weight: rx.curve_prior.max_observed_weight,
+    } : null
   ), [rx?.curve_prior])
   const completedSetsData = useMemo(() => (
     state.sets.map(s => ({

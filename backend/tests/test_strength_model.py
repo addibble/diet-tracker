@@ -13,6 +13,7 @@ from app.strength_model import (
     DEFAULT_GAMMA,
     CurveFit,
     _brzycki_1rm,
+    _curve_dict,
     _entered_to_effective,
     _estimate_M_bounds,
     _filter_stale_sessions,
@@ -83,6 +84,105 @@ class TestSolveWeight:
                         max_observed_weight=180, fit_tier="tier1")
         w = solve_weight(0, fit)
         assert w == 200 * 0.95
+
+
+class TestCurveDictReprojection:
+    """_curve_dict must ship effective-space params for the frontend.
+
+    The mixed-mode curve ``r = k·(M/W_eff − 1)^γ`` is NOT invariant under an
+    affine shift of the W axis, so we never rewrite ``M`` into entered space.
+    Instead we ship the offset (bw × bw_frac) and multiplier so the frontend
+    evaluator can convert entered → effective before evaluating. Regression
+    test for the bug where Bulgarian Split Squat (bw_frac=0.75, bw=210 lb)
+    spuriously predicted ~83 rtf at 32.5 lb entered because the frontend
+    was evaluating ``k·(M_ent/W_ent − 1)^γ`` against a shifted M_ent.
+    """
+
+    def _fit(self) -> CurveFit:
+        return CurveFit(
+            M=344.70, k=20.56, gamma=0.9, n_obs=5, rmse=1.0,
+            max_observed_weight=195.40, fit_tier="tier1",
+            weight_space="effective",
+        )
+
+    def test_mixed_mode_keeps_m_in_effective_space(self):
+        fit = self._fit()
+        ex = Exercise(
+            name="Bulgarian Split Squat",
+            load_input_mode="mixed",
+            bodyweight_fraction=0.75,
+            external_load_multiplier=1.0,
+        )
+        d = _curve_dict(fit, ex, bodyweight_lb=210.6)
+        # M is effective-space; offset + mult let the frontend convert.
+        assert d["M"] == pytest.approx(344.70, abs=0.01)
+        assert d["bw_offset"] == pytest.approx(157.95, abs=0.01)
+        assert d["ext_mult"] == pytest.approx(1.0, abs=0.001)
+        assert d["weight_space"] == "effective"
+        assert d["x_axis_space"] == "entered"
+        # max_observed_weight reprojected to entered-space for the X domain.
+        assert d["max_observed_weight"] == pytest.approx(37.45, abs=0.01)
+
+    def test_external_weight_mode_offset_zero(self):
+        fit = self._fit()
+        ex = Exercise(
+            name="Bench Press",
+            load_input_mode="external_weight",
+            bodyweight_fraction=0.0,
+            external_load_multiplier=1.0,
+        )
+        d = _curve_dict(fit, ex, bodyweight_lb=210.6)
+        assert d["bw_offset"] == 0.0
+        assert d["ext_mult"] == 1.0
+        assert d["M"] == pytest.approx(fit.M, abs=0.01)
+        assert d["max_observed_weight"] == pytest.approx(
+            fit.max_observed_weight, abs=0.01
+        )
+
+    def test_carry_mode_mult_preserved(self):
+        fit = self._fit()
+        ex = Exercise(
+            name="Farmers Carry",
+            load_input_mode="carry",
+            bodyweight_fraction=0.0,
+            external_load_multiplier=2.0,
+        )
+        d = _curve_dict(fit, ex, bodyweight_lb=210.6)
+        assert d["bw_offset"] == 0.0
+        assert d["ext_mult"] == 2.0
+        # Entered max = effective max / 2 (no BW offset).
+        assert d["max_observed_weight"] == pytest.approx(fit.max_observed_weight / 2, abs=0.01)
+
+    def test_mixed_mode_frontend_eval_matches_backend(self):
+        """Evaluate the shipped curve the way the frontend does and verify
+        it matches the backend's effective-space prediction. This is the
+        exact bug that produced '83 reps @ 32.5 lb' before the fix."""
+        fit = self._fit()
+        ex = Exercise(
+            name="Bulgarian Split Squat",
+            load_input_mode="mixed",
+            bodyweight_fraction=0.75,
+            external_load_multiplier=1.0,
+        )
+        d = _curve_dict(fit, ex, bodyweight_lb=210.6)
+
+        def frontend_predict(w_ent: float) -> float:
+            w_eff = w_ent * d["ext_mult"] + d["bw_offset"]
+            if w_eff <= 0 or w_eff >= d["M"]:
+                return 0.0
+            return d["k"] * (d["M"] / w_eff - 1) ** d["gamma"]
+
+        for w_ent in [15.0, 20.0, 25.0, 32.5, 40.0]:
+            front = frontend_predict(w_ent)
+            w_eff = w_ent + 210.6 * 0.75
+            back = predict_reps(w_eff, fit)
+            assert abs(front - back) < 0.05, (
+                f"Frontend/backend mismatch at W_ent={w_ent}: "
+                f"front={front:.3f} back={back:.3f}"
+            )
+
+        # Direct sanity: at W_ent=32.5 the right answer is ~17, not ~83.
+        assert 15 < frontend_predict(32.5) < 20
 
 
 class TestRPEConfidence:

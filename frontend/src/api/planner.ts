@@ -136,6 +136,9 @@ export interface PrescribeNextResponse {
     n_obs?: number;
     max_observed_weight?: number;
     weight_space?: 'entered' | 'effective';
+    x_axis_space?: 'entered';
+    bw_offset?: number;
+    ext_mult?: number;
   } | null;
   // Curve fit over observations strictly before today (for the completed view).
   curve_prior?: {
@@ -146,6 +149,9 @@ export interface PrescribeNextResponse {
     n_obs?: number;
     max_observed_weight?: number;
     weight_space?: 'entered' | 'effective';
+    x_axis_space?: 'entered';
+    bw_offset?: number;
+    ext_mult?: number;
   } | null;
   observations?: {
     weight: number;
@@ -243,6 +249,9 @@ export interface CurveSnapshotResponse {
     n_obs?: number;
     max_observed_weight?: number;
     weight_space?: 'entered' | 'effective';
+    x_axis_space?: 'entered';
+    bw_offset?: number;
+    ext_mult?: number;
   } | null;
   curve_prior?: {
     M: number;
@@ -252,6 +261,9 @@ export interface CurveSnapshotResponse {
     n_obs?: number;
     max_observed_weight?: number;
     weight_space?: 'entered' | 'effective';
+    x_axis_space?: 'entered';
+    bw_offset?: number;
+    ext_mult?: number;
   } | null;
   observations?: {
     weight: number;
@@ -291,7 +303,15 @@ export interface FatigueProfileResponse {
   beta_learned_flags: boolean[];
   beta_source: 'learned' | 'fallback';
   n_history_sessions: number;
-  curve?: { M: number; k: number; gamma: number } | null;
+  curve?: {
+    M: number;
+    k: number;
+    gamma: number;
+    weight_space?: 'entered' | 'effective';
+    bw_offset?: number;
+    ext_mult?: number;
+    max_observed_weight?: number;
+  } | null;
 }
 
 export const getFatigueProfile = (

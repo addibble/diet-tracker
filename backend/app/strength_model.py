@@ -92,8 +92,9 @@ class CurveFit:
     fit_tier: str  # "tier1" or "tier2"
     identifiability: float = 1.0  # 0-1 quality score
     # Weight space in which (M, max_observed_weight) are expressed. Backend
-    # fitting always produces "effective"; `_curve_dict` reprojects to
-    # "entered" before exposing to the frontend.
+    # fitting always produces "effective"; `_curve_dict` ships those same
+    # effective-space params to the frontend along with bw_offset/ext_mult,
+    # so the frontend can convert entered→effective before evaluating.
     weight_space: Literal["effective", "entered"] = "effective"
 
 
@@ -1207,46 +1208,43 @@ def _curve_dict(fit: CurveFit, exercise: Exercise | None = None,
                 bodyweight_lb: float = 0.0) -> dict:
     """Expose fit parameters for the frontend curve chart.
 
-    The curve is fit in *effective*-weight space but the frontend plots
-    everything (observations, spark weight, prescription) in *entered*-weight
-    space. When the exercise has a load multiplier (e.g. dumbbells with
-    ``external_load_multiplier=2.0``) or a bodyweight component, we reproject
-    ``(M, k, γ)`` into entered-weight space so the plotted curve aligns with
-    the plotted dots. For pure ``external_weight``/``carry`` modes this
-    reprojection is mathematically exact; for ``mixed`` mode it's an affine
-    approximation that preserves the x-intercept but distorts shape (the
-    resulting k in entered space is no longer rigorously equivalent, so
-    frontend predictReps output for mixed-mode exercises should be treated
-    as display-only — authoritative prescription math stays on the backend).
+    The curve is fit in *effective*-weight space and we ship it that way:
+    ``(M, k, γ)`` stay in effective space; we add ``bw_offset`` and
+    ``ext_mult`` so the frontend can convert entered→effective before
+    evaluating. This is mathematically exact (no reprojection distortion)
+    for all load modes, including ``mixed`` where a pure-parametric shift
+    of ``M`` into entered space would warp the curve's shape because
+    ``k·(M/W − 1)^γ`` is not invariant under an affine offset of W.
+
+    ``max_observed_weight`` stays in **entered** space because the chart's
+    X axis is entered-weight. ``M`` is in **effective** space and is NOT
+    directly comparable to entered-space quantities — use the frontend
+    helpers or convert via ``W_eff = W_ent * ext_mult + bw_offset``.
     """
-    M_entered = fit.M
+    mult = 1.0
+    bw_offset = 0.0
     max_ew_entered = fit.max_observed_weight
-    reprojected = False
     if exercise is not None:
-        mode = exercise.load_input_mode or "external_weight"
-        mult = exercise.external_load_multiplier or 1.0
-        if mult <= 0:
-            mult = 1.0
-        bw_comp = bodyweight_lb * (exercise.bodyweight_fraction or 0.0)
-        if mode in ("external_weight", "carry") and mult != 1.0:
-            M_entered = fit.M / mult
-            max_ew_entered = fit.max_observed_weight / mult
-            reprojected = True
-        elif mode == "mixed":
-            # Approximate: shift x-axis intercept into entered space.
-            M_entered = max(0.1, (fit.M - bw_comp) / mult)
-            max_ew_entered = max(0.0, (fit.max_observed_weight - bw_comp) / mult)
-            reprojected = True
+        m = exercise.external_load_multiplier or 1.0
+        if m > 0:
+            mult = float(m)
+        bw_offset = float(bodyweight_lb) * float(exercise.bodyweight_fraction or 0.0)
+        # max_observed_weight on the fit lives in effective space; convert
+        # back to entered-space so the chart X-domain stays correct.
+        max_ew_entered = max(0.0, (fit.max_observed_weight - bw_offset) / mult)
     return {
-        "M": round(float(M_entered), 2),
+        "M": round(float(fit.M), 2),
         "k": round(float(fit.k), 4),
         "gamma": round(float(fit.gamma), 4),
         "fit_tier": fit.fit_tier,
         "n_obs": fit.n_obs,
+        # Entered-space: for chart X-axis domain.
         "max_observed_weight": round(float(max_ew_entered), 2),
-        # Always "entered" in exposed dicts — frontend plot coordinates are
-        # entered-weight. Kept explicit so TS branded types can assert.
-        "weight_space": "entered" if reprojected or exercise is not None else "effective",
+        # M/k/γ live in effective space; evaluator must convert entered→eff.
+        "weight_space": "effective",
+        "x_axis_space": "entered",
+        "bw_offset": round(float(bw_offset), 4),
+        "ext_mult": round(float(mult), 4),
     }
 
 

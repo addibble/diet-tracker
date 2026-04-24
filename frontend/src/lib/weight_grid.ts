@@ -13,17 +13,47 @@ import {
 } from "./units"
 
 export interface CurveFit {
+  /**
+   * Effective-space virtual 1RM. NOT directly comparable to entered weights —
+   * the chart X-axis is entered, but the curve params live in effective
+   * space. Use predictReps / solveWeight which convert via
+   * ``W_eff = W_ent * ext_mult + bw_offset``.
+   */
   M: number
   k: number
   gamma: number
   /**
-   * Which weight space the curve parameters live in. Backend-emitted curves
-   * passed through `_curve_dict` are always "entered" (reprojected to match
-   * the frontend's plot coordinates). Kept optional so legacy callers still
-   * typecheck; predictReps / solveWeight default to treating the curve as
-   * entered-space.
+   * Curve parameter space. Backend ships "effective" now (all modes); keep
+   * the union for robustness against older snapshots — any non-"effective"
+   * value is treated as legacy-entered (no conversion, offset=0, mult=1).
    */
-  weight_space?: "entered" | "effective"
+  weight_space?: "effective" | "entered"
+  /** Entered-weight axis (for plotting) — always "entered" today. */
+  x_axis_space?: "entered"
+  /** BW × bw_frac, lb. Added to W_ent * ext_mult to get effective weight. */
+  bw_offset?: number
+  /** External load multiplier (e.g. dumbbells carrying 2×). Default 1. */
+  ext_mult?: number
+  /** Entered-space max observed weight, for chart X-domain. */
+  max_observed_weight?: number
+}
+
+function effectiveWeight(w: number, fit: CurveFit): number {
+  // Legacy "entered"-space curves (old backend) have already been reprojected
+  // and shouldn't be converted again. New backend emits "effective" + the
+  // bw_offset/ext_mult metadata so we convert here.
+  if (fit.weight_space === "entered") return w
+  const mult = fit.ext_mult ?? 1
+  const offset = fit.bw_offset ?? 0
+  return w * mult + offset
+}
+
+function enteredFromEffective(w_eff: number, fit: CurveFit): number {
+  if (fit.weight_space === "entered") return w_eff
+  const mult = fit.ext_mult ?? 1
+  const offset = fit.bw_offset ?? 0
+  if (mult <= 0) return Math.max(0, w_eff - offset)
+  return Math.max(0, (w_eff - offset) / mult)
 }
 
 function snapLow(w: number): number {
@@ -87,34 +117,40 @@ export function weightGrid(min: number, max: number): EnteredWeightLb[] {
 }
 
 /**
- * r_fresh(W) = k * (M/W - 1)^gamma. 0 when W >= M.
+ * r_fresh(W_entered) = k * (M/W_eff - 1)^gamma where
+ * W_eff = W_entered * ext_mult + bw_offset. 0 when W_eff >= M.
  *
  * Returns reps-to-failure (rtf), not reps_done. Callers who need reps_done
  * must subtract the scheme RIR via `rtfToRepsDone()` in lib/units.
  *
- * `w` must be in the same weight space as `fit.weight_space` (entered-space
- * for any curve coming from the backend via `_curve_dict`). Frontend code
- * should never call this with effective weights; the backend owns
- * effective-space prescription math.
+ * `w` is ENTERED-space weight (chart X-axis). The curve params live in
+ * effective space; we convert internally so mixed-mode exercises (with a
+ * bodyweight component) evaluate correctly instead of the broken affine
+ * approximation we used to ship.
  */
 export function predictReps(w: number | EnteredWeightLb, fit: CurveFit): Rtf {
   const raw = w as number
-  if (raw <= 0 || raw >= fit.M || fit.k <= 0) return asRtf(0)
-  const ratio = fit.M / raw - 1
+  if (raw <= 0 || fit.k <= 0) return asRtf(0)
+  const w_eff = effectiveWeight(raw, fit)
+  if (w_eff <= 0 || w_eff >= fit.M) return asRtf(0)
+  const ratio = fit.M / w_eff - 1
   if (ratio <= 0) return asRtf(0)
   return asRtf(fit.k * Math.pow(ratio, fit.gamma))
 }
 
 /**
- * Invert the curve: find W such that predictReps(W) ≈ targetReps.
- * W = M / (1 + (target/k)^(1/gamma))
+ * Invert the curve: find entered weight W such that predictReps(W) ≈ targetReps.
+ * W_eff = M / (1 + (target/k)^(1/gamma)); W_ent = (W_eff - bw_offset) / ext_mult.
  *
- * `targetReps` is rtf (reps-to-failure), not reps_done. Returns weight in
- * `fit.weight_space` (entered-space for backend-emitted curves).
+ * `targetReps` is rtf (reps-to-failure), not reps_done. Returns entered-space
+ * weight unsnapped — callers should apply `snapWeight` at UI boundaries only.
  */
 export function solveWeight(targetReps: number | Rtf, fit: CurveFit): EnteredWeightLb {
   const raw = targetReps as number
-  if (raw <= 0 || fit.k <= 0) return asEntered(fit.M * 0.95)
+  if (raw <= 0 || fit.k <= 0) {
+    return asEntered(enteredFromEffective(fit.M * 0.95, fit))
+  }
   const ratio = Math.pow(raw / fit.k, 1 / fit.gamma)
-  return asEntered(fit.M / (1 + ratio))
+  const w_eff = fit.M / (1 + ratio)
+  return asEntered(enteredFromEffective(w_eff, fit))
 }

@@ -115,7 +115,11 @@ function computeDomain(
   if (curve && targetReps && targetReps > 0) {
     const targetRtf = targetReps + (schemeRir ?? 0)
     const wTarget = solveWeight(targetRtf, curve)
-    if (Number.isFinite(wTarget) && wTarget > 0 && wTarget < curve.M) {
+    // wTarget is entered-space; compare to a generous entered-space cap
+    // (the curve's max observed entered weight plus some headroom) rather
+    // than to curve.M which lives in effective space.
+    const entCap = ((curve.max_observed_weight ?? Infinity) as number) * 3 + 50
+    if (Number.isFinite(wTarget) && wTarget > 0 && wTarget < entCap) {
       todayPts.push({ w: wTarget, r: targetRtf })
     }
   }
