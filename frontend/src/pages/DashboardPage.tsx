@@ -563,9 +563,18 @@ function groupSetsByExercise(sets: WkSession['sets']) {
 }
 
 function formatRecentSessionSet(set: WkSession['sets'][number]) {
-  if (set.reps != null && set.weight != null) return `${set.weight}×${set.reps}`
-  if (set.duration_secs != null) return `${set.duration_secs}s`
-  return '—'
+  const mode = set.set_metric_mode ?? 'reps'
+  // Prefer the unified ``endurance_value``; fall back to legacy columns
+  // for sets that haven't been backfilled yet.
+  const value = set.endurance_value
+    ?? (mode === 'duration' ? set.duration_secs
+      : mode === 'distance' ? set.distance_steps
+      : set.reps)
+  if (value == null) return '—'
+  if (mode === 'duration') return `${Math.round(value)}s`
+  if (mode === 'distance') return `${Math.round(value)} steps`
+  if (set.weight != null) return `${set.weight}×${Math.round(value)}`
+  return `${Math.round(value)}`
 }
 
 function formatRecentSessionRpe(set: WkSession['sets'][number]) {

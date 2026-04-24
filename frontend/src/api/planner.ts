@@ -104,6 +104,10 @@ export interface PrescribeNextResponse {
   inflection_detected?: boolean | null;
   estimated_1rm?: number | null;
   training_mode?: 'heavy' | 'volume';
+  /** Unit of the y-axis for this exercise. "reps" | "duration" | "distance". */
+  metric_kind?: 'reps' | 'duration' | 'distance';
+  /** Short display unit: "reps" | "s" | "steps". */
+  display_unit?: string;
   next_set?: {
     set_number: number;
     proposed_weight: number | null;
@@ -121,12 +125,23 @@ export interface PrescribeNextResponse {
     effective_weight_lb?: number;
     target_reps_done?: number;
     r_fail_rtf?: number;
+    /** Same number as target_reps, but labeled with the exercise's metric. */
+    target_endurance?: number;
+    metric_kind?: 'reps' | 'duration' | 'distance';
+    display_unit?: string;
   } | null;
   // Fallback / bodyweight
   fallback_weight?: number | null;
   message?: string;
   is_bodyweight?: boolean;
-  suggestion?: { sets: number; reps_per_set: number; notes: string };
+  suggestion?: {
+    sets: number;
+    reps_per_set: number;
+    endurance_per_set?: number;
+    metric_kind?: 'reps' | 'duration' | 'distance';
+    display_unit?: string;
+    notes: string;
+  };
   // Curve chart data (tier 1/2)
   curve?: {
     M: number;
@@ -139,6 +154,8 @@ export interface PrescribeNextResponse {
     x_axis_space?: 'entered';
     bw_offset?: number;
     ext_mult?: number;
+    metric_kind?: 'reps' | 'duration' | 'distance';
+    display_unit?: string;
   } | null;
   // Curve fit over observations strictly before today (for the completed view).
   curve_prior?: {
@@ -152,6 +169,8 @@ export interface PrescribeNextResponse {
     x_axis_space?: 'entered';
     bw_offset?: number;
     ext_mult?: number;
+    metric_kind?: 'reps' | 'duration' | 'distance';
+    display_unit?: string;
   } | null;
   observations?: {
     weight: number;

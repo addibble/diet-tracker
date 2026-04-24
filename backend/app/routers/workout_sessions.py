@@ -97,6 +97,7 @@ def _build_session_response(ws: WorkoutSession, session: Session) -> dict:
             "id": s.id,
             "exercise_id": s.exercise_id,
             "exercise_name": exercise.name if exercise else "unknown",
+            "set_metric_mode": (exercise.set_metric_mode if exercise else None) or "reps",
             "set_order": s.set_order,
             "performed_side": s.performed_side,
             "reps": s.reps,

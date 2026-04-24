@@ -93,12 +93,19 @@ export interface WkSetDetail {
   session_id?: number;
   exercise_id: number;
   exercise_name: string;
+  /**
+   * Unit of ``endurance_value`` for this set's exercise. Drives label
+   * formatting ("12 reps" vs "45s" vs "24 steps").
+   */
+  set_metric_mode?: 'reps' | 'duration' | 'distance';
   set_order: number;
   performed_side: 'left' | 'right' | 'center' | 'bilateral' | null;
   reps: number | null;
   weight: number | null;
   duration_secs: number | null;
   distance_steps: number | null;
+  /** Unified y-axis quantity — unit determined by ``set_metric_mode``. */
+  endurance_value: number | null;
   started_at: string | null;
   completed_at: string | null;
   rpe: number | null;
@@ -165,6 +172,12 @@ export interface WorkoutSetUpdateInput {
   weight?: number | null;
   duration_secs?: number | null;
   distance_steps?: number | null;
+  /**
+   * Unified y-axis quantity (reps/secs/steps, per the exercise's
+   * ``set_metric_mode``). Send this directly in new code; the legacy
+   * per-mode fields are still accepted for backward compat.
+   */
+  endurance_value?: number | null;
   started_at?: string | null;
   completed_at?: string | null;
   rpe?: number | null;

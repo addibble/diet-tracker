@@ -241,8 +241,6 @@ export default function ActiveWorkoutCard({
   const fetchPrescription = (idx: number, states: typeof exStates) => {
     const ex = states[idx]
     if (!ex || ex.prescription) return
-    // Non-rep metric exercises don't have curve-based prescriptions yet.
-    if (ex.set_metric_mode && ex.set_metric_mode !== 'reps') return
     if (fetchingRef.current === ex.exercise_id) return
 
     fetchingRef.current = ex.exercise_id
@@ -252,7 +250,11 @@ export default function ActiveWorkoutCard({
 
     const priorSets = ex.sets.map(s => ({
       weight: s.weight,
+      // For rep exercises ``reps`` carries the y-axis quantity; for
+      // duration/distance the backend also accepts ``endurance_value``.
+      // We send both so either wire contract works.
       reps: s.reps,
+      endurance_value: s.duration_secs != null ? s.duration_secs : s.reps,
       rpe: 10 - s.rir,
     }))
 
@@ -594,16 +596,20 @@ function ExerciseWorkout({
   const [adjusting, setAdjusting] = useState(false)
   const adjustTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Pre-fill from prescription (reps-based curve only)
+  // Pre-fill from prescription. For reps-based exercises this fills
+  // weight + reps + RIR; for duration/distance it fills weight, the
+  // endurance target into the relevant field, and RIR.
   useEffect(() => {
-    if (!repsOnlyMode) return
-    if (state.prescription?.next_set) {
-      const ns = state.prescription.next_set
-      if (ns.proposed_weight != null) setWeight(String(Math.round(ns.proposed_weight)))
-      if (ns.target_reps != null) setReps(String(ns.target_reps))
-      if (ns.target_rir != null) setRir(String(ns.target_rir))
+    if (!state.prescription?.next_set) return
+    const ns = state.prescription.next_set
+    if (ns.proposed_weight != null) setWeight(String(Math.round(ns.proposed_weight)))
+    if (ns.target_rir != null) setRir(String(ns.target_rir))
+    const target = ns.target_endurance ?? ns.target_reps
+    if (target != null) {
+      if (showReps) setReps(String(Math.round(target)))
+      else if (showSecs) setSecs(String(Math.round(target)))
     }
-  }, [state.prescription, repsOnlyMode])
+  }, [state.prescription, showReps, showSecs])
 
   // Pre-fill secs from the last logged set (simple "repeat last" hint)
   useEffect(() => {
