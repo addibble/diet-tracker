@@ -36,6 +36,9 @@ space-mixup bug.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Literal
+
 from app.exercise_loads import (
     effective_bodyweight_component,
     effective_weight,
@@ -52,11 +55,49 @@ __all__ = [
     "rir_to_rpe",
     "bodyweight_component_lb",
     "endurance_value_from_legacy",
+    "EnduranceMetric",
+    "metric_for",
     # Re-exports of the canonical helpers in exercise_loads so callers have
     # one import path for unit-aware code.
     "effective_weight",
     "entered_weight_for_effective_weight",
 ]
+
+
+MetricKind = Literal["reps", "duration", "distance"]
+
+
+@dataclass(frozen=True)
+class EnduranceMetric:
+    """Describes the unit of ``WorkoutSet.endurance_value`` for an exercise.
+
+    The strength-curve math (``r_fail = k·(M/W − 1)^γ``) is unit-agnostic —
+    every value on the y-axis is "endurance to failure" in the metric's
+    native unit. This dataclass only carries display + formatting info so
+    the API/frontend can render results correctly.
+    """
+
+    kind: MetricKind
+    display_unit: str  # "reps" | "s" | "steps"
+    int_valued: bool
+
+    @property
+    def label(self) -> str:
+        """Human-readable label for prescription dicts."""
+        return {"reps": "reps", "duration": "seconds", "distance": "steps"}[self.kind]
+
+
+_METRICS: dict[MetricKind, EnduranceMetric] = {
+    "reps": EnduranceMetric(kind="reps", display_unit="reps", int_valued=True),
+    "duration": EnduranceMetric(kind="duration", display_unit="s", int_valued=True),
+    "distance": EnduranceMetric(kind="distance", display_unit="steps", int_valued=True),
+}
+
+
+def metric_for(exercise: Exercise) -> EnduranceMetric:
+    """Return the EnduranceMetric for an exercise's set_metric_mode."""
+    mode = (exercise.set_metric_mode or "reps").lower()
+    return _METRICS.get(mode, _METRICS["reps"])  # type: ignore[arg-type]
 
 
 def endurance_value_from_legacy(

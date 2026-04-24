@@ -123,13 +123,16 @@ def effective_set_load(
 
 
 def supports_strength_estimate(exercise: Exercise, workout_set: WorkoutSet) -> bool:
-    if workout_set.reps is None or workout_set.reps < 1:
-        return False
-    metric_mode = exercise.set_metric_mode or "reps"
-    if metric_mode in {"duration", "distance"}:
-        return False
-    if workout_set.duration_secs is not None:
-        return False
-    if workout_set.distance_steps is not None:
+    """True when this set has the (weight, endurance, RPE) triple needed to fit a curve.
+
+    Reads the unified ``endurance_value`` column with a fallback to ``reps``
+    so historical rows that haven't been backfilled yet still qualify.
+    Pure-bodyweight exercises are filtered out at a higher level (they're
+    routed to ``get_bodyweight_suggestion`` instead).
+    """
+    endurance = workout_set.endurance_value
+    if endurance is None:
+        endurance = workout_set.reps
+    if endurance is None or endurance < 1:
         return False
     return True

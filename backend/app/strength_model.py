@@ -30,6 +30,9 @@ from app.units import (
     entered_to_effective_lb as _entered_to_effective,
 )
 from app.units import (
+    metric_for as _metric_for,
+)
+from app.units import (
     reps_done_to_rtf as _reps_done_to_rtf,
 )
 from app.units import (
@@ -40,6 +43,36 @@ from app.units import (
 )
 
 BODYWEIGHT_MODES = {"bodyweight", "assisted_bodyweight"}
+
+# Default metric used by _curve_dict when no exercise is passed (e.g. tests).
+_METRIC_REPS = _metric_for(Exercise(name="", set_metric_mode="reps"))
+
+
+def _set_endurance(ws: WorkoutSet) -> float | None:
+    """Endurance-to-failure value for a set, in the exercise's native unit.
+
+    Prefers the unified ``endurance_value`` column. Falls back to ``reps``
+    for any historical row whose backfill hasn't completed yet (defensive
+    only — the boot migration covers all existing rows).
+    """
+    if ws.endurance_value is not None:
+        return float(ws.endurance_value)
+    if ws.reps is not None:
+        return float(ws.reps)
+    return None
+
+
+def _obs_endurance(obs: dict) -> float | None:
+    """Pull endurance value from a prior_sets/new_obs dict.
+
+    Accepts the canonical ``endurance_value`` key or the legacy ``reps`` key
+    (which the frontend currently posts for rep-mode exercises and will
+    continue to post until the Phase 5 rebrand).
+    """
+    val = obs.get("endurance_value")
+    if val is None:
+        val = obs.get("reps")
+    return None if val is None else float(val)
 
 # Default class prior for gamma — physiological cap: concave-down near max
 DEFAULT_GAMMA = 0.9
@@ -462,8 +495,12 @@ def _load_recent_sets(
         .where(
             WorkoutSet.exercise_id == exercise_id,
             WorkoutSet.rpe.is_not(None),  # RPE-only
-            WorkoutSet.reps.is_not(None),
-            WorkoutSet.reps > 0,
+            # Allow either the new endurance_value or legacy reps column to
+            # carry the y-axis quantity. The boot backfill normally fills
+            # endurance_value, but we keep the OR so a fresh row that hasn't
+            # been backfilled yet still loads.
+            ((WorkoutSet.endurance_value.is_not(None) & (WorkoutSet.endurance_value > 0))
+             | (WorkoutSet.reps.is_not(None) & (WorkoutSet.reps > 0))),
             WorkoutSession.date >= cutoff,
             WorkoutSession.date <= anchor,
         )
@@ -525,8 +562,12 @@ def fit_curve(
         if ew <= 0:
             continue
 
+        endurance = _set_endurance(ws)
+        if endurance is None or endurance <= 0:
+            continue
+
         rir = _rpe_to_rir(ws.rpe)
-        r_fail = _reps_done_to_rtf(ws.reps, rir)
+        r_fail = _reps_done_to_rtf(endurance, rir)
 
         eff_weights.append(ew)
         reps_to_failure.append(r_fail)
@@ -936,21 +977,30 @@ def prescribe_next_set(
     if exercise is None:
         return {"has_curve": False, "error": "Exercise not found"}
 
+    metric = _metric_for(exercise)
     is_bw = (exercise.load_input_mode or "external_weight") in BODYWEIGHT_MODES
     if is_bw:
         suggestion = get_bodyweight_suggestion(exercise_id, session)
         n_done = len(prior_sets)
         target_sets = suggestion.get("sets", 3)
+        target_value = suggestion.get(
+            "endurance_per_set", suggestion.get("reps_per_set", 15)
+        )
         return {
             "has_curve": False,
             "is_bodyweight": True,
+            "metric_kind": metric.kind,
+            "display_unit": metric.display_unit,
             "suggestion": suggestion,
             "exercise_complete": n_done >= target_sets,
             "next_set": None if n_done >= target_sets else {
                 "set_number": n_done + 1,
                 "proposed_weight": 0,
-                "target_reps": suggestion.get("reps_per_set", 15),
+                "target_reps": target_value,
+                "target_endurance": target_value,
                 "target_rir": None,
+                "metric_kind": metric.kind,
+                "display_unit": metric.display_unit,
             },
         }
 
@@ -1224,6 +1274,7 @@ def _curve_dict(fit: CurveFit, exercise: Exercise | None = None,
     mult = 1.0
     bw_offset = 0.0
     max_ew_entered = fit.max_observed_weight
+    metric = _metric_for(exercise) if exercise is not None else _METRIC_REPS
     if exercise is not None:
         m = exercise.external_load_multiplier or 1.0
         if m > 0:
@@ -1245,6 +1296,10 @@ def _curve_dict(fit: CurveFit, exercise: Exercise | None = None,
         "x_axis_space": "entered",
         "bw_offset": round(float(bw_offset), 4),
         "ext_mult": round(float(mult), 4),
+        # Y-axis units (reps / s / steps). The fit math is unit-agnostic;
+        # this lets the frontend label the chart and format prescriptions.
+        "metric_kind": metric.kind,
+        "display_unit": metric.display_unit,
     }
 
 
@@ -1263,15 +1318,21 @@ def _build_observations(
     if exercise is None:
         return []
     anchor = as_of if as_of is not None else user_today()
+    metric = _metric_for(exercise)
     out: list[dict] = []
     for ws, ws_date in set_rows[:limit]:
-        if ws.weight is None or ws.reps is None or ws.rpe is None:
+        endurance = _set_endurance(ws)
+        if ws.weight is None or endurance is None or ws.rpe is None:
             continue
         if exclude_on_date and ws_date == anchor:
             continue
+        # Cast to int for int-valued metrics so JSON stays clean for the
+        # frontend's existing reps-as-int code path.
+        endurance_out = int(endurance) if metric.int_valued else round(endurance, 2)
         out.append({
             "weight": round(float(ws.weight), 2),
-            "reps": int(ws.reps),
+            "reps": endurance_out,
+            "endurance_value": endurance_out,
             "rir": round(10.0 - float(ws.rpe)),
             "age_days": max(0, (anchor - ws_date).days),
         })
@@ -1396,10 +1457,12 @@ def _load_bootstrap_observations(
     exercise, set_rows = _load_recent_sets(exercise_id, session, days)
     if exercise is None:
         return []
+    metric = _metric_for(exercise)
     bw_lookup = _load_bodyweight_lookup(session)
     out: list[dict] = []
     for ws, ws_date in set_rows:
-        if ws.rpe is None or ws.reps is None or ws.reps <= 0:
+        endurance = _set_endurance(ws)
+        if ws.rpe is None or endurance is None or endurance <= 0:
             continue
         if ws.rpe < _BOOT_MIN_RPE or ws.rpe > 10.0:
             continue
@@ -1409,12 +1472,14 @@ def _load_bootstrap_observations(
         if ew <= 0:
             continue
         rir = 10.0 - float(ws.rpe)
+        endurance_out = int(endurance) if metric.int_valued else round(endurance, 2)
         out.append({
             "weight": round(float(ws.weight), 2),
             "effective_weight": round(ew, 2),
-            "reps": int(ws.reps),
+            "reps": endurance_out,
+            "endurance_value": endurance_out,
             "rpe": round(float(ws.rpe), 1),
-            "rtf": round(float(ws.reps) + rir, 2),
+            "rtf": round(endurance + rir, 2),
             "date": ws_date,
             "set_order": int(ws.set_order),
         })
@@ -1785,7 +1850,8 @@ def fatigue_profile(
     # already orders by date desc, set_order asc.
     sessions_by_date: dict[date, list[tuple[WorkoutSet, date]]] = defaultdict(list)
     for ws, ws_date in set_rows:
-        if ws.rpe is None or ws.reps is None or ws.reps <= 0:
+        endurance = _set_endurance(ws)
+        if ws.rpe is None or endurance is None or endurance <= 0:
             continue
         if ws.rpe < MIN_RPE_FOR_FIT or ws.rpe > 10.0:
             continue
@@ -1804,18 +1870,26 @@ def fatigue_profile(
 
     session_observations: list[dict] = []
     if anchor_date is not None:
+        metric_anchor = _metric_for(exercise)
         for ws, ws_date in sessions_by_date[anchor_date]:
             ew = effective_weight(exercise, ws, bw_lookup, ws_date)
             if ew <= 0:
                 continue
+            endurance = _set_endurance(ws)
+            if endurance is None or endurance <= 0:
+                continue
             rir = 10.0 - float(ws.rpe)
+            endurance_out = (
+                int(endurance) if metric_anchor.int_valued else round(endurance, 2)
+            )
             session_observations.append({
                 "set_index": int(ws.set_order),
                 "weight": round(float(ws.weight or 0), 2),
                 "effective_weight": round(ew, 2),
-                "reps": int(ws.reps),
+                "reps": endurance_out,
+                "endurance_value": endurance_out,
                 "rpe": round(float(ws.rpe), 1),
-                "rtf": round(float(ws.reps) + rir, 2),
+                "rtf": round(endurance + rir, 2),
                 "session_date": ws_date.isoformat(),
             })
 
@@ -1830,8 +1904,11 @@ def fatigue_profile(
                 ew = effective_weight(exercise, ws, bw_lookup, ws_date)
                 if ew <= 0:
                     continue
+                endurance = _set_endurance(ws)
+                if endurance is None or endurance <= 0:
+                    continue
                 rir = 10.0 - float(ws.rpe)
-                rtf_obs = float(ws.reps) + rir
+                rtf_obs = endurance + rir
                 predicted_fresh = float(fresh_curve(ew, fit.M, fit.k, fit.gamma))
                 residual = rtf_obs - predicted_fresh
                 history_by_set[int(ws.set_order)].append(residual)
@@ -1954,9 +2031,13 @@ def refit_with_observations(
         if ew <= 0:
             continue
 
+        endurance = _set_endurance(ws)
+        if endurance is None or endurance <= 0:
+            continue
+
         rir = _rpe_to_rir(ws.rpe)
         eff_weights.append(ew)
-        reps_to_failure.append(_reps_done_to_rtf(ws.reps, rir))
+        reps_to_failure.append(_reps_done_to_rtf(endurance, rir))
         confidences.append(_rpe_confidence(ws.rpe))
         ages_days.append((today - ws_date).days)
 
@@ -1968,14 +2049,15 @@ def refit_with_observations(
     # (needs ≥2 in the anchor), so historical filtering still applies.
     n_session = 0
     for obs in new_obs:
-        if obs.get("rpe") is None or obs.get("reps") is None:
+        endurance_obs = _obs_endurance(obs)
+        if obs.get("rpe") is None or endurance_obs is None or endurance_obs <= 0:
             continue
         ew = _entered_to_effective(exercise, obs["weight"], bodyweight_lb)
         if ew <= 0:
             continue
         rir = 10.0 - obs["rpe"]
         eff_weights.append(ew)
-        reps_to_failure.append(obs["reps"] + rir)
+        reps_to_failure.append(endurance_obs + rir)
         confidences.append(_rpe_confidence(obs["rpe"]))
         ages_days.append(0.0)  # just happened
         n_session += 1
@@ -2239,31 +2321,50 @@ def get_exercise_freshness(
 def get_bodyweight_suggestion(
     exercise_id: int, session: Session
 ) -> dict:
-    """Get a fixed-rep suggestion for a bodyweight exercise based on recent history."""
+    """Get a fixed-quantity suggestion for an exercise tracked as tier 3.
+
+    Used for pure-bodyweight exercises (and any other exercise routed to
+    median-quantity instead of curve fitting). Reads ``endurance_value``
+    so duration/distance bodyweight exercises (Weighted Plank, etc.) get
+    suggestions in their native unit.
+    """
+    exercise = session.get(Exercise, exercise_id)
+    metric = _metric_for(exercise) if exercise is not None else _metric_for(
+        Exercise(name="", set_metric_mode="reps")
+    )
     cutoff = user_today() - timedelta(days=30)
     stmt = (
-        select(WorkoutSet.reps)
+        select(WorkoutSet.endurance_value, WorkoutSet.reps)
         .join(WorkoutSession, WorkoutSet.session_id == WorkoutSession.id)
         .where(
             WorkoutSet.exercise_id == exercise_id,
-            WorkoutSet.reps.is_not(None),
-            WorkoutSet.reps > 0,
+            ((WorkoutSet.endurance_value.is_not(None) & (WorkoutSet.endurance_value > 0))
+             | (WorkoutSet.reps.is_not(None) & (WorkoutSet.reps > 0))),
             WorkoutSession.date >= cutoff,
         )
         .order_by(WorkoutSession.date.desc())
         .limit(20)
     )
-    recent_reps = session.exec(stmt).all()
+    rows = session.exec(stmt).all()
+    values = [
+        float(ev if ev is not None else r) for ev, r in rows if (ev or r) is not None
+    ]
 
-    if recent_reps:
-        median_reps = int(np.median(recent_reps))
+    default = {"reps": 15, "duration": 30, "distance": 50}[metric.kind]
+    if values:
+        median_value = float(np.median(values))
+        if metric.int_valued:
+            median_value = int(median_value)
     else:
-        median_reps = 15  # sensible default
+        median_value = default
 
     return {
         "sets": 3,
-        "reps_per_set": median_reps,
-        "notes": "Non-progressive: fixed rep target",
+        "reps_per_set": median_value,
+        "endurance_per_set": median_value,
+        "metric_kind": metric.kind,
+        "display_unit": metric.display_unit,
+        "notes": "Non-progressive: fixed " + metric.label + " target",
     }
 
 
