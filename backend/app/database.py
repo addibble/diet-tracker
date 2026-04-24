@@ -45,6 +45,7 @@ RUNTIME_REQUIRED_COLUMNS = {
         "started_at",
         "completed_at",
         "training_mode",
+        "endurance_value",
     },
     "tissue_conditions": {
         "tracked_tissue_id",
