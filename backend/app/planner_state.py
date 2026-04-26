@@ -245,10 +245,11 @@ def _serialize_saved_plan(session: Session, planned: PlannedSession) -> dict:
 
         heavy_avail = {"available": False, "reason": None}
         burnout_avail = {"available": False, "reason": None}
-        if exercise and exercise.allow_heavy_loading:
-            heavy_avail = check_heavy_availability(
-                pde.exercise_id, session, planned.workout_session_id,
-            )
+        if exercise:
+            if exercise.allow_heavy_loading:
+                heavy_avail = check_heavy_availability(
+                    pde.exercise_id, session, planned.workout_session_id,
+                )
             burnout_avail = check_burnout_availability(pde.exercise_id, session)
 
         completed_sets = logged_sets.get(pde.exercise_id, [])

@@ -168,14 +168,12 @@ def exercise_menu(
             )
             item["heavy_available"] = avail["available"]
             item["heavy_blocked_reason"] = avail["reason"]
-            burnout = check_burnout_availability(item["exercise_id"], session)
-            item["burnout_available"] = burnout["available"]
-            item["burnout_blocked_reason"] = burnout["reason"]
         else:
             item["heavy_available"] = False
             item["heavy_blocked_reason"] = None
-            item["burnout_available"] = False
-            item["burnout_blocked_reason"] = None
+        burnout = check_burnout_availability(item["exercise_id"], session)
+        item["burnout_available"] = burnout["available"]
+        item["burnout_blocked_reason"] = burnout["reason"]
     return items
 
 

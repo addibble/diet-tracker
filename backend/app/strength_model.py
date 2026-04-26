@@ -1018,7 +1018,6 @@ def prescribe_next_set(
         else:
             BURNOUT_TARGET_REPS = 30.0
             target_entered: float | None = None
-            # Prefer the curve: invert it for a weight that yields ~30 RTF.
             fit = fit_curve(exercise_id, session)
             if fit is not None:
                 eff_at_target = solve_weight(BURNOUT_TARGET_REPS, fit)
@@ -1027,18 +1026,31 @@ def prescribe_next_set(
                 )
                 if entered_from_curve is not None and entered_from_curve > 0:
                     target_entered = entered_from_curve
-            # Fall back to half-max when there's no fitted curve.
             if target_entered is None:
                 target_entered = max_w / 2.0
-            # Don't ever propose more than half the recent max — burnout is
-            # supposed to be a light AMRAP set on the left side of the curve.
             target_entered = min(target_entered, max_w / 2.0)
             target_entered = max(0.0, _snap_to_grid(target_entered))
             target_effective = _entered_to_effective(
                 exercise, target_entered, bodyweight_lb
             )
+            # Predicted RTF at the chosen weight; with target_rir=0 the target
+            # reps_done equals RTF. Used to render the spark on the curve.
+            if fit is not None and target_effective > 0:
+                predicted_rtf = float(predict_reps(target_effective, fit))
+            else:
+                predicted_rtf = BURNOUT_TARGET_REPS
+            target_reps_done = max(1, int(round(predicted_rtf)))
+            curve_block = (
+                _curve_dict(fit, exercise, bodyweight_lb) if fit is not None else None
+            )
+            prior_fit = fit_curve(exercise_id, session, exclude_today=True)
+            curve_prior_block = (
+                _curve_dict(prior_fit, exercise, bodyweight_lb)
+                if prior_fit is not None
+                else None
+            )
             return {
-                "has_curve": False,
+                "has_curve": fit is not None,
                 "mode": "burnout",
                 "exercise_complete": False,
                 "training_mode": training_mode,
@@ -1046,21 +1058,23 @@ def prescribe_next_set(
                     "set_number": 1,
                     "proposed_weight": round(target_entered, 1),
                     "effective_weight": round(target_effective, 1),
-                    "target_reps": None,
+                    "target_reps": target_reps_done,
                     "target_rpe": 10.0,
                     "target_rir": 0,
-                    "r_fail": None,
+                    "r_fail": round(predicted_rtf, 1),
                     "acceptable_rep_min": 1,
                     "acceptable_rep_max": None,
                     "proposed_entered_weight_lb": round(target_entered, 1),
                     "effective_weight_lb": round(target_effective, 1),
-                    "target_reps_done": None,
-                    "r_fail_rtf": None,
+                    "target_reps_done": target_reps_done,
+                    "r_fail_rtf": round(predicted_rtf, 1),
                     "amrap": True,
                     "instructions": (
                         "Burnout: do as many reps as you can until RIR=0."
                     ),
                 },
+                "curve": curve_block,
+                "curve_prior": curve_prior_block,
                 "observations": _build_observations(exercise_id, session),
             }
 
