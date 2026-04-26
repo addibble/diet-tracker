@@ -45,7 +45,7 @@ def _make_session_sets(
     for i, sd in enumerate(sets_data):
         session.add(WorkoutSet(
             session_id=ws.id, exercise_id=exercise.id,
-            set_order=i + 1, reps=sd["reps"], weight=sd["weight"], rpe=sd["rpe"],
+            set_order=i + 1, endurance_value=sd["reps"], weight=sd["weight"], rpe=sd["rpe"],
         ))
     session.flush()
     return ws

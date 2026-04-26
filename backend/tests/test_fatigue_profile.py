@@ -43,7 +43,7 @@ def _make_session_and_sets(
             session_id=ws.id,
             exercise_id=exercise.id,
             set_order=i + 1,
-            reps=sd["reps"],
+            endurance_value=sd["reps"],
             weight=sd["weight"],
             rpe=sd["rpe"],
         ))
@@ -154,7 +154,7 @@ class TestFatigueProfileLearned:
         for so in [1, 2]:
             session.add(WorkoutSet(
                 session_id=ws.id, exercise_id=ex.id,
-                set_order=so, reps=10, weight=95, rpe=8.0,
+                set_order=so, endurance_value=10, weight=95, rpe=8.0,
             ))
         # Enough RPE sets across history for the curve to fit is not the
         # concern here; we're asserting the learned/fallback flag per index.

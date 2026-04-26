@@ -381,7 +381,7 @@ def get_volume_by_region(
             Exercise.id,
             Tissue.region,
             WorkoutSet.weight,
-            WorkoutSet.reps,
+            WorkoutSet.endurance_value,
             ExerciseTissue.loading_factor,
         )
         .join(WorkoutSet, WorkoutSet.session_id == WorkoutSession.id)
@@ -416,16 +416,21 @@ def get_volume_by_region(
     totals: dict[str, float] = {}
     date_index = {d: i for i, d in enumerate(dates)}
     for row in rows:
-        wo_date, exercise_id, region, weight, reps, loading_factor = row
+        wo_date, exercise_id, region, weight, endurance_value, loading_factor = row
         if region is None or wo_date not in date_index:
             continue
-        if weight is None or reps is None or weight <= 0 or reps <= 0:
+        if (
+            weight is None
+            or endurance_value is None
+            or weight <= 0
+            or endurance_value <= 0
+        ):
             continue
         lf_total = lf_totals.get(exercise_id, 0.0)
         if lf_total <= 0:
             continue
         normalized_lf = float(loading_factor or 0.0) / lf_total
-        vol = float(weight) * float(reps) * normalized_lf
+        vol = float(weight) * float(endurance_value) * normalized_lf
         if vol <= 0:
             continue
         bucket = daily.setdefault(region, [0.0] * days)

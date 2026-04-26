@@ -18,7 +18,7 @@ from app.models import (
     WorkoutSession,
     WorkoutSet,
 )
-from app.units import endurance_value_from_legacy
+from app.units import endurance_value_from_legacy, legacy_metric_fields
 
 router = APIRouter(tags=["workout-sets"])
 
@@ -98,12 +98,11 @@ def _set_response(s: WorkoutSet, session: Session) -> dict:
         "session_id": s.session_id,
         "exercise_id": s.exercise_id,
         "exercise_name": exercise.name if exercise else "unknown",
+        "set_metric_mode": (exercise.set_metric_mode if exercise else None) or "reps",
         "set_order": s.set_order,
         "performed_side": s.performed_side,
-        "reps": s.reps,
+        **legacy_metric_fields(exercise, s.endurance_value),
         "weight": s.weight,
-        "duration_secs": s.duration_secs,
-        "distance_steps": s.distance_steps,
         "endurance_value": s.endurance_value,
         "started_at": s.started_at,
         "completed_at": s.completed_at,
@@ -168,21 +167,19 @@ def update_set(
         updates["completed_at"] = datetime.now(UTC)
     if "started_at" not in updates and "completed_at" in updates and updates["completed_at"] is not None:
         updates["started_at"] = ws.started_at or updates["completed_at"]
-    for key, value in updates.items():
-        setattr(ws, key, value)
-    # Recompute endurance_value from the resulting legacy fields whenever any
-    # metric-carrying field changed. Always mirror the legacy column for the
-    # exercise's current metric_mode so a later mode change picks up
-    # something reasonable.
-    if exercise and any(
-        key in updates for key in ("reps", "duration_secs", "distance_steps")
-    ):
+    # Translate any incoming legacy metric field to ``endurance_value``.
+    # The legacy DB columns no longer exist; we accept the keys for wire-compat.
+    legacy_keys = {"reps", "duration_secs", "distance_steps"}
+    legacy_in = {k: updates.pop(k) for k in list(updates) if k in legacy_keys}
+    if exercise and legacy_in:
         ws.endurance_value = endurance_value_from_legacy(
             exercise,
-            reps=ws.reps,
-            duration_secs=ws.duration_secs,
-            distance_steps=ws.distance_steps,
+            reps=legacy_in.get("reps"),
+            duration_secs=legacy_in.get("duration_secs"),
+            distance_steps=legacy_in.get("distance_steps"),
         )
+    for key, value in updates.items():
+        setattr(ws, key, value)
     session.add(ws)
     _normalize_session_set_order(session, ws.session_id)
     session.commit()
@@ -238,10 +235,7 @@ def add_set(
             exercise_laterality=exercise.laterality,
             provided_side=data.performed_side,
         ),
-        reps=data.reps,
         weight=data.weight,
-        duration_secs=data.duration_secs,
-        distance_steps=data.distance_steps,
         endurance_value=endurance_value_from_legacy(
             exercise,
             reps=data.reps,

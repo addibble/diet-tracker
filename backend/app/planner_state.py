@@ -24,6 +24,7 @@ from app.models import (
     WorkoutSet,
 )
 from app.strength_model import check_heavy_availability
+from app.units import legacy_metric_fields
 
 
 def complete_plan(session: Session, plan_date: date) -> dict:
@@ -212,15 +213,18 @@ def _serialize_saved_plan(session: Session, planned: PlannedSession) -> dict:
             .where(WorkoutSet.session_id == planned.workout_session_id)
             .order_by(WorkoutSet.set_order)
         ).all()
+        ex_cache: dict[int, Exercise | None] = {}
         for s in sets:
+            ex = ex_cache.get(s.exercise_id)
+            if ex is None and s.exercise_id not in ex_cache:
+                ex = session.get(Exercise, s.exercise_id)
+                ex_cache[s.exercise_id] = ex
             logged_sets[s.exercise_id].append({
                 "id": s.id,
                 "set_order": s.set_order,
                 "performed_side": s.performed_side,
-                "reps": s.reps,
+                **legacy_metric_fields(ex, s.endurance_value),
                 "weight": s.weight,
-                "duration_secs": s.duration_secs,
-                "distance_steps": s.distance_steps,
                 "endurance_value": s.endurance_value,
                 "started_at": s.started_at,
                 "completed_at": s.completed_at,

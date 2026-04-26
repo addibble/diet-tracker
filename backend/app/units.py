@@ -55,6 +55,7 @@ __all__ = [
     "rir_to_rpe",
     "bodyweight_component_lb",
     "endurance_value_from_legacy",
+    "legacy_metric_fields",
     "EnduranceMetric",
     "metric_for",
     # Re-exports of the canonical helpers in exercise_loads so callers have
@@ -131,6 +132,28 @@ def endurance_value_from_legacy(
     if reps is not None:
         return float(reps)
     return None
+
+
+def legacy_metric_fields(
+    exercise: Exercise | None,
+    endurance_value: int | float | None,
+) -> dict[str, int | None]:
+    """Project a unified ``endurance_value`` onto the legacy per-mode columns.
+
+    Returns ``{"reps", "duration_secs", "distance_steps"}`` for use in API
+    response bodies. The DB no longer stores these columns (Phase 6); they
+    exist purely as wire-compat for older clients that haven't been
+    rebranded onto ``endurance_value`` + ``set_metric_mode`` yet.
+    """
+    if endurance_value is None:
+        return {"reps": None, "duration_secs": None, "distance_steps": None}
+    mode = (exercise.set_metric_mode if exercise else None) or "reps"
+    iv = int(round(float(endurance_value)))
+    if mode == "duration":
+        return {"reps": None, "duration_secs": iv, "distance_steps": None}
+    if mode == "distance":
+        return {"reps": None, "duration_secs": None, "distance_steps": iv}
+    return {"reps": iv, "duration_secs": None, "distance_steps": None}
 
 
 def entered_to_effective_lb(

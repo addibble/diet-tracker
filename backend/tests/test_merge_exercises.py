@@ -66,7 +66,7 @@ def test_merge_moves_workout_sets(two_exercises, session):
         session.add(
             WorkoutSet(
                 session_id=ws.id, exercise_id=src.id,
-                set_order=i, reps=10, weight=50,
+                set_order=i, endurance_value=10, weight=50,
             )
         )
     session.commit()

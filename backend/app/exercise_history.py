@@ -11,6 +11,7 @@ from sqlmodel import Session, col, select
 from app.exercise_loads import bodyweight_by_date
 from app.exercise_loads import effective_weight as calc_effective_weight
 from app.models import Exercise, PlannedSession, ProgramDay, ProgramDayExercise, WeightLog, WorkoutSession, WorkoutSet
+from app.units import legacy_metric_fields
 
 RepScheme = Literal["heavy", "medium", "volume"]
 
@@ -85,7 +86,11 @@ def infer_rep_scheme_from_text(value: str) -> RepScheme | None:
 
 
 def infer_logged_rep_scheme(sets: list[WorkoutSet]) -> RepScheme | None:
-    rep_values = [int(workout_set.reps) for workout_set in sets if workout_set.reps is not None and workout_set.reps > 0]
+    rep_values = [
+        int(workout_set.endurance_value)
+        for workout_set in sets
+        if workout_set.endurance_value is not None and workout_set.endurance_value > 0
+    ]
     if not rep_values:
         return None
 
@@ -232,12 +237,14 @@ def _summarize_exercise_session(
         ]
         max_weight = max(effective_weights) if effective_weights else 0.0
         total_volume = sum(
-            (workout_set.reps or 0) * effective_weight
+            (workout_set.endurance_value or 0) * effective_weight
             for workout_set, effective_weight in zip(sets, effective_weights)
         )
     else:
         max_weight = max((workout_set.weight or 0) for workout_set in sets)
-        total_volume = sum((workout_set.reps or 0) * (workout_set.weight or 0) for workout_set in sets)
+        total_volume = sum(
+            (workout_set.endurance_value or 0) * (workout_set.weight or 0) for workout_set in sets
+        )
 
     rep_scheme = planned_scheme or infer_logged_rep_scheme(sets) or "medium"
     rep_completions = [workout_set.rep_completion for workout_set in sets if workout_set.rep_completion]
@@ -248,10 +255,8 @@ def _summarize_exercise_session(
         "sets": [
             {
                 "set_order": workout_set.set_order,
-                "reps": workout_set.reps,
+                **legacy_metric_fields(exercise, workout_set.endurance_value),
                 "weight": workout_set.weight,
-                "duration_secs": workout_set.duration_secs,
-                "distance_steps": workout_set.distance_steps,
                 "endurance_value": workout_set.endurance_value,
                 "rpe": workout_set.rpe,
                 "rep_completion": workout_set.rep_completion,

@@ -56,6 +56,13 @@ RUNTIME_REQUIRED_COLUMNS = {
 }
 
 
+RUNTIME_REQUIRED_COLUMNS_ABSENT = {
+    # Columns that MUST NOT exist anymore. If present, the runtime updater
+    # runs to drop them. Used to drive Phase 6's one-shot DROP COLUMN.
+    "workout_sets": {"reps", "duration_secs", "distance_steps"},
+}
+
+
 def _engine_sqlite_path(engine: Engine) -> Path | None:
     url = engine.url
     if url.drivername.startswith("sqlite"):
@@ -135,6 +142,7 @@ def apply_db_updates(engine: Engine) -> None:
     _backfill_progression_rep_completion(engine)
     _migrate_legacy_metric_modes(engine)
     _backfill_endurance_value(engine)
+    _drop_legacy_metric_columns(engine)
 
 
 def _runtime_db_needs_manual_updates(engine: Engine) -> bool:
@@ -161,6 +169,19 @@ def _runtime_db_needs_manual_updates(engine: Engine) -> bool:
                 "Database table %s missing runtime columns: %s",
                 table_name,
                 ", ".join(missing_columns),
+            )
+            return True
+
+    for table_name, absent_columns in RUNTIME_REQUIRED_COLUMNS_ABSENT.items():
+        if table_name not in table_names:
+            continue
+        existing_columns = {column["name"] for column in insp.get_columns(table_name)}
+        present = sorted(absent_columns & existing_columns)
+        if present:
+            logger.info(
+                "Database table %s has obsolete columns to drop: %s",
+                table_name,
+                ", ".join(present),
             )
             return True
 
@@ -327,7 +348,15 @@ def _backfill_rep_completion(engine: Engine):
     For each set with reps but NULL rep_completion, trace:
     workout_set → workout_session → planned_session → program_day_exercises
     to find the target rep range and compute completion status.
+
+    No-op once the legacy ``reps`` column has been dropped (Phase 6+).
     """
+    insp = inspect(engine)
+    if "workout_sets" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("workout_sets")}
+    if "reps" not in cols:
+        return
     with engine.begin() as conn:
         rows = conn.execute(text(
             "SELECT ws.id, ws.reps, pde.target_rep_min, pde.target_rep_max "
@@ -471,6 +500,12 @@ def _ensure_columns(
 
 
 def _backfill_special_workout_sets(engine: Engine):
+    insp = inspect(engine)
+    if "workout_sets" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("workout_sets")}
+    if not {"reps", "distance_steps"}.issubset(cols):
+        return
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -567,6 +602,12 @@ def _shared_progression_metric(
 
 
 def _backfill_progression_rep_completion(engine: Engine):
+    insp = inspect(engine)
+    if "workout_sets" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("workout_sets")}
+    if not ({"reps", "duration_secs", "distance_steps"} & cols):
+        return
     with engine.begin() as conn:
         rows = conn.execute(
             text(
@@ -701,7 +742,8 @@ def _backfill_endurance_value(engine: Engine) -> None:
 
     Idempotent — only writes rows where ``endurance_value IS NULL``, so
     running this multiple times is safe and ongoing writes through the
-    application-layer dual-write path are never overwritten.
+    application-layer dual-write path are never overwritten. No-op once
+    the legacy columns have been dropped (Phase 6+).
     """
     with engine.begin() as conn:
         insp = inspect(engine)
@@ -710,35 +752,67 @@ def _backfill_endurance_value(engine: Engine) -> None:
         cols = {c["name"] for c in insp.get_columns("workout_sets")}
         if "endurance_value" not in cols:
             return
+        # Once the legacy columns are gone there's nothing to backfill from.
+        if not ({"reps", "duration_secs", "distance_steps"} & cols):
+            return
+        has_reps = "reps" in cols
+        has_dur = "duration_secs" in cols
+        has_dist = "distance_steps" in cols
 
-        # reps mode: prefer reps
-        conn.execute(text(
-            "UPDATE workout_sets SET endurance_value = reps "
-            "WHERE endurance_value IS NULL AND reps IS NOT NULL "
-            "  AND exercise_id IN ("
-            "    SELECT id FROM exercises "
-            "    WHERE COALESCE(set_metric_mode, 'reps') = 'reps'"
-            "  )"
-        ))
-        # duration mode: prefer duration_secs, fall back to reps (Weighted Plank legacy)
-        conn.execute(text(
-            "UPDATE workout_sets "
-            "SET endurance_value = COALESCE(duration_secs, reps) "
-            "WHERE endurance_value IS NULL "
-            "  AND COALESCE(duration_secs, reps) IS NOT NULL "
-            "  AND exercise_id IN ("
-            "    SELECT id FROM exercises WHERE set_metric_mode = 'duration'"
-            "  )"
-        ))
-        # distance mode: prefer distance_steps, fall back to reps
-        conn.execute(text(
-            "UPDATE workout_sets "
-            "SET endurance_value = COALESCE(distance_steps, reps) "
-            "WHERE endurance_value IS NULL "
-            "  AND COALESCE(distance_steps, reps) IS NOT NULL "
-            "  AND exercise_id IN ("
-            "    SELECT id FROM exercises WHERE set_metric_mode = 'distance'"
-            "  )"
-        ))
+        if has_reps:
+            # reps mode: prefer reps
+            conn.execute(text(
+                "UPDATE workout_sets SET endurance_value = reps "
+                "WHERE endurance_value IS NULL AND reps IS NOT NULL "
+                "  AND exercise_id IN ("
+                "    SELECT id FROM exercises "
+                "    WHERE COALESCE(set_metric_mode, 'reps') = 'reps'"
+                "  )"
+            ))
+        if has_dur:
+            # duration mode: prefer duration_secs, fall back to reps
+            src = "COALESCE(duration_secs, reps)" if has_reps else "duration_secs"
+            conn.execute(text(
+                f"UPDATE workout_sets SET endurance_value = {src} "
+                f"WHERE endurance_value IS NULL AND {src} IS NOT NULL "
+                "  AND exercise_id IN ("
+                "    SELECT id FROM exercises WHERE set_metric_mode = 'duration'"
+                "  )"
+            ))
+        if has_dist:
+            # distance mode: prefer distance_steps, fall back to reps
+            src = "COALESCE(distance_steps, reps)" if has_reps else "distance_steps"
+            conn.execute(text(
+                f"UPDATE workout_sets SET endurance_value = {src} "
+                f"WHERE endurance_value IS NULL AND {src} IS NOT NULL "
+                "  AND exercise_id IN ("
+                "    SELECT id FROM exercises WHERE set_metric_mode = 'distance'"
+                "  )"
+            ))
+
+
+def _drop_legacy_metric_columns(engine: Engine) -> None:
+    """Drop ``workout_sets.{reps,duration_secs,distance_steps}`` (Phase 6).
+
+    Idempotent: only drops columns that still exist. Requires SQLite ≥3.35
+    (supports ``ALTER TABLE ... DROP COLUMN``); the runtime ``inspect``
+    pre-check makes this a no-op on already-migrated DBs.
+
+    Safety: ``apply_db_updates`` runs ``_backfill_endurance_value`` first,
+    so by the time this function executes every row that previously had a
+    value in the legacy columns has been reflected onto ``endurance_value``.
+    """
+    insp = inspect(engine)
+    if "workout_sets" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("workout_sets")}
+    legacy = ["reps", "duration_secs", "distance_steps"]
+    to_drop = [c for c in legacy if c in cols]
+    if not to_drop:
+        return
+    logger.info("Dropping legacy workout_sets columns: %s", ", ".join(to_drop))
+    with engine.begin() as conn:
+        for col in to_drop:
+            conn.execute(text(f"ALTER TABLE workout_sets DROP COLUMN {col}"))
 
 

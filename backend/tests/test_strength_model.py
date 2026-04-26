@@ -271,7 +271,7 @@ def _make_session_and_sets(
             session_id=ws.id,
             exercise_id=exercise.id,
             set_order=i + 1,
-            reps=sd.get("reps"),
+            endurance_value=sd.get("reps"),
             weight=sd.get("weight"),
             rpe=sd.get("rpe"),
         )
@@ -484,7 +484,7 @@ class TestAllowHeavyTierGating:
         for w, r, rpe in [(80, 15, 7.0), (100, 12, 8.0), (120, 8, 9.0)]:
             session.add(WorkoutSet(
                 session_id=ws1.id, exercise_id=ex.id, set_order=1,
-                reps=r, weight=w, rpe=rpe,
+                endurance_value=r, weight=w, rpe=rpe,
             ))
         ws2 = WorkoutSession(date=date.today())
         session.add(ws2)
@@ -492,7 +492,7 @@ class TestAllowHeavyTierGating:
         for w, r, rpe in [(80, 14, 7.0), (100, 11, 8.0), (120, 7, 9.0)]:
             session.add(WorkoutSet(
                 session_id=ws2.id, exercise_id=ex.id, set_order=1,
-                reps=r, weight=w, rpe=rpe,
+                endurance_value=r, weight=w, rpe=rpe,
             ))
         session.flush()
 
@@ -721,7 +721,7 @@ def _seed_exercise_with_sets(session, client_session=None):
     ]:
         session.add(WorkoutSet(
             session_id=ws.id, exercise_id=ex.id, set_order=1,
-            reps=reps, weight=weight, rpe=rpe,
+            endurance_value=reps, weight=weight, rpe=rpe,
         ))
     session.flush()
     return ex
@@ -1047,7 +1047,7 @@ class TestCheckHeavyAvailability:
         session.flush()
         session.add(WorkoutSet(
             session_id=ws.id, exercise_id=ex.id, set_order=1,
-            reps=4, weight=200, rpe=9.0, training_mode="heavy",
+            endurance_value=4, weight=200, rpe=9.0, training_mode="heavy",
         ))
         session.flush()
         result = check_heavy_availability(ex.id, session)
@@ -1068,7 +1068,7 @@ class TestCheckHeavyAvailability:
         session.flush()
         session.add(WorkoutSet(
             session_id=ws.id, exercise_id=ex.id, set_order=1,
-            reps=4, weight=200, rpe=9.0, training_mode="heavy",
+            endurance_value=4, weight=200, rpe=9.0, training_mode="heavy",
         ))
         session.flush()
         result = check_heavy_availability(ex.id, session)
@@ -1095,7 +1095,7 @@ class TestCheckHeavyAvailability:
             session.flush()
             session.add(WorkoutSet(
                 session_id=ws.id, exercise_id=ex.id, set_order=1,
-                reps=4, weight=200, rpe=9.0, training_mode="heavy",
+                endurance_value=4, weight=200, rpe=9.0, training_mode="heavy",
             ))
         session.flush()
         result = check_heavy_availability(ex3.id, session)
@@ -1118,7 +1118,7 @@ class TestCheckHeavyAvailability:
         session.flush()
         session.add(WorkoutSet(
             session_id=ws.id, exercise_id=ex1.id, set_order=1,
-            reps=4, weight=300, rpe=9.0, training_mode="heavy",
+            endurance_value=4, weight=300, rpe=9.0, training_mode="heavy",
         ))
         session.flush()
         result = check_heavy_availability(ex2.id, session, current_session_id=ws.id)
@@ -1257,3 +1257,4 @@ class TestPrescribeCurveBlock:
         assert result.get("has_curve") is False
         assert result.get("mode") == "bootstrap"
         assert result["next_set"]["set_number"] == 2
+

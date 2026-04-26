@@ -257,7 +257,7 @@ def test_group_menu_availability_recently_trained(session: Session):
     session.flush()
     wset = WorkoutSet(
         session_id=ws.id, exercise_id=ex_id, set_order=1,
-        reps=10, weight=100.0, rpe=8.0,
+        endurance_value=10, weight=100.0, rpe=8.0,
         completed_at=datetime.now(UTC),
     )
     session.add(wset)
@@ -280,7 +280,7 @@ def test_group_menu_availability_old_training(session: Session):
     session.flush()
     wset = WorkoutSet(
         session_id=ws.id, exercise_id=ex_id, set_order=1,
-        reps=10, weight=100.0, rpe=8.0,
+        endurance_value=10, weight=100.0, rpe=8.0,
         completed_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
     session.add(wset)
@@ -301,7 +301,7 @@ def test_group_menu_ignores_incomplete_sets(session: Session):
     # Set with no completed_at (abandoned)
     wset = WorkoutSet(
         session_id=ws.id, exercise_id=ex_id, set_order=1,
-        reps=10, weight=100.0, rpe=8.0,
+        endurance_value=10, weight=100.0, rpe=8.0,
         completed_at=None,
     )
     session.add(wset)
@@ -345,3 +345,4 @@ def test_cooldown_days_configured_for_all_groups():
     """Every group should have a cooldown configured."""
     for group in ALL_GROUPS:
         assert group in GROUP_COOLDOWN_DAYS, f"Group {group} missing cooldown"
+

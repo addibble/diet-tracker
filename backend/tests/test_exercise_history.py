@@ -141,7 +141,7 @@ def _add_workout_session(
                 session_id=workout_session.id,
                 exercise_id=exercise.id,
                 set_order=set_order,
-                reps=reps,
+                endurance_value=reps,
                 weight=weight,
                 rep_completion="full",
             )

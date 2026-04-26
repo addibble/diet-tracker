@@ -48,7 +48,7 @@ def _add_session_with_sets(
     for i, s in enumerate(sets, start=1):
         session.add(WorkoutSet(
             session_id=ws.id, exercise_id=exercise_id, set_order=i,
-            weight=s["weight"], reps=s.get("reps"),
+            weight=s["weight"],
             endurance_value=s.get("endurance_value", s.get("reps")),
             rpe=s["rpe"],
         ))

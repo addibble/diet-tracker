@@ -86,22 +86,21 @@ def load_progression_direction(exercise: Exercise) -> int:
 
 
 def effective_set_units(exercise: Exercise, workout_set: WorkoutSet) -> float:
+    """Return the unit count for volume calculations.
+
+    Reads ``endurance_value`` (the unified y-axis quantity) and scales by
+    metric mode so distance/duration sets contribute reasonable volume
+    numbers next to rep-mode sets.
+    """
     metric_mode = exercise.set_metric_mode or "reps"
-    reps = float(workout_set.reps or 0)
+    ev = workout_set.endurance_value
+    if ev is None or ev <= 0:
+        return 0.0
     if metric_mode == "distance":
-        if workout_set.distance_steps is not None and workout_set.distance_steps > 0:
-            return max(1.0, workout_set.distance_steps / 2.0)
-        return reps
+        return max(1.0, float(ev) / 2.0)
     if metric_mode == "duration":
-        if workout_set.duration_secs is not None and workout_set.duration_secs > 0:
-            return max(1.0, workout_set.duration_secs / 5.0)
-        return reps
-    if workout_set.distance_steps is not None and workout_set.distance_steps > 0:
-        return max(1.0, workout_set.distance_steps / 2.0)
-    if workout_set.duration_secs is not None and workout_set.duration_secs > 0:
-        timed_units = workout_set.duration_secs / 5.0
-        return max(reps, timed_units)
-    return reps
+        return max(1.0, float(ev) / 5.0)
+    return float(ev)
 
 
 def effective_set_load(
@@ -125,14 +124,10 @@ def effective_set_load(
 def supports_strength_estimate(exercise: Exercise, workout_set: WorkoutSet) -> bool:
     """True when this set has the (weight, endurance, RPE) triple needed to fit a curve.
 
-    Reads the unified ``endurance_value`` column with a fallback to ``reps``
-    so historical rows that haven't been backfilled yet still qualify.
     Pure-bodyweight exercises are filtered out at a higher level (they're
     routed to ``get_bodyweight_suggestion`` instead).
     """
     endurance = workout_set.endurance_value
-    if endurance is None:
-        endurance = workout_set.reps
     if endurance is None or endurance < 1:
         return False
     return True

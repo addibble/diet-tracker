@@ -42,7 +42,7 @@ def workout_set(
         session_id=workout_session.id,
         exercise_id=exercise.id,
         set_order=1,
-        reps=10,
+        endurance_value=10,
         weight=135.0,
         rpe=7.0,
     )
@@ -198,13 +198,13 @@ def test_update_set_sets_completed_at_and_reorders_session(client, session: Sess
         session_id=workout_session.id,
         exercise_id=exercise.id,
         set_order=2,
-        reps=None,
+        endurance_value=None,
     )
     earlier = WorkoutSet(
         session_id=workout_session.id,
         exercise_id=exercise.id,
         set_order=1,
-        reps=None,
+        endurance_value=None,
     )
     session.add(later)
     session.add(earlier)

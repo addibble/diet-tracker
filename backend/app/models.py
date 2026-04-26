@@ -204,13 +204,12 @@ class WorkoutSet(SQLModel, table=True):
     exercise_id: int = Field(foreign_key="exercises.id")
     set_order: int
     performed_side: str | None = None  # "left", "right", "center", "bilateral"
-    reps: int | None = None  # null for timed sets
     weight: float | None = None  # lbs, null for bodyweight
-    duration_secs: int | None = None
-    distance_steps: int | None = None
     # Unified endurance-to-failure value. Unit is determined by the owning
-    # exercise's ``set_metric_mode`` (reps / seconds / steps). Populated on
-    # write alongside the legacy metric-specific columns until readers migrate.
+    # exercise's ``set_metric_mode`` (reps / seconds / steps). The legacy
+    # per-mode columns (``reps``/``duration_secs``/``distance_steps``) were
+    # dropped in Phase 6; ``app.units.legacy_metric_fields`` projects this
+    # value back onto those keys for API response wire-compat.
     endurance_value: float | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None

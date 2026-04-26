@@ -49,16 +49,9 @@ _METRIC_REPS = _metric_for(Exercise(name="", set_metric_mode="reps"))
 
 
 def _set_endurance(ws: WorkoutSet) -> float | None:
-    """Endurance-to-failure value for a set, in the exercise's native unit.
-
-    Prefers the unified ``endurance_value`` column. Falls back to ``reps``
-    for any historical row whose backfill hasn't completed yet (defensive
-    only — the boot migration covers all existing rows).
-    """
+    """Endurance-to-failure value for a set, in the exercise's native unit."""
     if ws.endurance_value is not None:
         return float(ws.endurance_value)
-    if ws.reps is not None:
-        return float(ws.reps)
     return None
 
 
@@ -66,8 +59,7 @@ def _obs_endurance(obs: dict) -> float | None:
     """Pull endurance value from a prior_sets/new_obs dict.
 
     Accepts the canonical ``endurance_value`` key or the legacy ``reps`` key
-    (which the frontend currently posts for rep-mode exercises and will
-    continue to post until the Phase 5 rebrand).
+    (which the frontend still posts as a wire-compat alias).
     """
     val = obs.get("endurance_value")
     if val is None:
@@ -495,12 +487,8 @@ def _load_recent_sets(
         .where(
             WorkoutSet.exercise_id == exercise_id,
             WorkoutSet.rpe.is_not(None),  # RPE-only
-            # Allow either the new endurance_value or legacy reps column to
-            # carry the y-axis quantity. The boot backfill normally fills
-            # endurance_value, but we keep the OR so a fresh row that hasn't
-            # been backfilled yet still loads.
-            ((WorkoutSet.endurance_value.is_not(None) & (WorkoutSet.endurance_value > 0))
-             | (WorkoutSet.reps.is_not(None) & (WorkoutSet.reps > 0))),
+            WorkoutSet.endurance_value.is_not(None),
+            WorkoutSet.endurance_value > 0,
             WorkoutSession.date >= cutoff,
             WorkoutSession.date <= anchor,
         )
@@ -2334,21 +2322,19 @@ def get_bodyweight_suggestion(
     )
     cutoff = user_today() - timedelta(days=30)
     stmt = (
-        select(WorkoutSet.endurance_value, WorkoutSet.reps)
+        select(WorkoutSet.endurance_value)
         .join(WorkoutSession, WorkoutSet.session_id == WorkoutSession.id)
         .where(
             WorkoutSet.exercise_id == exercise_id,
-            ((WorkoutSet.endurance_value.is_not(None) & (WorkoutSet.endurance_value > 0))
-             | (WorkoutSet.reps.is_not(None) & (WorkoutSet.reps > 0))),
+            WorkoutSet.endurance_value.is_not(None),
+            WorkoutSet.endurance_value > 0,
             WorkoutSession.date >= cutoff,
         )
         .order_by(WorkoutSession.date.desc())
         .limit(20)
     )
     rows = session.exec(stmt).all()
-    values = [
-        float(ev if ev is not None else r) for ev, r in rows if (ev or r) is not None
-    ]
+    values = [float(ev) for ev in rows if ev is not None]
 
     default = {"reps": 15, "duration": 30, "distance": 50}[metric.kind]
     if values:

@@ -20,7 +20,7 @@ from app.models import (
     WorkoutSession,
     WorkoutSet,
 )
-from app.units import endurance_value_from_legacy
+from app.units import endurance_value_from_legacy, legacy_metric_fields
 
 router = APIRouter(prefix="/api/workout-sessions", tags=["workout-sessions"])
 
@@ -100,10 +100,8 @@ def _build_session_response(ws: WorkoutSession, session: Session) -> dict:
             "set_metric_mode": (exercise.set_metric_mode if exercise else None) or "reps",
             "set_order": s.set_order,
             "performed_side": s.performed_side,
-            "reps": s.reps,
+            **legacy_metric_fields(exercise, s.endurance_value),
             "weight": s.weight,
-            "duration_secs": s.duration_secs,
-            "distance_steps": s.distance_steps,
             "endurance_value": s.endurance_value,
             "started_at": s.started_at,
             "completed_at": s.completed_at,
@@ -183,10 +181,7 @@ def create_session(
                 exercise_laterality=exercise.laterality,
                 provided_side=s.performed_side,
             ),
-            reps=s.reps,
             weight=s.weight,
-            duration_secs=s.duration_secs,
-            distance_steps=s.distance_steps,
             endurance_value=endurance_value_from_legacy(
                 exercise,
                 reps=s.reps,
@@ -237,10 +232,7 @@ def update_session(
                     exercise_laterality=exercise.laterality,
                     provided_side=s.performed_side,
                 ),
-                reps=s.reps,
                 weight=s.weight,
-                duration_secs=s.duration_secs,
-                distance_steps=s.distance_steps,
                 endurance_value=endurance_value_from_legacy(
                     exercise,
                     reps=s.reps,

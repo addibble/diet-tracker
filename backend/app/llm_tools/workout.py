@@ -25,7 +25,7 @@ from app.models import (
     WorkoutSession,
     WorkoutSet,
 )
-from app.units import endurance_value_from_legacy
+from app.units import endurance_value_from_legacy, legacy_metric_fields
 from app.workout_queries import (
     get_current_exercise_tissues,
     get_current_tissues,
@@ -282,9 +282,8 @@ def _build_session_summary(
                 {
                     "set_id": s.id,
                     "set_order": s.set_order,
-                    "reps": s.reps,
+                    **legacy_metric_fields(exercise, s.endurance_value),
                     "weight": s.weight,
-                    "duration_secs": s.duration_secs,
                     "endurance_value": s.endurance_value,
                     "rpe": s.rpe,
                     "rep_completion": s.rep_completion,
@@ -544,7 +543,7 @@ def _include_exercise_history(
     for d in sorted(sessions_map.keys(), reverse=True)[:limit]:
         sets = sessions_map[d]
         max_weight = max((s.weight or 0) for s in sets)
-        total_volume = sum((s.reps or 0) * (s.weight or 0) for s in sets)
+        total_volume = sum((s.endurance_value or 0) * (s.weight or 0) for s in sets)
         completions = [
             s.rep_completion for s in sets if s.rep_completion
         ]
@@ -552,7 +551,8 @@ def _include_exercise_history(
             "date": str(d),
             "sets": [
                 {
-                    "reps": s.reps,
+                    **legacy_metric_fields(exercise, s.endurance_value),
+                    "endurance_value": s.endurance_value,
                     "weight": s.weight,
                     "rep_completion": s.rep_completion,
                 }
