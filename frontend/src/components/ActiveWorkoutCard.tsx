@@ -593,12 +593,16 @@ function ExerciseWorkout({
   const loadMode = state.load_input_mode || 'external_weight'
   const showSecs = metricMode === 'duration'
   const showReps = metricMode === 'reps'
+  const showDistance = metricMode === 'distance'
   const showWeight = loadMode !== 'bodyweight'
+  // Reps/distance use integer endurance — both can drive the strength curve.
+  // Duration also rides the curve but stores seconds.
   const repsOnlyMode = metricMode === 'reps'
 
   const [weight, setWeight] = useState('')
   const [reps, setReps] = useState('')
   const [secs, setSecs] = useState('')
+  const [dist, setDist] = useState('')
   const [rir, setRir] = useState('')
   const [logging, setLogging] = useState(false)
   const [adjusting, setAdjusting] = useState(false)
@@ -616,8 +620,9 @@ function ExerciseWorkout({
     if (target != null) {
       if (showReps) setReps(String(Math.round(target)))
       else if (showSecs) setSecs(String(Math.round(target)))
+      else if (showDistance) setDist(String(Math.round(target)))
     }
-  }, [state.prescription, showReps, showSecs])
+  }, [state.prescription, showReps, showSecs, showDistance])
 
   // Pre-fill secs from the last logged set (simple "repeat last" hint)
   useEffect(() => {
@@ -674,10 +679,12 @@ function ExerciseWorkout({
     const w = showWeight ? parseFloat(weight) : 0
     const r = showReps ? parseInt(reps, 10) : 0
     const d = showSecs ? parseInt(secs, 10) : null
+    const ds = showDistance ? parseInt(dist, 10) : null
     const ri = parseFloat(rir)
     if (showWeight && isNaN(w)) return
     if (showReps && isNaN(r)) return
     if (showSecs && (d == null || isNaN(d))) return
+    if (showDistance && (ds == null || isNaN(ds))) return
     if (isNaN(ri)) return
 
     // Derive rep_completion from prescription range (reps-based only)
@@ -693,6 +700,7 @@ function ExerciseWorkout({
         weight: showWeight ? w : null,
         reps: showReps ? r : null,
         duration_secs: showSecs ? d : null,
+        distance_steps: showDistance ? ds : null,
         rir: ri,
         training_mode: state.training_mode,
         rep_completion: repCompletion,
@@ -709,6 +717,7 @@ function ExerciseWorkout({
       setWeight('')
       setReps('')
       setSecs('')
+      setDist('')
       setRir('')
     } catch {
       // TODO: show error
@@ -725,6 +734,7 @@ function ExerciseWorkout({
     && (!showWeight || weight !== '')
     && (!showReps || reps !== '')
     && (!showSecs || secs !== '')
+    && (!showDistance || dist !== '')
     && rir !== ''
 
   // ── Curve-first UI state (only for reps + external-weight exercises) ──
@@ -1079,6 +1089,25 @@ function ExerciseWorkout({
                       onChange={e => setSecs(e.target.value)}
                       onFocus={moveCursorToEnd}
                       className="mt-0.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400"
+                      placeholder="0"
+                    />
+                  </div>
+                )}
+                {showDistance && (
+                  <div className="w-20">
+                    <label className="block text-[10px] font-medium text-gray-500">
+                      Steps{adjusting && <span className="ml-1 text-blue-400">…</span>}
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      value={dist}
+                      onChange={e => setDist(e.target.value)}
+                      onFocus={moveCursorToEnd}
+                      className={`mt-0.5 w-full rounded-lg border px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400 ${
+                        adjusting ? 'border-blue-300 bg-blue-50' : 'border-gray-300'
+                      }`}
                       placeholder="0"
                     />
                   </div>

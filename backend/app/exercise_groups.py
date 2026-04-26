@@ -148,6 +148,34 @@ def build_exercise_region_profile(
 # ---------------------------------------------------------------------------
 
 
+def get_exercise_group(exercise_id: int, session: Session) -> str:
+    """Return the training group ("Push", "Pull", "Legs", etc.) for an exercise.
+
+    Returns ``"Uncategorized"`` when the exercise lacks tissue mappings or the
+    cosine similarity to all centroids is below ``MIN_CONFIDENCE``.
+    """
+    et_rows = session.exec(
+        select(ExerciseTissue).where(ExerciseTissue.exercise_id == exercise_id)
+    ).all()
+    if not et_rows:
+        return "Uncategorized"
+    mappings: list[dict] = []
+    for et in et_rows:
+        tissue = session.get(Tissue, et.tissue_id)
+        if tissue is None:
+            continue
+        mappings.append({
+            "tissue_region": tissue.region,
+            "loading_factor": et.loading_factor,
+            "routing_factor": et.routing_factor,
+            "joint_strain_factor": et.joint_strain_factor,
+            "tendon_strain_factor": et.tendon_strain_factor,
+        })
+    profile = build_exercise_region_profile(mappings)
+    group, _confidence = classify_exercise(profile)
+    return group
+
+
 def get_group_exercise_menu(session: Session) -> dict:
     """Return exercises grouped by training group with freshness-based availability.
 

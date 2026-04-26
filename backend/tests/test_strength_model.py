@@ -1103,16 +1103,23 @@ class TestCheckHeavyAvailability:
         assert "chest" in result["reason"]
 
     def test_session_region_cap_blocks(self, session):
-        """1 heavy exercise on same region in same session blocks another."""
+        """1 heavy exercise in same group blocks another in the current session."""
         from app.models import ExerciseTissue, Tissue
         from app.strength_model import check_heavy_availability
-        tissue = Tissue(name="test_back_session", display_name="Back", region="back")
+        # Use a real region from the Pull centroid so both exercises classify as Pull.
+        tissue = Tissue(
+            name="test_upper_back_session",
+            display_name="Upper Back",
+            region="upper_back",
+        )
         session.add(tissue)
         session.flush()
         ex1 = _make_exercise(session, name="Deadlift", allow_heavy_loading=True)
         ex2 = _make_exercise(session, name="Barbell Row", allow_heavy_loading=True)
         for ex in [ex1, ex2]:
-            session.add(ExerciseTissue(exercise_id=ex.id, tissue_id=tissue.id))
+            session.add(ExerciseTissue(
+                exercise_id=ex.id, tissue_id=tissue.id, loading_factor=1.0,
+            ))
         ws = WorkoutSession(date=date.today())
         session.add(ws)
         session.flush()
@@ -1124,6 +1131,34 @@ class TestCheckHeavyAvailability:
         result = check_heavy_availability(ex2.id, session, current_session_id=ws.id)
         assert result["available"] is False
         assert "session" in result["reason"]
+
+    def test_session_group_blocks_across_regions(self, session):
+        """Heavy on Legs (hamstrings) blocks heavy on Legs (glutes) same session."""
+        from app.models import ExerciseTissue, Tissue
+        from app.strength_model import check_heavy_availability
+        hams = Tissue(name="test_hams_grp", display_name="Hams", region="hamstrings")
+        glutes = Tissue(name="test_glutes_grp", display_name="Glutes", region="glutes")
+        session.add_all([hams, glutes])
+        session.flush()
+        ex_curl = _make_exercise(session, name="Seated Leg Curl", allow_heavy_loading=True)
+        ex_drive = _make_exercise(session, name="Glute Drive", allow_heavy_loading=True)
+        session.add(ExerciseTissue(
+            exercise_id=ex_curl.id, tissue_id=hams.id, loading_factor=1.0,
+        ))
+        session.add(ExerciseTissue(
+            exercise_id=ex_drive.id, tissue_id=glutes.id, loading_factor=1.0,
+        ))
+        ws = WorkoutSession(date=date.today())
+        session.add(ws)
+        session.flush()
+        session.add(WorkoutSet(
+            session_id=ws.id, exercise_id=ex_curl.id, set_order=1,
+            endurance_value=4, weight=120, rpe=9.0, training_mode="heavy",
+        ))
+        session.flush()
+        result = check_heavy_availability(ex_drive.id, session, current_session_id=ws.id)
+        assert result["available"] is False
+        assert "Legs" in result["reason"]
 
 
 class TestPrescribeNextEndpointTrainingMode:

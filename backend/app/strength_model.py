@@ -18,6 +18,7 @@ from scipy.stats import ttest_ind
 from sqlmodel import Session, select
 
 from app.config import user_today
+from app.exercise_groups import get_exercise_group
 from app.exercise_loads import (
     bodyweight_by_date,
     effective_weight,
@@ -918,7 +919,13 @@ def detect_inflection(
     target_rpe = 10.0 - rir
     target_r_fail = target_actual + rir
 
-    ew = solve_weight(target_r_fail, fit)
+    # Account for per-set fatigue when picking weight: fresh curve target_rtf
+    # = target_r_fail − β_n so that AFTER fatigue (predicted_actual_rtf =
+    # fresh_rtf + β_n) the athlete actually achieves target_r_fail.
+    next_set_index = len(session_sets) + 1
+    beta_n = _beta_for_set(next_set_index)
+    fresh_target_rtf = max(1.0, target_r_fail - beta_n)
+    ew = solve_weight(fresh_target_rtf, fit)
     entered = entered_weight_for_effective_weight(
         exercise, effective_weight_lb=ew, bodyweight_lb=bodyweight_lb
     )
@@ -931,7 +938,8 @@ def detect_inflection(
         entered = min(entered, max_entered_weight * 1.25)
     if entered is not None:
         ew = _entered_to_effective(exercise, entered, bodyweight_lb)
-        target_r_fail = predict_reps(ew, fit)
+        fresh_rtf_at_ew = predict_reps(ew, fit)
+        target_r_fail = max(1.0, fresh_rtf_at_ew + beta_n)
         target_actual = _rtf_to_reps_done(target_r_fail, rir)
 
     return InflectionResult(
@@ -1152,10 +1160,25 @@ def prescribe_next_set(
     # After 3+ sets: only heavy mode gets inflection checks + set 4+
     if n_done >= 3:
         if is_heavy_mode:
-            # Hard cap: never prescribe more than 6 sets even if the curve
-            # inflection criterion hasn't triggered. Protects against runaway
-            # escalation when the athlete's curve is unusually flat.
-            HEAVY_MAX_SETS = 6
+            # Stop when the most recently logged set's measured RTF (reps + RIR)
+            # is at or near failure on a heavy load — there's no point prescribing
+            # another heavier set when capacity has clearly been reached.
+            last_set = prior_sets[-1]
+            last_rir = _rpe_to_rir(last_set.get("rpe") or 7.0)
+            last_endurance = _obs_endurance(last_set) or 0
+            last_rtf = float(last_endurance) + last_rir
+            if last_rtf <= HEAVY_LOW_RTF_STOP:
+                return _with_curve({
+                    "has_curve": True,
+                    "exercise_complete": True,
+                    "inflection_detected": False,
+                    "estimated_1rm": round(fit.M, 1),
+                    "next_set": None,
+                    "training_mode": training_mode,
+                })
+            # Hard cap: never prescribe more than HEAVY_MAX_SETS sets even if the
+            # curve inflection criterion hasn't triggered. Protects against
+            # runaway escalation when the athlete's curve is unusually flat.
             if n_done >= HEAVY_MAX_SETS:
                 return _with_curve({
                     "has_curve": True,
@@ -1486,6 +1509,11 @@ _BOOT_CLAMP_SEVERE_OVER = (0.50, 1.35)
 # not be clipped to ~10 lb).
 _BOOT_CLAMP_SEVERE_UNDER = (0.80, 3.00)
 
+# How many reps short of target RTF before we treat the prev set as a "miss".
+# A miss means the next bootstrap prescription will not step up; it caps at
+# the previous weight so the athlete can re-attempt at the same load.
+_BOOT_MISS_THRESHOLD = 2.0
+
 # rtf cap — Brzycki-style 1RM explodes as rtf → 37, and the universal curve
 # gets twitchy at very high rtf too. Cap the inferred rtf for M estimation.
 _BOOT_RTF_CAP = 30.0
@@ -1780,6 +1808,14 @@ def bootstrap_prescription(
     clamp_ceil = prev_w * hi
     entered_clamped = float(np.clip(entered, clamp_floor, clamp_ceil))
 
+    # Beginner-friendly miss handling: if the previous set fell short of its
+    # target RTF by ``_BOOT_MISS_THRESHOLD`` reps, never step UP — cap at the
+    # prev weight so the next stage retries at the same load (or lighter).
+    prev_actual_rtf = float(prev["rtf"])
+    if prev_actual_rtf < prev_target_rtf - _BOOT_MISS_THRESHOLD:
+        entered_clamped = min(entered_clamped, prev_w)
+        clamp_ceil = min(clamp_ceil, prev_w)
+
     # Round to the dynamic frontend grid (integers + {2.5, 7.5, 12.5} below
     # 15 lb, 2.5 lb band to 100 lb, 5 lb above). Avoid prescribing the same
     # grid point as the previous set — that yields a third stacked dot with
@@ -1870,6 +1906,25 @@ def _global_beta(set_index: int) -> float:
         return 0.0
     idx = min(set_index, len(GLOBAL_BETA_PER_SET)) - 1
     return GLOBAL_BETA_PER_SET[idx]
+
+
+def _beta_for_set(
+    set_index: int, beta_per_set: list[float] | None = None,
+) -> float:
+    """Per-set fatigue residual β_n with synthesis for set 4+.
+
+    For set_index ≤ len(series), use the provided learned series (or the
+    global fallback). For set_index ≥ 4, synthesize via β_n = β_3 + β_(n−3):
+    set 4 = β_3 + β_1, set 5 = β_3 + β_2, etc. Without this, prescriptions
+    for set 4+ would use the fresh-curve weight (β=0) and overshoot.
+    """
+    if set_index <= 0:
+        return 0.0
+    series = beta_per_set if beta_per_set else list(GLOBAL_BETA_PER_SET)
+    if set_index <= len(series):
+        return float(series[set_index - 1])
+    beta3 = float(series[2]) if len(series) >= 3 else _global_beta(3)
+    return beta3 + _beta_for_set(set_index - 3, series)
 
 
 def fatigue_profile(
@@ -2219,6 +2274,15 @@ HEAVY_PER_REGION_PER_SESSION = 1
 HEAVY_PER_REGION_PER_WEEK = 2
 HEAVY_EXERCISE_COOLDOWN_DAYS = 10
 
+# Heavy-mode session ceiling: never prescribe more than this many sets in a
+# single heavy exercise within one session.
+HEAVY_MAX_SETS = 5
+
+# Heavy-mode early stop: when the most recently logged set hit this RTF (reps
+# + RIR) or below, treat capacity as reached and stop the exercise regardless
+# of curve inflection state.
+HEAVY_LOW_RTF_STOP = 3.0
+
 
 def _get_exercise_regions(exercise_id: int, session: Session) -> list[str]:
     """Return primary regions for an exercise via ExerciseTissue → Tissue."""
@@ -2331,31 +2395,33 @@ def check_heavy_availability(
                 "regions": regions,
             }
 
-    # Rule 1: ≤1 heavy per region in current session
+    # Rule 1: ≤1 heavy per *exercise group* (Push/Pull/Legs/Shoulders/Arms/Core)
+    # in the current session. Per-tissue-region was too narrow — leg curl (hams)
+    # and glute drive (glutes) would both count as fresh against each other
+    # even though they're both Legs heavy work.
     if current_session_id is not None:
-        for region in regions:
-            region_exercise_ids_stmt = (
-                select(ExerciseTissue.exercise_id)
-                .join(Tissue, Tissue.id == ExerciseTissue.tissue_id)
-                .where(Tissue.region == region)
-            )
-            region_ex_ids = list(session.exec(region_exercise_ids_stmt).all())
-
-            session_stmt = (
-                select(WorkoutSet.session_id, WorkoutSet.exercise_id)
+        my_group = get_exercise_group(exercise_id, session)
+        if my_group != "Uncategorized":
+            session_heavy_stmt = (
+                select(WorkoutSet.exercise_id)
                 .where(
                     WorkoutSet.session_id == current_session_id,
-                    WorkoutSet.exercise_id.in_(region_ex_ids),
-                    WorkoutSet.exercise_id != exercise_id,
                     WorkoutSet.training_mode == "heavy",
                 )
                 .distinct()
             )
-            session_heavy = len(session.exec(session_stmt).all())
-            if session_heavy >= HEAVY_PER_REGION_PER_SESSION:
+            session_heavy_ex_ids = list(session.exec(session_heavy_stmt).all())
+            same_group_heavy = sum(
+                1 for ex_id in session_heavy_ex_ids
+                if get_exercise_group(ex_id, session) == my_group
+            )
+            if same_group_heavy >= HEAVY_PER_REGION_PER_SESSION:
                 return {
                     "available": False,
-                    "reason": f"{region}: already {session_heavy} heavy in session (max {HEAVY_PER_REGION_PER_SESSION})",
+                    "reason": (
+                        f"{my_group}: already {same_group_heavy} heavy in "
+                        f"session (max {HEAVY_PER_REGION_PER_SESSION})"
+                    ),
                     "regions": regions,
                 }
 
