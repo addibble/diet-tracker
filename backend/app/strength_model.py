@@ -2214,10 +2214,6 @@ def check_burnout_availability(
     is_bw = (exercise.load_input_mode or "external_weight") in BODYWEIGHT_MODES
     if is_bw:
         return {"available": False, "reason": "Bodyweight — no max weight to halve"}
-    if not exercise.allow_heavy_loading:
-        # Burnout is most useful as the symmetric counterpart to heavy mode,
-        # i.e. on heavy-capable exercises. Keep it scoped accordingly.
-        return {"available": False, "reason": "Burnout requires heavy-loading exercise"}
     max_w = get_max_recent_entered_weight(exercise_id, session)
     if max_w is None or max_w <= 0:
         return {"available": False, "reason": "No recent history to anchor burnout"}

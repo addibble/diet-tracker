@@ -113,7 +113,7 @@ class TestBurnoutAvailability:
         avail = check_burnout_availability(1, session)
         assert avail["available"] is True
 
-    def test_unavailable_for_non_heavy_exercise(self, session):
+    def test_available_for_non_heavy_exercise(self, session):
         ex = Exercise(
             id=1, name="Curl", set_metric_mode="reps",
             allow_heavy_loading=False, load_input_mode="external_weight",
@@ -122,7 +122,7 @@ class TestBurnoutAvailability:
         session.commit()
         _seed_set(session, ex_id=1, sess_id=1, weight=40)
         avail = check_burnout_availability(1, session)
-        assert avail["available"] is False
+        assert avail["available"] is True
 
     def test_unavailable_for_bodyweight(self, session):
         ex = Exercise(
