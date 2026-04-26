@@ -457,7 +457,7 @@ export default function ActiveWorkoutCard({
       ) : (
         <>
           {/* Exercise tabs */}
-          <div className="mb-4 flex gap-1.5 overflow-x-auto pb-1">
+          <div className="mb-4 flex flex-wrap gap-1.5 pb-1">
             {exStates.map((ex, i) => (
               <button
                 key={ex.exercise_id}
