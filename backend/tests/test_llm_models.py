@@ -22,55 +22,64 @@ def _raw_model(
 
 def test_filter_chat_models_returns_only_allowed_models():
     raw_models = [
-        _raw_model("anthropic/claude-haiku-4.5", name="Claude Haiku 4.5"),
         _raw_model("anthropic/claude-sonnet-4.6", name="Claude Sonnet 4.6"),
+        _raw_model("openai/gpt-5.5", name="GPT-5.5"),
+        _raw_model("deepseek/deepseek-v4-pro", name="DeepSeek V4 Pro"),
+        _raw_model("deepseek/deepseek-v4-flash", name="DeepSeek V4 Flash"),
+        # Removed/not-in-allowlist — should be excluded
+        _raw_model("anthropic/claude-haiku-4.5", name="Claude Haiku 4.5"),
+        _raw_model("anthropic/claude-opus-4.6", name="Claude Opus 4.6"),
         _raw_model("openai/gpt-5.4", name="GPT-5.4"),
         _raw_model("openai/gpt-5.4-pro", name="GPT-5.4 Pro"),
         _raw_model("google/gemini-3.1-flash-lite-preview", name="Gemini 3.1 Flash Lite"),
         _raw_model("x-ai/grok-4", name="Grok 4"),
         _raw_model("deepseek/deepseek-v3.2", name="DeepSeek V3.2"),
-        # Not in allowlist — should be excluded
         _raw_model("openai/gpt-4o-mini", name="GPT-4o Mini"),
         _raw_model("nvidia/llama-3.3", name="NVIDIA Llama 3.3"),
-        _raw_model("anthropic/claude-storytelling-1", name="Claude Storytelling 1"),
     ]
 
     models = _filter_chat_models(raw_models)
     model_ids = {model["id"] for model in models}
 
-    assert "anthropic/claude-haiku-4.5" in model_ids
-    assert "openai/gpt-5.4" in model_ids
-    assert "x-ai/grok-4" in model_ids
-    assert "deepseek/deepseek-v3.2" in model_ids
+    assert "anthropic/claude-sonnet-4.6" in model_ids
+    assert "openai/gpt-5.5" in model_ids
+    assert "deepseek/deepseek-v4-pro" in model_ids
+    assert "deepseek/deepseek-v4-flash" in model_ids
 
+    assert "anthropic/claude-haiku-4.5" not in model_ids
+    assert "anthropic/claude-opus-4.6" not in model_ids
+    assert "openai/gpt-5.4" not in model_ids
+    assert "openai/gpt-5.4-pro" not in model_ids
+    assert "google/gemini-3.1-flash-lite-preview" not in model_ids
+    assert "x-ai/grok-4" not in model_ids
+    assert "deepseek/deepseek-v3.2" not in model_ids
     assert "openai/gpt-4o-mini" not in model_ids
     assert "nvidia/llama-3.3" not in model_ids
-    assert "anthropic/claude-storytelling-1" not in model_ids
 
 
 def test_filter_chat_models_preserves_allowlist_order():
     # Provide models in reverse order — output should follow CHAT_ALLOWED_MODELS order
     raw_models = [
-        _raw_model("deepseek/deepseek-v3.2", name="DeepSeek V3.2"),
-        _raw_model("anthropic/claude-haiku-4.5", name="Claude Haiku 4.5"),
-        _raw_model("openai/gpt-5.4", name="GPT-5.4"),
+        _raw_model("deepseek/deepseek-v4-flash", name="DeepSeek V4 Flash"),
+        _raw_model("anthropic/claude-sonnet-4.6", name="Claude Sonnet 4.6"),
+        _raw_model("openai/gpt-5.5", name="GPT-5.5"),
     ]
 
     models = _filter_chat_models(raw_models)
     model_ids = [model["id"] for model in models]
 
     assert model_ids == [
-        "anthropic/claude-haiku-4.5",
-        "openai/gpt-5.4",
-        "deepseek/deepseek-v3.2",
+        "anthropic/claude-sonnet-4.6",
+        "openai/gpt-5.5",
+        "deepseek/deepseek-v4-flash",
     ]
 
 
 def test_filter_chat_models_extracts_pricing_and_provider():
     raw_models = [
         _raw_model(
-            "anthropic/claude-haiku-4.5",
-            name="Claude Haiku 4.5",
+            "anthropic/claude-sonnet-4.6",
+            name="Claude Sonnet 4.6",
             prompt_cost=0.0000008,
             completion_cost=0.0000012,
         ),

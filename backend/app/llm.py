@@ -30,28 +30,19 @@ OPENROUTER_STREAM_IDLE_TIMEOUT_SECONDS = 90
 OPENROUTER_STREAM_IDLE_TIMEOUT_REASONING_SECONDS = 300
 
 CHAT_ALLOWED_MODELS = [
-    "anthropic/claude-haiku-4.5",
     "anthropic/claude-sonnet-4.6",
-    "anthropic/claude-opus-4.6",
-    "openai/gpt-5.4",
-    "openai/gpt-5.4-pro",
-    "google/gemini-3.1-flash-lite-preview",
-    "google/gemini-3.1-pro-preview",
+    "openai/gpt-5.5",
     "qwen/qwen3.5-35b-a3b",
     "qwen/qwen3.5-397b-a17b",
     "qwen/qwen3.5-flash-02-23",
-    "x-ai/grok-4",
-    "x-ai/grok-4.1-fast",
-    "deepseek/deepseek-v3.2-speciale",
-    "deepseek/deepseek-v3.2",
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4-flash",
 ]
 
 CHAT_PROVIDER_LABELS = {
     "anthropic": "Anthropic",
     "openai": "OpenAI",
-    "google": "Google",
     "qwen": "Qwen",
-    "x-ai": "xAI",
     "deepseek": "DeepSeek",
 }
 
@@ -216,6 +207,16 @@ def _chat_provider_key_for_model(model_id: str) -> str | None:
     if prefix and prefix in CHAT_PROVIDER_LABELS:
         return prefix
     return None
+
+
+def _is_gemini_model(model_id: str) -> bool:
+    """Provider detection for Gemini-specific quirks.
+
+    Decoupled from the chat allowlist so removing Google from the menu
+    doesn't disable the protocol-level retry/temperature behavior for
+    callers (e.g. meal parser) that may still target Gemini.
+    """
+    return model_id.split("/", 1)[0].lower() == "google"
 
 
 def _cost_per_million(value: Any) -> float | None:
@@ -763,7 +764,7 @@ def _chat_max_tokens_for_model(model_id: str) -> int:
 
 def _chat_temperature_for_model(model_id: str) -> float:
     # Gemini 3 docs recommend leaving temperature at the model default (1.0).
-    if _chat_provider_key_for_model(model_id) == "google":
+    if _is_gemini_model(model_id):
         return 1.0
     return 0.3
 
@@ -1342,7 +1343,7 @@ async def chat_meal(
                 data = await _stream_openrouter_chat_completion(client, payload, active_model)
             except LLMUpstreamCompletionError:
                 should_force_tool_retry = (
-                    _chat_provider_key_for_model(active_model) == "google"
+                    _is_gemini_model(active_model)
                     and selected_tools is not None
                     and bool(selected_tools)
                     and bool(select_tools(all_messages))
