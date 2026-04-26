@@ -759,7 +759,7 @@ export default function MealLogPage() {
 
     setImportingImage(true)
     try {
-      const imported = await importFoodLabel(file)
+      const imported = await importFoodLabel(file, selectedModel || undefined)
       await handleSend(importedFoodToChatPrompt(imported))
     } catch (err) {
       const errorText = err instanceof Error ? err.message : 'Failed to import image'

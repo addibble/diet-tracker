@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
@@ -128,6 +128,7 @@ def delete_food(
 @router.post("/import-label", response_model=FoodImportResult)
 async def import_food_label(
     image: UploadFile = File(...),
+    model: str | None = Form(default=None),
     _user: str = Depends(get_current_user),
 ):
     if not image.content_type or not image.content_type.startswith("image/"):
@@ -141,6 +142,7 @@ async def import_food_label(
         result = await parse_nutrition_label_image(
             image_bytes=image_bytes,
             mime_type=image.content_type,
+            model=model,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

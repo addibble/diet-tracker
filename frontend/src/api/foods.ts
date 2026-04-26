@@ -54,10 +54,11 @@ export const getFoods = (search?: string) =>
 export const createFood = (data: Omit<Food, 'id' | 'source'>) =>
   request<Food>('/foods', { method: 'POST', body: JSON.stringify(data) });
 
-export const importFoodLabel = async (file: File) => {
+export const importFoodLabel = async (file: File, model?: string) => {
   const uploadFile = await optimizeImageForUpload(file);
   const form = new FormData();
   form.append('image', uploadFile, uploadFile.name);
+  if (model) form.append('model', model);
   return request<FoodImportResult>('/foods/import-label', {
     method: 'POST',
     body: form,

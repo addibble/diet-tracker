@@ -35,6 +35,7 @@ CHAT_ALLOWED_MODELS = [
     "qwen/qwen3.5-35b-a3b",
     "qwen/qwen3.5-397b-a17b",
     "qwen/qwen3.5-flash-02-23",
+    "x-ai/grok-4.20",
     "deepseek/deepseek-v4-pro",
     "deepseek/deepseek-v4-flash",
 ]
@@ -43,6 +44,7 @@ CHAT_PROVIDER_LABELS = {
     "anthropic": "Anthropic",
     "openai": "OpenAI",
     "qwen": "Qwen",
+    "x-ai": "xAI",
     "deepseek": "DeepSeek",
 }
 
@@ -396,8 +398,14 @@ async def parse_meal_description(
 async def parse_nutrition_label_image(
     image_bytes: bytes,
     mime_type: str = "image/jpeg",
+    model: str | None = None,
 ) -> dict[str, Any]:
-    """Extract nutrition facts from a label image via OpenRouter multimodal OCR."""
+    """Extract nutrition facts from a label image via OpenRouter multimodal OCR.
+
+    ``model`` overrides the default :data:`VISION_MODEL`. Callers should pass
+    the user's currently selected chat model so OCR/parse uses the same model
+    as the chat. Falls back to ``VISION_MODEL`` when ``model`` is None or empty.
+    """
     if not settings.openrouter_api_key:
         raise ValueError("OPENROUTER_API_KEY not configured")
     if not image_bytes:
@@ -405,6 +413,7 @@ async def parse_nutrition_label_image(
 
     image_b64 = base64.b64encode(image_bytes).decode("ascii")
     image_url = f"data:{mime_type};base64,{image_b64}"
+    active_model = (model or "").strip() or VISION_MODEL
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -414,7 +423,7 @@ async def parse_nutrition_label_image(
                 "Content-Type": "application/json",
             },
             json={
-                "model": VISION_MODEL,
+                "model": active_model,
                 "messages": [
                     {"role": "system", "content": LABEL_OCR_SYSTEM_PROMPT},
                     {

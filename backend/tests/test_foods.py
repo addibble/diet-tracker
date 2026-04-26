@@ -180,6 +180,36 @@ def test_import_food_label_success(client):
     mock_import.assert_awaited_once()
     assert mock_import.await_args.kwargs["mime_type"] == "image/jpeg"
     assert mock_import.await_args.kwargs["image_bytes"] == b"fake-image-bytes"
+    # When no model is provided, model kwarg should be None (falls back to VISION_MODEL)
+    assert mock_import.await_args.kwargs["model"] is None
+
+
+def test_import_food_label_forwards_selected_model(client):
+    with patch(
+        "app.routers.foods.parse_nutrition_label_image",
+        new_callable=AsyncMock,
+    ) as mock_import:
+        mock_import.return_value = {
+            "name": "granola bar",
+            "brand": None,
+            "serving_size_grams": 40,
+            "calories_per_serving": 190,
+            "fat_per_serving": 7,
+            "saturated_fat_per_serving": 1,
+            "cholesterol_per_serving": 0,
+            "sodium_per_serving": 120,
+            "carbs_per_serving": 29,
+            "fiber_per_serving": 2,
+            "protein_per_serving": 3,
+        }
+        resp = client.post(
+            "/api/foods/import-label",
+            files={"image": ("label.jpg", b"fake-image-bytes", "image/jpeg")},
+            data={"model": "openai/gpt-5.5"},
+        )
+
+    assert resp.status_code == 200
+    assert mock_import.await_args.kwargs["model"] == "openai/gpt-5.5"
 
 
 def test_import_food_label_rejects_non_image(client):

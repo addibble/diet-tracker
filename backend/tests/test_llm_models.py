@@ -24,6 +24,7 @@ def test_filter_chat_models_returns_only_allowed_models():
     raw_models = [
         _raw_model("anthropic/claude-sonnet-4.6", name="Claude Sonnet 4.6"),
         _raw_model("openai/gpt-5.5", name="GPT-5.5"),
+        _raw_model("x-ai/grok-4.20", name="Grok 4.20"),
         _raw_model("deepseek/deepseek-v4-pro", name="DeepSeek V4 Pro"),
         _raw_model("deepseek/deepseek-v4-flash", name="DeepSeek V4 Flash"),
         # Removed/not-in-allowlist — should be excluded
@@ -43,6 +44,7 @@ def test_filter_chat_models_returns_only_allowed_models():
 
     assert "anthropic/claude-sonnet-4.6" in model_ids
     assert "openai/gpt-5.5" in model_ids
+    assert "x-ai/grok-4.20" in model_ids
     assert "deepseek/deepseek-v4-pro" in model_ids
     assert "deepseek/deepseek-v4-flash" in model_ids
 
