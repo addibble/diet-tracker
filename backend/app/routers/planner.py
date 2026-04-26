@@ -42,6 +42,7 @@ from app.planner_state import (
     reorder_plan_exercises,
 )
 from app.strength_model import (
+    check_burnout_availability,
     check_heavy_availability,
     curve_snapshot_for_date,
     fatigue_profile,
@@ -167,9 +168,14 @@ def exercise_menu(
             )
             item["heavy_available"] = avail["available"]
             item["heavy_blocked_reason"] = avail["reason"]
+            burnout = check_burnout_availability(item["exercise_id"], session)
+            item["burnout_available"] = burnout["available"]
+            item["burnout_blocked_reason"] = burnout["reason"]
         else:
             item["heavy_available"] = False
             item["heavy_blocked_reason"] = None
+            item["burnout_available"] = False
+            item["burnout_blocked_reason"] = None
     return items
 
 
@@ -189,7 +195,7 @@ class PrescribeNextRequest(BaseModel):
     exercise_id: int
     prior_sets: list[dict] = []
     actual_weight: float | None = None
-    training_mode: Literal["heavy", "volume"] = "volume"
+    training_mode: Literal["heavy", "volume", "burnout"] = "volume"
 
 
 @router.post("/prescribe-next")

@@ -992,6 +992,58 @@ def prescribe_next_set(
             },
         }
 
+    # Burnout mode: a single AMRAP set at ~½ recent max to anchor the light
+    # side of the strength curve. Independent of curve fit / bootstrap state
+    # — the whole point is "do one easy-weight set to failure to inform the
+    # left side of the curve". Skipped for bodyweight exercises (handled
+    # above) and exercises with no recent history (no max to halve).
+    if training_mode == "burnout":
+        n_done = len(prior_sets)
+        if n_done >= 1:
+            return {
+                "has_curve": False,
+                "mode": "burnout",
+                "exercise_complete": True,
+                "next_set": None,
+                "training_mode": training_mode,
+                "observations": _build_observations(exercise_id, session),
+            }
+        max_w = get_max_recent_entered_weight(exercise_id, session)
+        if max_w is None or max_w <= 0:
+            # No history to halve — fall through to the normal planner.
+            pass
+        else:
+            target_entered = max_w / 2.0
+            target_effective = _entered_to_effective(
+                exercise, target_entered, bodyweight_lb
+            )
+            return {
+                "has_curve": False,
+                "mode": "burnout",
+                "exercise_complete": False,
+                "training_mode": training_mode,
+                "next_set": {
+                    "set_number": 1,
+                    "proposed_weight": round(target_entered, 1),
+                    "effective_weight": round(target_effective, 1),
+                    "target_reps": None,
+                    "target_rpe": 10.0,
+                    "target_rir": 0,
+                    "r_fail": None,
+                    "acceptable_rep_min": 1,
+                    "acceptable_rep_max": None,
+                    "proposed_entered_weight_lb": round(target_entered, 1),
+                    "effective_weight_lb": round(target_effective, 1),
+                    "target_reps_done": None,
+                    "r_fail_rtf": None,
+                    "amrap": True,
+                    "instructions": (
+                        "Burnout: do as many reps as you can until RIR=0."
+                    ),
+                },
+                "observations": _build_observations(exercise_id, session),
+            }
+
     # Bootstrap mode: insufficient recent RPE history for a curve fit. Guide
     # the athlete through anchor + probing sets using the universal prior
     # curve. Once they've logged enough sets across enough distinct weights,
@@ -1027,7 +1079,7 @@ def prescribe_next_set(
         fit = fit_curve(exercise_id, session, allow_heavy=allow_heavy)
 
     if fit is None:
-        last_weight = get_max_recent_entered_weight(exercise_id, session)
+        last_weight = _starting_weight_from_history(exercise_id, session)
         return {
             "has_curve": False,
             "fallback_weight": last_weight,
@@ -1385,7 +1437,7 @@ BOOT_GAMMA = 0.9
 # perpetual geometric decay marches toward failure far too fast.
 _BOOT_TARGETS_HEAVY = (18, 11, 6)  # ~15/RIR3, ~9/RIR2, ~4/RIR2
 _BOOT_TARGETS_LIGHT = (23, 14, 10)  # ~20/RIR3, ~12/RIR2, ~8/RIR2
-_BOOT_RIR = (3, 2, 2)
+_BOOT_RIR = (3, 2, 1)
 
 # Safety clamp on W_next / W_prev. State-dependent: severe overshoot (the
 # athlete hit failure on a guess far too heavy) allows a larger drop so the
@@ -1607,6 +1659,14 @@ def bootstrap_prescription(
 
     # ── Stage 0: anchor — ask athlete to pick W_1 themselves ──
     if not all_obs:
+        # Seed the proposal with the historical mean so the user has a starting
+        # point instead of a jarring 0/None or static high default.
+        anchor_entered = _starting_weight_from_history(exercise_id, session)
+        anchor_effective = (
+            _entered_to_effective(exercise, anchor_entered, bodyweight_lb)
+            if anchor_entered > 0
+            else None
+        )
         bootstrap_block["prompt"] = (
             f"Pick a weight you could do for about {target_reps} reps with "
             f"{rir} reps in the tank (RPE {target_rpe:.0f})."
@@ -1622,16 +1682,16 @@ def bootstrap_prescription(
             "bootstrap": bootstrap_block,
             "next_set": {
                 "set_number": set_idx + 1,
-                "proposed_weight": None,
-                "effective_weight": None,
+                "proposed_weight": anchor_entered or None,
+                "effective_weight": anchor_effective,
                 "target_reps": target_reps,
                 "target_rpe": target_rpe,
                 "target_rir": rir,
                 "r_fail": target_rtf,
                 "acceptable_rep_min": max(1, target_reps - 3),
                 "acceptable_rep_max": target_reps + 3,
-                "proposed_entered_weight_lb": None,
-                "effective_weight_lb": None,
+                "proposed_entered_weight_lb": anchor_entered or None,
+                "effective_weight_lb": anchor_effective,
                 "target_reps_done": target_reps,
                 "r_fail_rtf": target_rtf,
             },
@@ -2136,6 +2196,34 @@ def _get_exercise_regions(exercise_id: int, session: Session) -> list[str]:
     return list(set(session.exec(stmt).all()))
 
 
+def check_burnout_availability(
+    exercise_id: int,
+    session: Session,
+) -> dict:
+    """Check if an exercise can run in burnout mode.
+
+    Burnout mode prescribes a single AMRAP set at ~½ recent max to anchor
+    the left side of the strength curve. Available iff there is at least
+    one recent entered weight to halve.
+
+    Returns {available: bool, reason: str|None}.
+    """
+    exercise = session.get(Exercise, exercise_id)
+    if exercise is None:
+        return {"available": False, "reason": "Exercise not found"}
+    is_bw = (exercise.load_input_mode or "external_weight") in BODYWEIGHT_MODES
+    if is_bw:
+        return {"available": False, "reason": "Bodyweight — no max weight to halve"}
+    if not exercise.allow_heavy_loading:
+        # Burnout is most useful as the symmetric counterpart to heavy mode,
+        # i.e. on heavy-capable exercises. Keep it scoped accordingly.
+        return {"available": False, "reason": "Burnout requires heavy-loading exercise"}
+    max_w = get_max_recent_entered_weight(exercise_id, session)
+    if max_w is None or max_w <= 0:
+        return {"available": False, "reason": "No recent history to anchor burnout"}
+    return {"available": True, "reason": None}
+
+
 def check_heavy_availability(
     exercise_id: int,
     session: Session,
@@ -2376,3 +2464,36 @@ def get_max_recent_entered_weight(
     )
     row = session.exec(stmt).first()
     return float(row) if row is not None else None
+
+
+def get_mean_recent_entered_weight(
+    exercise_id: int, session: Session, days: int = 90
+) -> float | None:
+    """Mean of recent entered weights for this exercise (None if no history).
+
+    Used for bootstrap-stage-0 anchors and curve-fit fallbacks so we don't
+    propose a static high default like 70 lb on a never-trained exercise.
+    """
+    cutoff = user_today() - timedelta(days=days)
+    stmt = (
+        select(WorkoutSet.weight)
+        .join(WorkoutSession, WorkoutSet.session_id == WorkoutSession.id)
+        .where(
+            WorkoutSet.exercise_id == exercise_id,
+            WorkoutSet.weight.is_not(None),
+            WorkoutSet.weight > 0,
+            WorkoutSession.date >= cutoff,
+        )
+    )
+    rows = list(session.exec(stmt).all())
+    if not rows:
+        return None
+    return float(np.mean([float(r) for r in rows]))
+
+
+def _starting_weight_from_history(
+    exercise_id: int, session: Session, days: int = 90
+) -> float:
+    """Sensible starting-weight prior: mean of recent entered weights, else 0."""
+    mean_w = get_mean_recent_entered_weight(exercise_id, session, days=days)
+    return float(mean_w) if mean_w is not None else 0.0

@@ -97,10 +97,12 @@ interface ExerciseState {
   is_bodyweight: boolean
   heavy_available: boolean
   heavy_blocked_reason: string | null
+  burnout_available: boolean
+  burnout_blocked_reason: string | null
   load_input_mode: string
   set_metric_mode: string
   target_sets: number
-  training_mode: 'heavy' | 'volume'
+  training_mode: 'heavy' | 'volume' | 'burnout'
   sets: LoggedSet[]
   prescription: PrescribeNextResponse | null
   prescribing: boolean
@@ -164,10 +166,11 @@ export default function ActiveWorkoutCard({
         // available (so the user doesn't miss the opportunity), else volume.
         const savedMode = existingSets.find(
           s => s.exercise_id === ex.exercise_id && s.training_mode
-        )?.training_mode as 'heavy' | 'volume' | undefined
+        )?.training_mode as 'heavy' | 'volume' | 'burnout' | undefined
 
         const heavyAvailable = ex.heavy_available ?? false
-        const defaultMode: 'heavy' | 'volume' =
+        const burnoutAvailable = ex.burnout_available ?? false
+        const defaultMode: 'heavy' | 'volume' | 'burnout' =
           savedMode ?? (heavyAvailable && ex.allow_heavy_loading ? 'heavy' : 'volume')
 
         const targetSets = ex.target_sets ?? 3
@@ -180,6 +183,8 @@ export default function ActiveWorkoutCard({
           is_bodyweight: ex.is_bodyweight,
           heavy_available: heavyAvailable,
           heavy_blocked_reason: ex.heavy_blocked_reason ?? null,
+          burnout_available: burnoutAvailable,
+          burnout_blocked_reason: ex.burnout_blocked_reason ?? null,
           load_input_mode: ex.load_input_mode || 'external_weight',
           set_metric_mode: ex.set_metric_mode || 'reps',
           target_sets: targetSets,
@@ -296,6 +301,7 @@ export default function ActiveWorkoutCard({
       const chosen = availableExercises.find(e => e.exercise_id === exerciseId)
       if (chosen) {
         const heavyAvailable = chosen.heavy_available ?? false
+        const burnoutAvailable = chosen.burnout_available ?? false
         const newState: ExerciseState = {
           exercise_id: chosen.exercise_id,
           name: chosen.name,
@@ -303,6 +309,8 @@ export default function ActiveWorkoutCard({
           is_bodyweight: chosen.is_bodyweight ?? false,
           heavy_available: heavyAvailable,
           heavy_blocked_reason: chosen.heavy_blocked_reason ?? null,
+          burnout_available: burnoutAvailable,
+          burnout_blocked_reason: chosen.burnout_blocked_reason ?? null,
           load_input_mode: chosen.load_input_mode || 'external_weight',
           set_metric_mode: chosen.set_metric_mode || 'reps',
           target_sets: chosen.target_sets ?? 3,
@@ -579,7 +587,7 @@ function ExerciseWorkout({
   state: ExerciseState
   onSetLogged: (set: LoggedSet) => void
   onMarkComplete: () => void
-  onModeChange: (mode: 'heavy' | 'volume') => void
+  onModeChange: (mode: 'heavy' | 'volume' | 'burnout') => void
 }) {
   const metricMode = state.set_metric_mode || 'reps'
   const loadMode = state.load_input_mode || 'external_weight'
@@ -885,11 +893,29 @@ function ExerciseWorkout({
             >
               Heavy
             </button>
+            <button
+              type="button"
+              disabled={!canToggleMode || !state.burnout_available}
+              onClick={() => onModeChange('burnout')}
+              className={`rounded-md px-3 py-1 text-[11px] font-medium transition-colors ${
+                state.training_mode === 'burnout'
+                  ? 'bg-orange-500 text-white shadow-sm'
+                  : canToggleMode && state.burnout_available
+                    ? 'text-gray-500 hover:text-gray-700'
+                    : 'text-gray-300'
+              }`}
+              title={state.burnout_blocked_reason ?? 'One AMRAP set at ~½ recent max to anchor the light side of the curve'}
+            >
+              Burnout
+            </button>
           </div>
           {state.training_mode === 'heavy' && (
             <span className="text-[10px] font-medium text-red-600">🔥 Heavy mode</span>
           )}
-          {!state.heavy_available && state.allow_heavy_loading && state.training_mode !== 'heavy' && (
+          {state.training_mode === 'burnout' && (
+            <span className="text-[10px] font-medium text-orange-600">💥 Burnout mode</span>
+          )}
+          {!state.heavy_available && state.allow_heavy_loading && state.training_mode !== 'heavy' && state.training_mode !== 'burnout' && (
             <span className="text-[10px] text-gray-400" title={state.heavy_blocked_reason ?? ''}>
               {state.heavy_blocked_reason ?? 'Heavy unavailable'}
             </span>

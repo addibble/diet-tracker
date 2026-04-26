@@ -54,6 +54,8 @@ export default function TrainingPage() {
           recent_rpe_sets: 0,
           heavy_available: ex.heavy_available ?? false,
           heavy_blocked_reason: ex.heavy_blocked_reason ?? null,
+          burnout_available: ex.burnout_available ?? false,
+          burnout_blocked_reason: ex.burnout_blocked_reason ?? null,
           target_sets: ex.target_sets ?? 3,
         }))
         setActiveExercises(exercises)

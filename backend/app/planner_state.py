@@ -23,7 +23,7 @@ from app.models import (
     WorkoutSession,
     WorkoutSet,
 )
-from app.strength_model import check_heavy_availability
+from app.strength_model import check_burnout_availability, check_heavy_availability
 from app.units import legacy_metric_fields
 
 
@@ -244,10 +244,12 @@ def _serialize_saved_plan(session: Session, planned: PlannedSession) -> dict:
                 pass
 
         heavy_avail = {"available": False, "reason": None}
+        burnout_avail = {"available": False, "reason": None}
         if exercise and exercise.allow_heavy_loading:
             heavy_avail = check_heavy_availability(
                 pde.exercise_id, session, planned.workout_session_id,
             )
+            burnout_avail = check_burnout_availability(pde.exercise_id, session)
 
         completed_sets = logged_sets.get(pde.exercise_id, [])
         exercises.append({
@@ -258,6 +260,8 @@ def _serialize_saved_plan(session: Session, planned: PlannedSession) -> dict:
             "allow_heavy_loading": exercise.allow_heavy_loading if exercise else True,
             "heavy_available": heavy_avail["available"],
             "heavy_blocked_reason": heavy_avail["reason"],
+            "burnout_available": burnout_avail["available"],
+            "burnout_blocked_reason": burnout_avail["reason"],
             "load_input_mode": (
                 exercise.load_input_mode if exercise else "external_weight"
             ),

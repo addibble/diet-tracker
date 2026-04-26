@@ -216,7 +216,7 @@ class WorkoutSet(SQLModel, table=True):
     rpe: float | None = None  # 1-10
     rep_completion: str | None = None  # "full", "partial", "failed"
     notes: str | None = None
-    training_mode: str | None = None  # "heavy" | "volume" | null (legacy)
+    training_mode: str | None = None  # "heavy" | "volume" | "burnout" | null
     created_at: datetime = Field(default_factory=_utcnow)
 
 

@@ -23,6 +23,8 @@ export interface SavedPlanExercise {
   allow_heavy_loading?: boolean;
   heavy_available?: boolean;
   heavy_blocked_reason?: string | null;
+  burnout_available?: boolean;
+  burnout_blocked_reason?: string | null;
   load_input_mode: string;
   set_metric_mode?: string;
   laterality?: 'bilateral' | 'unilateral' | 'either';
@@ -69,6 +71,8 @@ export interface ExerciseMenuItem {
   has_curve_fit: boolean;
   heavy_available?: boolean;
   heavy_blocked_reason?: string | null;
+  burnout_available?: boolean;
+  burnout_blocked_reason?: string | null;
   target_sets?: number;
 }
 
@@ -93,7 +97,7 @@ export interface PrescribeNextRequest {
   exercise_id: number;
   prior_sets: { weight: number; reps: number; rpe: number }[];
   actual_weight?: number | null;
-  training_mode?: 'heavy' | 'volume';
+  training_mode?: 'heavy' | 'volume' | 'burnout';
 }
 
 export interface PrescribeNextResponse {
@@ -103,7 +107,7 @@ export interface PrescribeNextResponse {
   exercise_complete?: boolean;
   inflection_detected?: boolean | null;
   estimated_1rm?: number | null;
-  training_mode?: 'heavy' | 'volume';
+  training_mode?: 'heavy' | 'volume' | 'burnout';
   /** Unit of the y-axis for this exercise. "reps" | "duration" | "distance". */
   metric_kind?: 'reps' | 'duration' | 'distance';
   /** Short display unit: "reps" | "s" | "steps". */
@@ -351,3 +355,5 @@ export const quickStart = (exerciseIds: number[], date?: string) =>
       ...(date ? { date } : {}),
     }),
   });
+
+

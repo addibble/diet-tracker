@@ -40,7 +40,7 @@ class SetUpdate(BaseModel):
     rir: float | None = None  # converted to rpe = 10 - rir
     rep_completion: str | None = None
     notes: str | None = None
-    training_mode: Literal["heavy", "volume"] | None = None
+    training_mode: Literal["heavy", "volume", "burnout"] | None = None
 
 
 class SetCreate(BaseModel):
@@ -57,7 +57,7 @@ class SetCreate(BaseModel):
     rir: float | None = None  # converted to rpe = 10 - rir
     rep_completion: str | None = None
     notes: str | None = None
-    training_mode: Literal["heavy", "volume"] | None = None
+    training_mode: Literal["heavy", "volume", "burnout"] | None = None
 
 
 class ProgramDayExerciseUpdate(BaseModel):
@@ -335,3 +335,4 @@ def update_program_day_exercise(
         "side_explanation": meta.get("side_explanation"),
         "sort_order": pde.sort_order,
     }
+

@@ -111,7 +111,7 @@ export interface WkSetDetail {
   rpe: number | null;
   rep_completion: string | null;
   notes: string | null;
-  training_mode: 'heavy' | 'volume' | null;
+  training_mode: 'heavy' | 'volume' | 'burnout' | null;
   scheme_history?: ExerciseSchemeHistory;
 }
 
@@ -184,7 +184,7 @@ export interface WorkoutSetUpdateInput {
   rir?: number | null;
   rep_completion?: string | null;
   notes?: string | null;
-  training_mode?: 'heavy' | 'volume' | null;
+  training_mode?: 'heavy' | 'volume' | 'burnout' | null;
 }
 
 export interface WorkoutSetCreateInput extends WorkoutSetUpdateInput {
@@ -270,3 +270,4 @@ export const getExerciseHistory = (id: number, limit?: number) =>
 
 export const getTissues = () =>
   request<WkTissue[]>('/tissues');
+
