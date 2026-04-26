@@ -718,7 +718,8 @@ function ExerciseWorkout({
   }
 
   const rx = state.prescription
-  const canToggleMode = state.allow_heavy_loading && state.sets.length === 0
+  const canToggleMode = state.sets.length === 0
+    && (state.allow_heavy_loading || state.burnout_available)
   const canLog =
     !logging
     && (!showWeight || weight !== '')
@@ -861,8 +862,8 @@ function ExerciseWorkout({
   }, [sparkWeight, sparkReps, rx, sessionId, state.exercise_id, state.training_mode, logging, onSetLogged])
   return (
     <div className="space-y-3">
-      {/* Training mode toggle (only before first set on allow_heavy exercises) */}
-      {state.allow_heavy_loading && (
+      {/* Training mode toggle (only before first set when heavy or burnout is available) */}
+      {(state.allow_heavy_loading || state.burnout_available) && (
         <div className="flex items-center gap-2">
           <div className="flex rounded-lg border border-gray-200 bg-gray-50 p-0.5">
             <button
@@ -879,20 +880,22 @@ function ExerciseWorkout({
             >
               Volume
             </button>
-            <button
-              type="button"
-              disabled={!canToggleMode || !state.heavy_available}
-              onClick={() => onModeChange('heavy')}
-              className={`rounded-md px-3 py-1 text-[11px] font-medium transition-colors ${
-                state.training_mode === 'heavy'
-                  ? 'bg-red-600 text-white shadow-sm'
-                  : canToggleMode && state.heavy_available
-                    ? 'text-gray-500 hover:text-gray-700'
-                    : 'text-gray-300'
-              }`}
-            >
-              Heavy
-            </button>
+            {state.allow_heavy_loading && (
+              <button
+                type="button"
+                disabled={!canToggleMode || !state.heavy_available}
+                onClick={() => onModeChange('heavy')}
+                className={`rounded-md px-3 py-1 text-[11px] font-medium transition-colors ${
+                  state.training_mode === 'heavy'
+                    ? 'bg-red-600 text-white shadow-sm'
+                    : canToggleMode && state.heavy_available
+                      ? 'text-gray-500 hover:text-gray-700'
+                      : 'text-gray-300'
+                }`}
+              >
+                Heavy
+              </button>
+            )}
             <button
               type="button"
               disabled={!canToggleMode || !state.burnout_available}

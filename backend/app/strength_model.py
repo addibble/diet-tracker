@@ -27,6 +27,9 @@ from app.exercise_loads import (
 )
 from app.models import Exercise, ExerciseTissue, Tissue, WeightLog, WorkoutSession, WorkoutSet
 from app.units import (
+    effective_to_entered_lb as _effective_to_entered,
+)
+from app.units import (
     entered_to_effective_lb as _entered_to_effective,
 )
 from app.units import (
@@ -1010,10 +1013,27 @@ def prescribe_next_set(
             }
         max_w = get_max_recent_entered_weight(exercise_id, session)
         if max_w is None or max_w <= 0:
-            # No history to halve — fall through to the normal planner.
+            # No history at all — fall through to the normal planner.
             pass
         else:
-            target_entered = max_w / 2.0
+            BURNOUT_TARGET_REPS = 30.0
+            target_entered: float | None = None
+            # Prefer the curve: invert it for a weight that yields ~30 RTF.
+            fit = fit_curve(exercise_id, session)
+            if fit is not None:
+                eff_at_target = solve_weight(BURNOUT_TARGET_REPS, fit)
+                entered_from_curve = _effective_to_entered(
+                    exercise, eff_at_target, bodyweight_lb
+                )
+                if entered_from_curve is not None and entered_from_curve > 0:
+                    target_entered = entered_from_curve
+            # Fall back to half-max when there's no fitted curve.
+            if target_entered is None:
+                target_entered = max_w / 2.0
+            # Don't ever propose more than half the recent max — burnout is
+            # supposed to be a light AMRAP set on the left side of the curve.
+            target_entered = min(target_entered, max_w / 2.0)
+            target_entered = max(0.0, _snap_to_grid(target_entered))
             target_effective = _entered_to_effective(
                 exercise, target_entered, bodyweight_lb
             )
