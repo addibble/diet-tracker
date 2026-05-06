@@ -28,6 +28,7 @@ RUNTIME_REQUIRED_COLUMNS = {
         "support_style",
         "set_metric_mode",
         "estimated_minutes_per_set",
+        "curve_delta",
     },
     "exercise_tissues": {
         "routing_factor",
@@ -46,6 +47,9 @@ RUNTIME_REQUIRED_COLUMNS = {
         "completed_at",
         "training_mode",
         "endurance_value",
+    },
+    "workout_sessions": {
+        "readiness_beta",
     },
     "tissue_conditions": {
         "tracked_tissue_id",

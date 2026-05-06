@@ -1,7 +1,8 @@
 from sqlalchemy import inspect
-from sqlmodel import create_engine
+from sqlmodel import SQLModel, create_engine
 
 import app.database as database
+import app.models  # noqa: F401  -- ensures all SQLModel tables are registered
 
 
 def test_create_db_and_tables_skips_manual_update_helpers(monkeypatch):
@@ -134,4 +135,38 @@ def test_ensure_runtime_db_ready_skips_updates_when_schema_is_current(monkeypatc
         "_ensure_sqlite_dir",
         "create_all",
     ]
+
+
+def test_runtime_required_columns_match_orm_columns():
+    """Regression: when a new column is added to a SQLModel table the
+    matching entry in RUNTIME_REQUIRED_COLUMNS must be updated, otherwise
+    `_runtime_db_needs_manual_updates` will not detect the missing column
+    on existing prod databases and the migration will silently skip,
+    leaving the live schema out of sync with the ORM (causes 500s on any
+    query that touches the new column).
+
+    This test asserts that every column listed in RUNTIME_REQUIRED_COLUMNS
+    actually exists on the corresponding ORM model. We don't enforce the
+    inverse direction (every model column must be listed) because some
+    columns are nullable and harmless to omit; but since this set is
+    exactly the trigger for migration, missing entries here are bugs.
+    """
+    metadata = SQLModel.metadata
+    for table_name, required in database.RUNTIME_REQUIRED_COLUMNS.items():
+        table = metadata.tables.get(table_name)
+        assert table is not None, f"Unknown table {table_name} in RUNTIME_REQUIRED_COLUMNS"
+        orm_cols = {c.name for c in table.columns}
+        missing = required - orm_cols
+        assert not missing, (
+            f"RUNTIME_REQUIRED_COLUMNS[{table_name!r}] lists columns "
+            f"{sorted(missing)} that don't exist on the ORM model."
+        )
+
+
+def test_runtime_check_includes_recent_v4_columns():
+    """Specific guard: the v4 strength model added curve_delta and
+    readiness_beta. Both must trip the runtime migration check on an
+    existing DB that doesn't have them yet."""
+    assert "curve_delta" in database.RUNTIME_REQUIRED_COLUMNS["exercises"]
+    assert "readiness_beta" in database.RUNTIME_REQUIRED_COLUMNS["workout_sessions"]
 
