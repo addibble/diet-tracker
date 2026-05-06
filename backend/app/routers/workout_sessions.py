@@ -149,6 +149,37 @@ def list_sessions(
     return [_build_session_response(ws, session) for ws in sessions]
 
 
+@router.get("/readiness/trend")
+def readiness_trend(
+    days: int = Query(default=14, ge=1, le=90),
+    session: Session = Depends(get_session),
+    _user: str = Depends(get_current_user),
+):
+    """Recent per-session readiness β values for the trend sparkline."""
+    from app.config import user_today
+    end = user_today()
+    start = end - datetime.timedelta(days=days - 1)
+    stmt = (
+        select(WorkoutSession)
+        .where(WorkoutSession.date >= start)
+        .where(WorkoutSession.date <= end)
+        .order_by(col(WorkoutSession.date).asc())
+    )
+    sessions = session.exec(stmt).all()
+    points = []
+    for ws in sessions:
+        beta = ws.readiness_beta
+        points.append({
+            "date": ws.date.isoformat(),
+            "session_id": ws.id,
+            "readiness_beta": beta,
+            "readiness_label": readiness_label(beta),
+            "readiness_pct": readiness_pct(beta),
+        })
+    return {"days": days, "start": start.isoformat(), "end": end.isoformat(),
+            "points": points}
+
+
 @router.get("/{session_id}")
 def get_session_detail(
     session_id: int,

@@ -4,11 +4,13 @@ import {
   addWorkoutSet,
   deleteWorkoutSet,
   getExercises,
+  getReadinessTrend,
   getWorkoutSession,
   removePlanExercise,
   reorderPlanExercises,
   updateProgramDayExercise,
   updateWorkoutSet,
+  type ReadinessTrend,
   type SavedPlanExercise,
   type WkExercise,
   type WkSession,
@@ -413,6 +415,59 @@ const READINESS_STYLES: Record<string, { label: string; cls: string }> = {
   fatigued: { label: 'Fatigued — take it easy', cls: 'bg-rose-100 text-rose-900 border-rose-300' },
 }
 
+function ReadinessSparkline({ session }: { session: WkSession }) {
+  const [trend, setTrend] = useState<ReadinessTrend | null>(null)
+  // Re-fetch when this session's β changes so today's point updates live.
+  const beta = session.readiness_beta
+  useEffect(() => {
+    let cancelled = false
+    getReadinessTrend(14).then((t) => {
+      if (!cancelled) setTrend(t)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [beta, session.id])
+
+  const pts = trend?.points.filter((p) => p.readiness_beta != null) ?? []
+  if (pts.length < 2) return null
+
+  const W = 140
+  const H = 28
+  const PAD = 3
+  const betas = pts.map((p) => p.readiness_beta as number)
+  const minB = Math.min(-0.1, ...betas)
+  const maxB = Math.max(0.1, ...betas)
+  const rangeB = maxB - minB || 1
+  const xStep = (W - 2 * PAD) / Math.max(1, pts.length - 1)
+  const y = (b: number) => PAD + (1 - (b - minB) / rangeB) * (H - 2 * PAD)
+  const yZero = y(0)
+  const path = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${PAD + i * xStep},${y(p.readiness_beta as number)}`).join(' ')
+  const today = pts[pts.length - 1]
+  return (
+    <div className="flex items-center gap-2 mt-1" title="14-day readiness β trend">
+      <svg width={W} height={H} className="overflow-visible">
+        <line x1={PAD} y1={yZero} x2={W - PAD} y2={yZero}
+          stroke="currentColor" strokeOpacity="0.25" strokeDasharray="2,2" />
+        <path d={path} fill="none" stroke="currentColor" strokeWidth={1.5} strokeOpacity="0.7" />
+        {pts.map((p, i) => {
+          const cx = PAD + i * xStep
+          const cy = y(p.readiness_beta as number)
+          const isToday = i === pts.length - 1
+          return (
+            <circle key={p.session_id} cx={cx} cy={cy}
+              r={isToday ? 2.5 : 1.5}
+              fill="currentColor"
+              fillOpacity={isToday ? 1 : 0.6} />
+          )
+        })}
+      </svg>
+      <span className="text-[10px] opacity-70">
+        14d · today β {(today.readiness_beta as number) >= 0 ? '+' : ''}
+        {(today.readiness_beta as number).toFixed(2)}
+      </span>
+    </div>
+  )
+}
+
 function ReadinessBanner({ session }: { session: WkSession }) {
   const beta = session.readiness_beta
   const label = session.readiness_label
@@ -423,13 +478,16 @@ function ReadinessBanner({ session }: { session: WkSession }) {
   const pctStr = pct != null ? `${sign}${pct.toFixed(1)}%` : ''
   return (
     <div
-      className={`flex items-center justify-between rounded border px-2 py-1 text-xs ${style.cls}`}
+      className={`rounded border px-2 py-1 text-xs ${style.cls}`}
       title={`β = ${beta.toFixed(3)} (multiplicative readiness from today's RPE-tagged sets)`}
     >
-      <span className="font-medium">Readiness: {style.label}</span>
-      <span className="font-mono">
-        β {beta >= 0 ? '+' : ''}{beta.toFixed(2)} {pctStr && <>({pctStr})</>}
-      </span>
+      <div className="flex items-center justify-between">
+        <span className="font-medium">Readiness: {style.label}</span>
+        <span className="font-mono">
+          β {beta >= 0 ? '+' : ''}{beta.toFixed(2)} {pctStr && <>({pctStr})</>}
+        </span>
+      </div>
+      <ReadinessSparkline session={session} />
     </div>
   )
 }

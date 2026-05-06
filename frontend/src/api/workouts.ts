@@ -250,6 +250,24 @@ export const getWorkoutSessions = (startDate?: string, endDate?: string, limit?:
 export const getWorkoutSession = (id: number) =>
   request<WkSession>(`/workout-sessions/${id}`);
 
+export interface ReadinessTrendPoint {
+  date: string;
+  session_id: number;
+  readiness_beta: number | null;
+  readiness_label: WkSession['readiness_label'];
+  readiness_pct: number | null;
+}
+
+export interface ReadinessTrend {
+  days: number;
+  start: string;
+  end: string;
+  points: ReadinessTrendPoint[];
+}
+
+export const getReadinessTrend = (days: number = 14) =>
+  request<ReadinessTrend>(`/workout-sessions/readiness/trend?days=${days}`);
+
 export const updateWorkoutSet = (setId: number, data: WorkoutSetUpdateInput) =>
   request<WkSetDetail>(`/workout-sets/${setId}`, {
     method: 'PATCH',
