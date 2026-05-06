@@ -151,6 +151,7 @@ export interface PrescribeNextResponse {
     M: number;
     k: number;
     gamma: number;
+    delta?: number;
     fit_tier?: string;
     n_obs?: number;
     max_observed_weight?: number;
@@ -166,6 +167,7 @@ export interface PrescribeNextResponse {
     M: number;
     k: number;
     gamma: number;
+    delta?: number;
     fit_tier?: string;
     n_obs?: number;
     max_observed_weight?: number;
@@ -268,6 +270,7 @@ export interface CurveSnapshotResponse {
     M: number;
     k: number;
     gamma: number;
+    delta?: number;
     fit_tier?: string;
     n_obs?: number;
     max_observed_weight?: number;
@@ -280,6 +283,7 @@ export interface CurveSnapshotResponse {
     M: number;
     k: number;
     gamma: number;
+    delta?: number;
     fit_tier?: string;
     n_obs?: number;
     max_observed_weight?: number;
@@ -330,6 +334,7 @@ export interface FatigueProfileResponse {
     M: number;
     k: number;
     gamma: number;
+    delta?: number;
     weight_space?: 'entered' | 'effective';
     bw_offset?: number;
     ext_mult?: number;

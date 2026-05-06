@@ -23,6 +23,12 @@ export interface CurveFit {
   k: number
   gamma: number
   /**
+   * v4 shifted-form parameter: ``r_fresh(W) = k * (M / (W + delta) - 1)^gamma``.
+   * Older snapshots may omit it; treat ``undefined`` as ``0`` to recover the
+   * v3 form. Lives in the same space as ``M`` and ``W_eff`` (effective).
+   */
+  delta?: number
+  /**
    * Curve parameter space. Backend ships "effective" now (all modes); keep
    * the union for robustness against older snapshots — any non-"effective"
    * value is treated as legacy-entered (no conversion, offset=0, mult=1).
@@ -117,8 +123,11 @@ export function weightGrid(min: number, max: number): EnteredWeightLb[] {
 }
 
 /**
- * r_fresh(W_entered) = k * (M/W_eff - 1)^gamma where
- * W_eff = W_entered * ext_mult + bw_offset. 0 when W_eff >= M.
+ * Predict rtf with v4 form:
+ *   r_fresh(W_entered) = k * (M / (W_eff + delta) - 1)^gamma
+ * where W_eff = W_entered * ext_mult + bw_offset. ``delta`` defaults to 0 for
+ * snapshots from older backends (recovers v3 form ``k * (M/W_eff - 1)^gamma``).
+ * Returns 0 when (W_eff + delta) >= M or inputs are invalid.
  *
  * Returns reps-to-failure (rtf), not reps_done. Callers who need reps_done
  * must subtract the scheme RIR via `rtfToRepsDone()` in lib/units.
@@ -132,25 +141,28 @@ export function predictReps(w: number | EnteredWeightLb, fit: CurveFit): Rtf {
   const raw = w as number
   if (raw <= 0 || fit.k <= 0) return asRtf(0)
   const w_eff = effectiveWeight(raw, fit)
-  if (w_eff <= 0 || w_eff >= fit.M) return asRtf(0)
-  const ratio = fit.M / w_eff - 1
+  const delta = fit.delta ?? 0
+  const denom = w_eff + delta
+  if (denom <= 0 || denom >= fit.M) return asRtf(0)
+  const ratio = fit.M / denom - 1
   if (ratio <= 0) return asRtf(0)
   return asRtf(fit.k * Math.pow(ratio, fit.gamma))
 }
 
 /**
- * Invert the curve: find entered weight W such that predictReps(W) ≈ targetReps.
- * W_eff = M / (1 + (target/k)^(1/gamma)); W_ent = (W_eff - bw_offset) / ext_mult.
+ * Invert v4 form: W_eff = M / (1 + (target/k)^(1/gamma)) - delta;
+ * W_ent = (W_eff - bw_offset) / ext_mult. ``delta`` defaults to 0 (v3 form).
  *
  * `targetReps` is rtf (reps-to-failure), not reps_done. Returns entered-space
  * weight unsnapped — callers should apply `snapWeight` at UI boundaries only.
  */
 export function solveWeight(targetReps: number | Rtf, fit: CurveFit): EnteredWeightLb {
   const raw = targetReps as number
+  const delta = fit.delta ?? 0
   if (raw <= 0 || fit.k <= 0) {
-    return asEntered(enteredFromEffective(fit.M * 0.95, fit))
+    return asEntered(enteredFromEffective(Math.max(0, fit.M * 0.95 - delta), fit))
   }
   const ratio = Math.pow(raw / fit.k, 1 / fit.gamma)
-  const w_eff = fit.M / (1 + ratio)
+  const w_eff = Math.max(0, fit.M / (1 + ratio) - delta)
   return asEntered(enteredFromEffective(w_eff, fit))
 }
