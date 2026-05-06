@@ -1,7 +1,12 @@
-"""Strength-curve model: r_fresh(W) = k * (M/W - 1)^gamma.
+"""Strength-curve model: r_fresh(W) = k * (M/(W + delta) - 1)^gamma.
 
 Fits the fresh-set strength curve from recent RPE data and provides
 weight/rep prescription for progressive-overload workouts.
+
+The ``delta`` parameter (added in the v4 model) shifts the asymptote left so
+that low/zero weights map to a finite rep count, matching the biological
+reality that an athlete cannot perform an unbounded number of reps with a
+near-zero load. ``delta = 0`` recovers the v2 form ``k * (M/W - 1)^gamma``.
 """
 
 from __future__ import annotations
@@ -101,7 +106,7 @@ TTEST_ALPHA = 0.05
 
 @dataclass
 class CurveFit:
-    """Result of fitting r_fresh(W) = k * (M/W - 1)^gamma.
+    """Result of fitting r_fresh(W) = k * (M/(W + delta) - 1)^gamma.
 
     The parameters (M, k) are always stored in *effective*-weight space, which
     is the space `fit_curve` / `refit_with_observations` produce. When surfacing
@@ -112,7 +117,7 @@ class CurveFit:
     argument is in the same space as `fit.weight_space`.
     """
 
-    M: float  # estimated 1RM ceiling
+    M: float  # estimated 1RM ceiling (effective space)
     k: float  # endurance scaling
     gamma: float  # curve shape exponent
     n_obs: int
@@ -120,6 +125,11 @@ class CurveFit:
     max_observed_weight: float
     fit_tier: str  # "tier1" or "tier2"
     identifiability: float = 1.0  # 0-1 quality score
+    # v4 shifted-form bias: r_fresh(W) = k * (M / (W + delta) - 1) ** gamma.
+    # Bounds: delta >= 0, with hard upper of 0.5 * max_observed_weight applied
+    # at fit time. delta = 0 reproduces the v2 form exactly so all callers
+    # remain backward-compatible with default-constructed CurveFit instances.
+    delta: float = 0.0
     # Weight space in which (M, max_observed_weight) are expressed. Backend
     # fitting always produces "effective"; `_curve_dict` ships those same
     # effective-space params to the frontend along with bw_offset/ext_mult,
@@ -176,12 +186,22 @@ LIGHT_SCHEME = [
 
 
 def fresh_curve(
-    W: float | np.ndarray, M: float, k: float, gamma: float
+    W: float | np.ndarray, M: float, k: float, gamma: float,
+    delta: float = 0.0,
 ) -> float | np.ndarray:
-    """r_fresh(W) = k * (M/W - 1)^gamma. Returns 0 for W >= M."""
-    ratio = M / W - 1.0
-    if isinstance(ratio, np.ndarray):
-        return np.where(ratio > 0, k * np.power(ratio, gamma), 0.0)
+    """r_fresh(W) = k * (M/(W + delta) - 1)^gamma. Returns 0 where ratio <= 0.
+
+    With ``delta = 0`` this is the v2 form ``k * (M/W - 1)^gamma``.
+    """
+    denom = W + delta
+    if isinstance(denom, np.ndarray):
+        # Avoid divide-by-zero warnings; ratio is masked off when <=0 anyway.
+        safe = np.where(denom > 0, denom, 1.0)
+        ratio = M / safe - 1.0
+        return np.where((denom > 0) & (ratio > 0), k * np.power(np.maximum(ratio, 0.0), gamma), 0.0)
+    if denom <= 0:
+        return 0.0
+    ratio = M / denom - 1.0
     return k * (ratio**gamma) if ratio > 0 else 0.0
 
 
@@ -202,28 +222,37 @@ def predict_reps(
             f"{fit.weight_space!r}; weight arguments must match the curve's "
             "stored weight space"
         )
-    return float(fresh_curve(weight, fit.M, fit.k, fit.gamma))
+    return float(fresh_curve(weight, fit.M, fit.k, fit.gamma, fit.delta))
 
 
 def solve_weight(
     target_reps: float, fit: CurveFit,
     *, space: Literal["effective", "entered"] = "effective",
+    readiness_beta: float = 0.0,
 ) -> float:
     """Invert the curve: find weight W where r_fresh(W) = target_reps.
 
     Returns weight in `fit.weight_space` (asserted to equal `space`).
 
-    W = M / (1 + (target_reps / k)^(1/gamma))
+    With a non-zero ``readiness_beta`` the target is divided by ``exp(β)``
+    before inversion, so a positive β (strong day) prescribes heavier load
+    and a negative β (recovery day) prescribes lighter load. Default β=0
+    reproduces the v2 behavior exactly.
+
+    W = M / (1 + (effective_target / k)^(1/gamma)) - delta
     """
     if fit.weight_space != space:
         raise ValueError(
             f"solve_weight called with space={space!r} but fit.weight_space="
             f"{fit.weight_space!r}; returned weight must match caller's space"
         )
-    if target_reps <= 0 or fit.k <= 0:
-        return fit.M * 0.95
-    ratio = (target_reps / fit.k) ** (1.0 / fit.gamma)
-    return fit.M / (1.0 + ratio)
+    effective_target = (
+        target_reps / math.exp(readiness_beta) if readiness_beta else target_reps
+    )
+    if effective_target <= 0 or fit.k <= 0:
+        return max(0.0, fit.M * 0.95 - fit.delta)
+    ratio = (effective_target / fit.k) ** (1.0 / fit.gamma)
+    return max(0.0, fit.M / (1.0 + ratio) - fit.delta)
 
 
 # ── RPE confidence and recency ──
@@ -381,14 +410,18 @@ def _curve_loss(
     M_prior: float,
     lambda_M: float,
 ) -> float:
-    """Weighted least squares loss with Brzycki prior on M and gamma."""
+    """Weighted least squares loss with Brzycki prior on M and gamma.
+
+    ``delta`` is always part of the optimization vector (last element). When
+    ``fixed_gamma`` is set, params=(M, k, delta); otherwise (M, k, gamma, delta).
+    """
     if fixed_gamma is not None:
-        M, k = params
+        M, k, delta = params
         gamma = fixed_gamma
     else:
-        M, k, gamma = params
+        M, k, gamma, delta = params
 
-    predicted = fresh_curve(W, M, k, gamma)
+    predicted = fresh_curve(W, M, k, gamma, delta)
     residuals = r - predicted
     data_loss = float(np.sum(fit_weights * residuals**2))
 
@@ -403,6 +436,8 @@ def _curve_loss(
     if fixed_gamma is None and GAMMA_REG_LAMBDA > 0 and gamma > 0:
         reg_gamma = GAMMA_REG_LAMBDA * avg_fw * math.log(gamma / GAMMA_PRIOR) ** 2
 
+    # delta has no regularization: let optimizer pull it to 0 when not
+    # identifiable (the bounds [0, 0.5*max_W] prevent pathology).
     return data_loss + reg_M + reg_gamma
 
 
@@ -415,51 +450,64 @@ def _fit_params(
     M_prior: float,
     lambda_M: float,
     fixed_gamma: float | None = None,
-) -> tuple[float, float, float, bool]:
-    """Run multi-restart optimization. Returns (M, k, gamma, success)."""
+) -> tuple[float, float, float, float, bool]:
+    """Run multi-restart optimization. Returns (M, k, gamma, delta, success)."""
     max_W = float(np.max(W))
+    delta_upper = max(50.0, max_W * 0.5)
     best_result = None
     best_loss = float("inf")
 
     gamma_inits = [0.2, 0.5, 0.7, 0.9] if fixed_gamma is None else [None]
     M_factors = [1.1, 1.3, 1.5, 2.0]
+    delta_inits = [0.0, max(5.0, max_W * 0.05)]
 
     for M_factor in M_factors:
         for g_init in gamma_inits:
-            M_init = float(np.clip(max_W * M_factor, M_lower, M_upper))
-            k_init = float(np.median(r))
+            for d_init in delta_inits:
+                M_init = float(np.clip(max_W * M_factor, M_lower, M_upper))
+                k_init = float(np.median(r))
+                d0 = float(np.clip(d_init, 0.0, delta_upper))
 
-            if fixed_gamma is not None:
-                x0 = [M_init, k_init]
-                bounds = [(M_lower, M_upper), (0.5, 200.0)]
-            else:
-                x0 = [M_init, k_init, g_init]
-                bounds = [(M_lower, M_upper), (0.5, 200.0), (GAMMA_MIN, GAMMA_MAX)]
+                if fixed_gamma is not None:
+                    x0 = [M_init, k_init, d0]
+                    bounds = [
+                        (M_lower, M_upper), (0.5, 200.0), (0.0, delta_upper),
+                    ]
+                else:
+                    x0 = [M_init, k_init, g_init, d0]
+                    bounds = [
+                        (M_lower, M_upper), (0.5, 200.0),
+                        (GAMMA_MIN, GAMMA_MAX), (0.0, delta_upper),
+                    ]
 
-            try:
-                res = minimize(
-                    _curve_loss,
-                    x0=x0,
-                    args=(W, r, fit_weights, fixed_gamma, M_prior, lambda_M),
-                    method="L-BFGS-B",
-                    bounds=bounds,
-                )
-                if res.fun < best_loss:
-                    best_loss = res.fun
-                    best_result = res
-            except Exception:
-                continue
+                try:
+                    res = minimize(
+                        _curve_loss,
+                        x0=x0,
+                        args=(W, r, fit_weights, fixed_gamma, M_prior, lambda_M),
+                        method="L-BFGS-B",
+                        bounds=bounds,
+                    )
+                    if res.fun < best_loss:
+                        best_loss = res.fun
+                        best_result = res
+                except Exception:
+                    continue
 
     if best_result is None:
-        return (float(np.clip(max_W * 1.1, M_lower, M_upper)),
-                float(np.median(r)), fixed_gamma or DEFAULT_GAMMA, False)
+        return (
+            float(np.clip(max_W * 1.1, M_lower, M_upper)),
+            float(np.median(r)),
+            fixed_gamma or DEFAULT_GAMMA,
+            0.0,
+            False,
+        )
 
     if fixed_gamma is not None:
-        M_fit, k_fit = best_result.x
-        return (M_fit, k_fit, fixed_gamma, True)
-    else:
-        M_fit, k_fit, gamma_fit = best_result.x
-        return (M_fit, k_fit, gamma_fit, True)
+        M_fit, k_fit, delta_fit = best_result.x
+        return (M_fit, k_fit, fixed_gamma, float(delta_fit), True)
+    M_fit, k_fit, gamma_fit, delta_fit = best_result.x
+    return (M_fit, k_fit, gamma_fit, float(delta_fit), True)
 
 
 # ── Data loading helpers ──
@@ -599,12 +647,12 @@ def fit_curve(
     ident = _identifiability_score(eff_weights, reps_to_failure)
 
     fixed_gamma = DEFAULT_GAMMA if tier == "tier2" else None
-    M_fit, k_fit, gamma_fit, success = _fit_params(
+    M_fit, k_fit, gamma_fit, delta_fit, success = _fit_params(
         W, r, fit_w, M_lower, M_upper, M_prior, M_REG_LAMBDA, fixed_gamma
     )
 
     # Compute RMSE
-    predicted = fresh_curve(W, M_fit, k_fit, gamma_fit)
+    predicted = fresh_curve(W, M_fit, k_fit, gamma_fit, delta_fit)
     residuals = r - predicted
     rmse = float(np.sqrt(np.mean(residuals**2)))
 
@@ -612,6 +660,7 @@ def fit_curve(
         M=M_fit,
         k=k_fit,
         gamma=gamma_fit,
+        delta=delta_fit,
         n_obs=n_obs,
         rmse=rmse,
         max_observed_weight=float(np.max(W)),
@@ -662,16 +711,16 @@ def fit_from_data(
     ident = _identifiability_score(eff_weights, reps_to_failure)
 
     fixed_gamma = DEFAULT_GAMMA if tier == "tier2" else None
-    M_fit, k_fit, gamma_fit, success = _fit_params(
+    M_fit, k_fit, gamma_fit, delta_fit, success = _fit_params(
         W, r, fit_w, M_lower, M_upper, M_prior, M_REG_LAMBDA, fixed_gamma
     )
 
-    predicted = fresh_curve(W, M_fit, k_fit, gamma_fit)
+    predicted = fresh_curve(W, M_fit, k_fit, gamma_fit, delta_fit)
     residuals = r - predicted
     rmse = float(np.sqrt(np.mean(residuals**2)))
 
     return CurveFit(
-        M=M_fit, k=k_fit, gamma=gamma_fit,
+        M=M_fit, k=k_fit, gamma=gamma_fit, delta=delta_fit,
         n_obs=n_obs, rmse=rmse,
         max_observed_weight=float(np.max(W)),
         fit_tier=tier, identifiability=ident,
@@ -739,16 +788,16 @@ def refit_from_data(
     ident = _identifiability_score(all_w, all_r)
 
     fixed_gamma = DEFAULT_GAMMA if tier == "tier2" else None
-    M_fit, k_fit, gamma_fit, success = _fit_params(
+    M_fit, k_fit, gamma_fit, delta_fit, success = _fit_params(
         W, r, fit_w, M_lower, M_upper, M_prior, M_REG_LAMBDA, fixed_gamma
     )
 
-    predicted = fresh_curve(W, M_fit, k_fit, gamma_fit)
+    predicted = fresh_curve(W, M_fit, k_fit, gamma_fit, delta_fit)
     residuals = r - predicted
     rmse = float(np.sqrt(np.mean(residuals**2)))
 
     return CurveFit(
-        M=M_fit, k=k_fit, gamma=gamma_fit,
+        M=M_fit, k=k_fit, gamma=gamma_fit, delta=delta_fit,
         n_obs=n_obs, rmse=rmse,
         max_observed_weight=float(np.max(W)),
         fit_tier=tier, identifiability=ident,
@@ -763,19 +812,23 @@ def plan_progressive_sets(
     exercise: Exercise,
     bodyweight_lb: float,
     max_entered_weight: float | None = None,
+    *,
+    readiness_beta: float = 0.0,
 ) -> list[SetPrescription]:
     """Generate 3 progressive-overload set prescriptions.
 
     Uses heavy scheme if exercise.allow_heavy_loading, else light scheme.
     Converts effective weight to entered weight for user display.
     Soft-caps to 125% of max_entered_weight if provided (equipment limit).
+    ``readiness_beta`` (v4) scales the target reps by ``exp(β)`` so a strong
+    day prescribes heavier load and a recovery day prescribes lighter load.
     """
     scheme = HEAVY_SCHEME if exercise.allow_heavy_loading else LIGHT_SCHEME
     weight_ceiling = max_entered_weight * 1.25 if max_entered_weight else None
     prescriptions: list[SetPrescription] = []
 
     for i, (r_fail, rir, target_rpe, expected_reps, rep_min, rep_max) in enumerate(scheme):
-        ew = solve_weight(r_fail, fit)
+        ew = solve_weight(r_fail, fit, readiness_beta=readiness_beta)
         entered = entered_weight_for_effective_weight(
             exercise, effective_weight_lb=ew, bodyweight_lb=bodyweight_lb
         )
@@ -855,6 +908,8 @@ def detect_inflection(
     exercise: Exercise,
     bodyweight_lb: float,
     max_entered_weight: float | None = None,
+    *,
+    readiness_beta: float = 0.0,
 ) -> InflectionResult:
     """Check whether heavy-mode exercise should stop or prescribe another set.
 
@@ -925,7 +980,7 @@ def detect_inflection(
     next_set_index = len(session_sets) + 1
     beta_n = _beta_for_set(next_set_index)
     fresh_target_rtf = max(1.0, target_r_fail - beta_n)
-    ew = solve_weight(fresh_target_rtf, fit)
+    ew = solve_weight(fresh_target_rtf, fit, readiness_beta=readiness_beta)
     entered = entered_weight_for_effective_weight(
         exercise, effective_weight_lb=ew, bodyweight_lb=bodyweight_lb
     )
@@ -958,6 +1013,23 @@ def detect_inflection(
     )
 
 
+def _active_session_beta(session: Session, on_date: date | None = None) -> float:
+    """Look up the readiness β for ``on_date`` (default: today). 0.0 if absent.
+
+    Used by the prescription path so that today's recommended weights scale
+    with the day's readiness signal as it accumulates within the session.
+    """
+    target = on_date or user_today()
+    ws = session.exec(
+        select(WorkoutSession)
+        .where(WorkoutSession.date == target)
+        .order_by(WorkoutSession.id.desc())
+    ).first()
+    if ws is None or ws.readiness_beta is None:
+        return 0.0
+    return float(ws.readiness_beta)
+
+
 def prescribe_next_set(
     exercise_id: int,
     session: Session,
@@ -978,6 +1050,10 @@ def prescribe_next_set(
 
     metric = _metric_for(exercise)
     is_bw = (exercise.load_input_mode or "external_weight") in BODYWEIGHT_MODES
+    # Active session readiness β (v4): scales the prescription weight to the
+    # day's signal. Bodyweight/burnout/bootstrap paths skip this and use the
+    # legacy heuristics. 0.0 means "no readiness signal yet" → v2 behavior.
+    readiness_beta = 0.0 if is_bw else _active_session_beta(session)
     if is_bw:
         suggestion = get_bodyweight_suggestion(exercise_id, session)
         n_done = len(prior_sets)
@@ -1028,7 +1104,9 @@ def prescribe_next_set(
             target_entered: float | None = None
             fit = fit_curve(exercise_id, session)
             if fit is not None:
-                eff_at_target = solve_weight(BURNOUT_TARGET_REPS, fit)
+                eff_at_target = solve_weight(
+                    BURNOUT_TARGET_REPS, fit, readiness_beta=readiness_beta,
+                )
                 entered_from_curve = _effective_to_entered(
                     exercise, eff_at_target, bodyweight_lb
                 )
@@ -1189,7 +1267,8 @@ def prescribe_next_set(
                     "training_mode": training_mode,
                 })
             inflection = detect_inflection(
-                fit, prior_sets, exercise, bodyweight_lb, max_weight
+                fit, prior_sets, exercise, bodyweight_lb, max_weight,
+                readiness_beta=readiness_beta,
             )
             result = {
                 "has_curve": True,
@@ -1250,7 +1329,7 @@ def prescribe_next_set(
         })
 
     # Standard prescription
-    ew = solve_weight(r_fail_target, fit)
+    ew = solve_weight(r_fail_target, fit, readiness_beta=readiness_beta)
     entered = entered_weight_for_effective_weight(
         exercise, effective_weight_lb=ew, bodyweight_lb=bodyweight_lb
     )
@@ -1384,6 +1463,7 @@ def _curve_dict(fit: CurveFit, exercise: Exercise | None = None,
         "M": round(float(fit.M), 2),
         "k": round(float(fit.k), 4),
         "gamma": round(float(fit.gamma), 4),
+        "delta": round(float(fit.delta), 4),
         "fit_tier": fit.fit_tier,
         "n_obs": fit.n_obs,
         # Entered-space: for chart X-axis domain.
@@ -2046,7 +2126,7 @@ def fatigue_profile(
                     continue
                 rir = 10.0 - float(ws.rpe)
                 rtf_obs = endurance + rir
-                predicted_fresh = float(fresh_curve(ew, fit.M, fit.k, fit.gamma))
+                predicted_fresh = float(fresh_curve(ew, fit.M, fit.k, fit.gamma, fit.delta))
                 residual = rtf_obs - predicted_fresh
                 history_by_set[int(ws.set_order)].append(residual)
                 history_session_dates.add(ws_date)
@@ -2082,7 +2162,7 @@ def fatigue_profile(
             s = obs["set_index"]
             ew = obs["effective_weight"]
             beta_s = beta_per_set[s - 1] if 1 <= s <= len(beta_per_set) else 0.0
-            predicted = float(fresh_curve(ew, fit.M, fit.k, fit.gamma)) + beta_s
+            predicted = float(fresh_curve(ew, fit.M, fit.k, fit.gamma, fit.delta)) + beta_s
             model_prediction.append({
                 "set_index": s,
                 "weight": obs["weight"],
@@ -2247,11 +2327,11 @@ def refit_with_observations(
     ident = _identifiability_score(eff_weights, reps_to_failure)
 
     fixed_gamma = DEFAULT_GAMMA if tier == "tier2" else None
-    M_fit, k_fit, gamma_fit, success = _fit_params(
+    M_fit, k_fit, gamma_fit, delta_fit, success = _fit_params(
         W, r, fit_w, M_lower, M_upper, M_prior, M_REG_LAMBDA, fixed_gamma
     )
 
-    predicted = fresh_curve(W, M_fit, k_fit, gamma_fit)
+    predicted = fresh_curve(W, M_fit, k_fit, gamma_fit, delta_fit)
     residuals = r - predicted
     rmse = float(np.sqrt(np.mean(residuals**2)))
 
@@ -2259,6 +2339,7 @@ def refit_with_observations(
         M=M_fit,
         k=k_fit,
         gamma=gamma_fit,
+        delta=delta_fit,
         n_obs=n_obs,
         rmse=rmse,
         max_observed_weight=float(np.max(W)),

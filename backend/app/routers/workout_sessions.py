@@ -20,6 +20,7 @@ from app.models import (
     WorkoutSession,
     WorkoutSet,
 )
+from app.session_readiness import readiness_label, readiness_pct
 from app.units import endurance_value_from_legacy, legacy_metric_fields
 
 router = APIRouter(prefix="/api/workout-sessions", tags=["workout-sessions"])
@@ -122,6 +123,11 @@ def _build_session_response(ws: WorkoutSession, session: Session) -> dict:
         "created_at": ws.created_at,
         "sets": set_details,
         "effective_volume": effective_volume,
+        # v4 readiness β: live-refit per-session multiplicative factor.
+        # NULL until at least MIN_SETS_FOR_BETA RPE-eligible sets exist.
+        "readiness_beta": ws.readiness_beta,
+        "readiness_label": readiness_label(ws.readiness_beta),
+        "readiness_pct": readiness_pct(ws.readiness_beta),
     }
 
 

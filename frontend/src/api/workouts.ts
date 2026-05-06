@@ -124,6 +124,9 @@ export interface WkSession {
   created_at: string;
   sets: WkSetDetail[];
   effective_volume?: number;
+  readiness_beta?: number | null;
+  readiness_label?: 'strong' | 'above_baseline' | 'baseline' | 'below_baseline' | 'fatigued' | null;
+  readiness_pct?: number | null;
 }
 
 export interface WkTissueModelConfig {

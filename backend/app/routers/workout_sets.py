@@ -18,6 +18,7 @@ from app.models import (
     WorkoutSession,
     WorkoutSet,
 )
+from app.session_readiness import update_session_readiness
 from app.units import endurance_value_from_legacy, legacy_metric_fields
 
 router = APIRouter(tags=["workout-sets"])
@@ -184,6 +185,14 @@ def update_set(
     _normalize_session_set_order(session, ws.session_id)
     session.commit()
     session.refresh(ws)
+    # Live readiness re-fit: if this set has RPE data, recompute β for the
+    # owning workout session. update_session_readiness commits internally.
+    if ws.rpe is not None:
+        try:
+            update_session_readiness(session, ws.session_id)
+        except Exception:
+            # Readiness fit is best-effort and must never block a set update.
+            session.rollback()
     return _set_response(ws, session)
 
 
@@ -254,6 +263,11 @@ def add_set(
     _normalize_session_set_order(session, session_id)
     session.commit()
     session.refresh(new_set)
+    if new_set.rpe is not None:
+        try:
+            update_session_readiness(session, session_id)
+        except Exception:
+            session.rollback()
     return _set_response(new_set, session)
 
 

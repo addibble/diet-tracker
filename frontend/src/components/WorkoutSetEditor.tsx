@@ -405,6 +405,35 @@ function PlanExerciseRow({
 
 // ── Log Mode ─────────────────────────────────────────────────────────
 
+const READINESS_STYLES: Record<string, { label: string; cls: string }> = {
+  strong: { label: 'Strong day', cls: 'bg-green-100 text-green-900 border-green-300' },
+  above_baseline: { label: 'Above baseline', cls: 'bg-emerald-50 text-emerald-900 border-emerald-200' },
+  baseline: { label: 'Baseline', cls: 'bg-gray-50 text-gray-700 border-gray-200' },
+  below_baseline: { label: 'Below baseline', cls: 'bg-amber-50 text-amber-900 border-amber-200' },
+  fatigued: { label: 'Fatigued — take it easy', cls: 'bg-rose-100 text-rose-900 border-rose-300' },
+}
+
+function ReadinessBanner({ session }: { session: WkSession }) {
+  const beta = session.readiness_beta
+  const label = session.readiness_label
+  const pct = session.readiness_pct
+  if (beta == null || label == null) return null
+  const style = READINESS_STYLES[label] ?? READINESS_STYLES.baseline
+  const sign = pct != null && pct >= 0 ? '+' : ''
+  const pctStr = pct != null ? `${sign}${pct.toFixed(1)}%` : ''
+  return (
+    <div
+      className={`flex items-center justify-between rounded border px-2 py-1 text-xs ${style.cls}`}
+      title={`β = ${beta.toFixed(3)} (multiplicative readiness from today's RPE-tagged sets)`}
+    >
+      <span className="font-medium">Readiness: {style.label}</span>
+      <span className="font-mono">
+        β {beta >= 0 ? '+' : ''}{beta.toFixed(2)} {pctStr && <>({pctStr})</>}
+      </span>
+    </div>
+  )
+}
+
 function LogEditor({
   sessionId,
   prefetchedSession,
@@ -512,6 +541,11 @@ function LogEditor({
           }
         })
         onChanged?.()
+        // Refresh whole session to pick up server-computed readiness β when
+        // an RPE-bearing field changes.
+        if ('rpe' in patch || 'reps' in patch || 'weight' in patch) {
+          void refreshSession()
+        }
       } catch {
         refreshSession() // rollback on error
       }
@@ -604,6 +638,7 @@ function LogEditor({
 
   return (
     <div className={`space-y-2 ${compact ? 'text-xs' : 'text-sm'}`}>
+      <ReadinessBanner session={session} />
       {groups.length === 0 && (
         <p className="text-xs text-gray-400 italic text-center py-1">
           No sets logged yet

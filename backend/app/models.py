@@ -110,6 +110,10 @@ class Exercise(SQLModel, table=True):
     support_style: str = "none"  # "none", "unsupported", "chest_supported", "bench_supported", "cable_stabilized", "machine"
     set_metric_mode: str = "reps"  # "reps", "duration", "distance"
     estimated_minutes_per_set: float = 2.0
+    # v4 strength model: per-exercise curve shift parameter (delta in
+    # r_fresh = k * (M / (W + delta) - 1) ** gamma). Cached from the most
+    # recent fit; recomputed by `fit_curve` on demand.
+    curve_delta: float = 0.0
     notes: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
 
@@ -194,6 +198,10 @@ class WorkoutSession(SQLModel, table=True):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     notes: str | None = None
+    # v4 strength model: per-session readiness beta. Multiplicative log-link
+    # term in r_obs = exp(beta_j) * r_fresh(W). NULL when the joint fit has
+    # not been run for this session (treated as beta = 0 by callers).
+    readiness_beta: float | None = None
     created_at: datetime = Field(default_factory=_utcnow)
 
 

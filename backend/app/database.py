@@ -242,6 +242,7 @@ def _migrate_add_columns(engine: Engine):
                 "support_style": "ALTER TABLE exercises ADD COLUMN support_style TEXT DEFAULT 'none'",
                 "set_metric_mode": "ALTER TABLE exercises ADD COLUMN set_metric_mode TEXT DEFAULT 'reps'",
                 "estimated_minutes_per_set": "ALTER TABLE exercises ADD COLUMN estimated_minutes_per_set FLOAT DEFAULT 2.0",
+                "curve_delta": "ALTER TABLE exercises ADD COLUMN curve_delta FLOAT DEFAULT 0.0",
             },
             insp,
             engine,
@@ -281,6 +282,16 @@ def _migrate_add_columns(engine: Engine):
                 "completed_at": "ALTER TABLE workout_sets ADD COLUMN completed_at TIMESTAMP",
                 "training_mode": "ALTER TABLE workout_sets ADD COLUMN training_mode TEXT",
                 "endurance_value": "ALTER TABLE workout_sets ADD COLUMN endurance_value REAL",
+            },
+            insp,
+            engine,
+        )
+
+    if "workout_sessions" in table_names:
+        _ensure_columns(
+            "workout_sessions",
+            {
+                "readiness_beta": "ALTER TABLE workout_sessions ADD COLUMN readiness_beta REAL",
             },
             insp,
             engine,
