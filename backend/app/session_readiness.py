@@ -20,12 +20,22 @@ exclude_today=True)`` so they reflect strictly-prior history and do not absorb
 the day's performance themselves. The result is persisted to
 ``WorkoutSession.readiness_beta`` and surfaced to the frontend banner.
 
+Display label & clamping
+------------------------
+The fitted β can range up to ±1.5, but the v4 paper's empirical observations
+show real σ_β ≈ 0.12 with extremes around [-0.4, +0.2]. We therefore clamp the
+β value used for the categorical readiness *label* (and the banner color) to
+``[BETA_LABEL_CLAMP_LOW, BETA_LABEL_CLAMP_HIGH]`` so a noisy 2-set fit cannot
+flip the banner to "strong" / "fatigued" prematurely. The raw β is still
+displayed numerically with a "clamped" indicator when it falls outside this
+band, so the underlying signal remains visible to the user.
+
 Prescription path
 -----------------
-``solve_weight`` accepts an optional ``readiness_beta``; callers that fetch
-the active session's β can pass it through so the recommended weight scales
-with the day's readiness (a strong day prescribes heavier load, a weak day
-lighter load).
+β is **not** applied to ``solve_weight`` in v4.0: the per-exercise curve refit
+(via ``refit_with_observations`` weighting today's sets at 0.70) already
+absorbs the day's signal into M / k / γ. Multiplying again by exp(β) would
+double-count. β is purely a display signal in this revision.
 """
 from __future__ import annotations
 
@@ -54,26 +64,48 @@ from app.units import rpe_to_rir as _rpe_to_rir
 # tools/model_exploration/session_beta_fit.py — see the v4 paper.
 BETA_REG_LAMBDA = 4.0
 
-# Hard bounds on β. Implies a multiplicative range of [exp(-1.5), exp(1.5)] ≈
-# [0.22x, 4.5x] reps relative to the fresh curve. Real σ_β observed ≈ 0.12.
+# Hard bounds on the raw β fit. Real σ_β observed ≈ 0.12; this wide range
+# is just a numerical safety net for the optimizer.
 BETA_MIN = -1.5
 BETA_MAX = 1.5
+
+# Tighter band used for the readiness *label* and color tier. Anything outside
+# this range is considered "outside empirical support" and gets capped for
+# the categorical banner; the raw β number is still shown to the user.
+BETA_LABEL_CLAMP_LOW = -0.35
+BETA_LABEL_CLAMP_HIGH = 0.35
 
 # Minimum number of usable RPE sets in a session before β is meaningful.
 MIN_SETS_FOR_BETA = 2
 
 
+def _clamp_for_label(beta: float) -> float:
+    return max(BETA_LABEL_CLAMP_LOW, min(BETA_LABEL_CLAMP_HIGH, beta))
+
+
+def is_beta_clamped(beta: float | None) -> bool:
+    """True when the raw β falls outside the label-clamp band."""
+    if beta is None:
+        return False
+    return beta < BETA_LABEL_CLAMP_LOW or beta > BETA_LABEL_CLAMP_HIGH
+
+
 def readiness_label(beta: float | None) -> str | None:
-    """Categorical label for the readiness banner."""
+    """Categorical label for the readiness banner.
+
+    Uses the clamped β so a single-shot 2-set fit at the optimizer's hard
+    bound cannot bias the banner.
+    """
     if beta is None:
         return None
-    if beta >= 0.10:
+    b = _clamp_for_label(beta)
+    if b >= 0.10:
         return "strong"
-    if beta >= 0.04:
+    if b >= 0.04:
         return "above_baseline"
-    if beta > -0.04:
+    if b > -0.04:
         return "baseline"
-    if beta > -0.10:
+    if b > -0.10:
         return "below_baseline"
     return "fatigued"
 
@@ -81,6 +113,7 @@ def readiness_label(beta: float | None) -> str | None:
 def readiness_pct(beta: float | None) -> float | None:
     """β translated to "percent reps vs baseline" for UI display.
 
+    Reports the raw (unclamped) β so the user sees the real signal.
     +10% means 10% more reps than the fresh curve predicts on this day.
     """
     if beta is None:

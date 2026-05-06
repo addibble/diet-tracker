@@ -7,9 +7,12 @@ import pytest
 
 from app.models import Exercise, WorkoutSession, WorkoutSet
 from app.session_readiness import (
+    BETA_LABEL_CLAMP_HIGH,
+    BETA_LABEL_CLAMP_LOW,
     BETA_MAX,
     BETA_MIN,
     fit_session_beta,
+    is_beta_clamped,
     readiness_label,
     readiness_pct,
     update_session_readiness,
@@ -87,6 +90,39 @@ class TestReadinessLabel:
     def test_pct_matches_exp(self):
         # +0.10 β → +10.5% reps (exp(0.1)-1 ≈ 0.1052)
         assert readiness_pct(0.10) == pytest.approx(10.517, rel=1e-3)
+
+
+class TestBetaClamping:
+    def test_within_band_not_clamped(self):
+        assert not is_beta_clamped(0.10)
+        assert not is_beta_clamped(-0.20)
+        assert not is_beta_clamped(0.0)
+        assert not is_beta_clamped(BETA_LABEL_CLAMP_HIGH)
+        assert not is_beta_clamped(BETA_LABEL_CLAMP_LOW)
+
+    def test_outside_band_clamped(self):
+        assert is_beta_clamped(BETA_LABEL_CLAMP_HIGH + 0.01)
+        assert is_beta_clamped(BETA_LABEL_CLAMP_LOW - 0.01)
+        assert is_beta_clamped(1.0)
+        assert is_beta_clamped(-1.4)
+
+    def test_none_not_clamped(self):
+        assert not is_beta_clamped(None)
+
+    def test_label_uses_clamped_band(self):
+        # A wildly high raw β should still map to "strong", not blow up.
+        assert readiness_label(1.4) == "strong"
+        # Same for the low end.
+        assert readiness_label(-1.4) == "fatigued"
+        # And exactly the clamp boundary stays at "strong" / "fatigued".
+        assert readiness_label(BETA_LABEL_CLAMP_HIGH) == "strong"
+        assert readiness_label(BETA_LABEL_CLAMP_LOW) == "fatigued"
+
+    def test_pct_uses_raw_beta(self):
+        # pct should reflect the raw signal, not the clamped one.
+        raw_pct = readiness_pct(1.0)
+        assert raw_pct is not None
+        assert raw_pct > 100.0  # exp(1)-1 ≈ 1.718 → 171.8%
 
 
 class TestFitSessionBeta:

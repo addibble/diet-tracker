@@ -127,6 +127,7 @@ export interface WkSession {
   readiness_beta?: number | null;
   readiness_label?: 'strong' | 'above_baseline' | 'baseline' | 'below_baseline' | 'fatigued' | null;
   readiness_pct?: number | null;
+  readiness_clamped?: boolean;
 }
 
 export interface WkTissueModelConfig {
@@ -256,6 +257,7 @@ export interface ReadinessTrendPoint {
   readiness_beta: number | null;
   readiness_label: WkSession['readiness_label'];
   readiness_pct: number | null;
+  readiness_clamped: boolean;
 }
 
 export interface ReadinessTrend {

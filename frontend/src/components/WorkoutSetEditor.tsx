@@ -417,17 +417,35 @@ const READINESS_STYLES: Record<string, { label: string; cls: string }> = {
 
 function ReadinessSparkline({ session }: { session: WkSession }) {
   const [trend, setTrend] = useState<ReadinessTrend | null>(null)
-  // Re-fetch when this session's β changes so today's point updates live.
-  const beta = session.readiness_beta
+  // Fetch trend once per mount / session change. Today's point is locally
+  // patched from `session.readiness_beta` so the chart stays live without
+  // re-fetching the network on every set edit.
   useEffect(() => {
     let cancelled = false
     getReadinessTrend(14).then((t) => {
       if (!cancelled) setTrend(t)
     }).catch(() => {})
     return () => { cancelled = true }
-  }, [beta, session.id])
+  }, [session.id])
 
-  const pts = trend?.points.filter((p) => p.readiness_beta != null) ?? []
+  // Splice today's β into the trend point for this session if present.
+  const merged = useMemo(() => {
+    if (!trend) return null
+    const sessDate = session.date
+    return {
+      ...trend,
+      points: trend.points.map((p) =>
+        p.session_id === session.id || p.date === sessDate
+          ? { ...p,
+              readiness_beta: session.readiness_beta ?? p.readiness_beta,
+              readiness_clamped: session.readiness_clamped ?? p.readiness_clamped,
+            }
+          : p,
+      ),
+    }
+  }, [trend, session.id, session.date, session.readiness_beta, session.readiness_clamped])
+
+  const pts = merged?.points.filter((p) => p.readiness_beta != null) ?? []
   if (pts.length < 2) return null
 
   const W = 140
@@ -441,7 +459,11 @@ function ReadinessSparkline({ session }: { session: WkSession }) {
   const y = (b: number) => PAD + (1 - (b - minB) / rangeB) * (H - 2 * PAD)
   const yZero = y(0)
   const path = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${PAD + i * xStep},${y(p.readiness_beta as number)}`).join(' ')
-  const today = pts[pts.length - 1]
+  // Only call out "today" if the most recent point's date matches the
+  // session date (otherwise it's a stale prior session and the label would
+  // mislead the user).
+  const last = pts[pts.length - 1]
+  const lastIsToday = last.date === session.date
   return (
     <div className="flex items-center gap-2 mt-1" title="14-day readiness β trend">
       <svg width={W} height={H} className="overflow-visible">
@@ -451,18 +473,18 @@ function ReadinessSparkline({ session }: { session: WkSession }) {
         {pts.map((p, i) => {
           const cx = PAD + i * xStep
           const cy = y(p.readiness_beta as number)
-          const isToday = i === pts.length - 1
+          const isLast = i === pts.length - 1
           return (
             <circle key={p.session_id} cx={cx} cy={cy}
-              r={isToday ? 2.5 : 1.5}
+              r={isLast ? 2.5 : 1.5}
               fill="currentColor"
-              fillOpacity={isToday ? 1 : 0.6} />
+              fillOpacity={isLast ? 1 : 0.6} />
           )
         })}
       </svg>
       <span className="text-[10px] opacity-70">
-        14d · today β {(today.readiness_beta as number) >= 0 ? '+' : ''}
-        {(today.readiness_beta as number).toFixed(2)}
+        {lastIsToday ? 'today' : 'last'} β {(last.readiness_beta as number) >= 0 ? '+' : ''}
+        {(last.readiness_beta as number).toFixed(2)}
       </span>
     </div>
   )
@@ -472,6 +494,7 @@ function ReadinessBanner({ session }: { session: WkSession }) {
   const beta = session.readiness_beta
   const label = session.readiness_label
   const pct = session.readiness_pct
+  const clamped = session.readiness_clamped
   if (beta == null || label == null) return null
   const style = READINESS_STYLES[label] ?? READINESS_STYLES.baseline
   const sign = pct != null && pct >= 0 ? '+' : ''
@@ -479,10 +502,20 @@ function ReadinessBanner({ session }: { session: WkSession }) {
   return (
     <div
       className={`rounded border px-2 py-1 text-xs ${style.cls}`}
-      title={`β = ${beta.toFixed(3)} (multiplicative readiness from today's RPE-tagged sets)`}
+      title={
+        `β = ${beta.toFixed(3)} (multiplicative readiness from today's RPE-tagged sets)` +
+        (clamped ? '\nLabel clamped to ±0.35 — outside empirical support range.' : '')
+      }
     >
       <div className="flex items-center justify-between">
-        <span className="font-medium">Readiness: {style.label}</span>
+        <span className="font-medium">
+          Readiness: {style.label}
+          {clamped && (
+            <span className="ml-1 inline-flex items-center rounded border border-current/40 px-1 py-0 text-[9px] uppercase tracking-wide opacity-80">
+              clamped
+            </span>
+          )}
+        </span>
         <span className="font-mono">
           β {beta >= 0 ? '+' : ''}{beta.toFixed(2)} {pctStr && <>({pctStr})</>}
         </span>

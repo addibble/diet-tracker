@@ -86,6 +86,44 @@ def test_update_set_partial(client, workout_set):
     assert data["weight"] == 135.0  # unchanged
 
 
+def test_notes_only_update_skips_readiness_refit(
+    client, workout_set, monkeypatch
+):
+    """Editing only `notes` must NOT trigger update_session_readiness — that
+    refit is expensive (~0.5–1s) and only β-relevant fields warrant it."""
+    from app.routers import workout_sets as ws_router
+    calls: list[int] = []
+
+    def _spy(_session, session_id):
+        calls.append(session_id)
+
+    monkeypatch.setattr(ws_router, "update_session_readiness", _spy)
+    resp = client.patch(
+        f"/api/workout-sets/{workout_set.id}",
+        json={"notes": "edit", "performed_side": "left"},
+    )
+    assert resp.status_code == 200
+    assert calls == []
+
+
+def test_rpe_update_triggers_readiness_refit(
+    client, workout_set, monkeypatch
+):
+    from app.routers import workout_sets as ws_router
+    calls: list[int] = []
+
+    def _spy(_session, session_id):
+        calls.append(session_id)
+
+    monkeypatch.setattr(ws_router, "update_session_readiness", _spy)
+    resp = client.patch(
+        f"/api/workout-sets/{workout_set.id}",
+        json={"rpe": 8.5},
+    )
+    assert resp.status_code == 200
+    assert calls == [workout_set.session_id]
+
+
 def test_update_set_persists_tissue_feedback_removed(client, session: Session, workout_set: WorkoutSet):
     """Placeholder — tissue_feedback subsystem removed; endpoint silently ignores the field."""
     resp = client.patch(

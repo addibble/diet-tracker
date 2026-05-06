@@ -20,7 +20,7 @@ from app.models import (
     WorkoutSession,
     WorkoutSet,
 )
-from app.session_readiness import readiness_label, readiness_pct
+from app.session_readiness import is_beta_clamped, readiness_label, readiness_pct
 from app.units import endurance_value_from_legacy, legacy_metric_fields
 
 router = APIRouter(prefix="/api/workout-sessions", tags=["workout-sessions"])
@@ -128,6 +128,7 @@ def _build_session_response(ws: WorkoutSession, session: Session) -> dict:
         "readiness_beta": ws.readiness_beta,
         "readiness_label": readiness_label(ws.readiness_beta),
         "readiness_pct": readiness_pct(ws.readiness_beta),
+        "readiness_clamped": is_beta_clamped(ws.readiness_beta),
     }
 
 
@@ -175,6 +176,7 @@ def readiness_trend(
             "readiness_beta": beta,
             "readiness_label": readiness_label(beta),
             "readiness_pct": readiness_pct(beta),
+            "readiness_clamped": is_beta_clamped(beta),
         })
     return {"days": days, "start": start.isoformat(), "end": end.isoformat(),
             "points": points}

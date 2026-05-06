@@ -1013,23 +1013,6 @@ def detect_inflection(
     )
 
 
-def _active_session_beta(session: Session, on_date: date | None = None) -> float:
-    """Look up the readiness β for ``on_date`` (default: today). 0.0 if absent.
-
-    Used by the prescription path so that today's recommended weights scale
-    with the day's readiness signal as it accumulates within the session.
-    """
-    target = on_date or user_today()
-    ws = session.exec(
-        select(WorkoutSession)
-        .where(WorkoutSession.date == target)
-        .order_by(WorkoutSession.id.desc())
-    ).first()
-    if ws is None or ws.readiness_beta is None:
-        return 0.0
-    return float(ws.readiness_beta)
-
-
 def prescribe_next_set(
     exercise_id: int,
     session: Session,
@@ -1050,10 +1033,6 @@ def prescribe_next_set(
 
     metric = _metric_for(exercise)
     is_bw = (exercise.load_input_mode or "external_weight") in BODYWEIGHT_MODES
-    # Active session readiness β (v4): scales the prescription weight to the
-    # day's signal. Bodyweight/burnout/bootstrap paths skip this and use the
-    # legacy heuristics. 0.0 means "no readiness signal yet" → v2 behavior.
-    readiness_beta = 0.0 if is_bw else _active_session_beta(session)
     if is_bw:
         suggestion = get_bodyweight_suggestion(exercise_id, session)
         n_done = len(prior_sets)
@@ -1104,9 +1083,7 @@ def prescribe_next_set(
             target_entered: float | None = None
             fit = fit_curve(exercise_id, session)
             if fit is not None:
-                eff_at_target = solve_weight(
-                    BURNOUT_TARGET_REPS, fit, readiness_beta=readiness_beta,
-                )
+                eff_at_target = solve_weight(BURNOUT_TARGET_REPS, fit)
                 entered_from_curve = _effective_to_entered(
                     exercise, eff_at_target, bodyweight_lb
                 )
@@ -1268,7 +1245,6 @@ def prescribe_next_set(
                 })
             inflection = detect_inflection(
                 fit, prior_sets, exercise, bodyweight_lb, max_weight,
-                readiness_beta=readiness_beta,
             )
             result = {
                 "has_curve": True,
@@ -1329,7 +1305,13 @@ def prescribe_next_set(
         })
 
     # Standard prescription
-    ew = solve_weight(r_fail_target, fit, readiness_beta=readiness_beta)
+    # NOTE: v4 readiness β is intentionally NOT applied here. The session
+    # curve refit (via refit_with_observations) already absorbs today's
+    # strong/weak signal into M/k/γ. Multiplying again by exp(β) would
+    # double-count and risk self-fulfilling drift. β is purely a display
+    # signal in v4.0; revisit if shadow-validation shows it should drive
+    # prescription.
+    ew = solve_weight(r_fail_target, fit)
     entered = entered_weight_for_effective_weight(
         exercise, effective_weight_lb=ew, bodyweight_lb=bodyweight_lb
     )

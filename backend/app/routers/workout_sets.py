@@ -185,9 +185,12 @@ def update_set(
     _normalize_session_set_order(session, ws.session_id)
     session.commit()
     session.refresh(ws)
-    # Live readiness re-fit: if this set has RPE data, recompute β for the
-    # owning workout session. update_session_readiness commits internally.
-    if ws.rpe is not None:
+    # Live readiness re-fit: only when the patch actually touches a field
+    # that influences β (rpe, reps/endurance, weight). Edits to notes/side/
+    # ordering should not pay the ~0.5–1s refit cost.
+    readiness_fields = {"rpe", "endurance_value", "weight"}
+    touched_readiness = bool(readiness_fields & set(updates.keys())) or bool(legacy_in)
+    if ws.rpe is not None and touched_readiness:
         try:
             update_session_readiness(session, ws.session_id)
         except Exception:
