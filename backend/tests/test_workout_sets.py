@@ -306,6 +306,88 @@ def test_delete_set_not_found(client):
     assert resp.status_code == 404
 
 
+# ── DELETE /api/workout-sessions/{id} cascade-clears PlannedSession FK ────
+
+
+def test_delete_workout_session_clears_planned_session_pointer(
+    client, session: Session, exercise: Exercise, workout_session: WorkoutSession
+):
+    """Deleting a WorkoutSession must clear any PlannedSession.workout_session_id
+    that points at it AND demote 'in_progress' status back to 'planned'.
+    Otherwise the planner serves a dangling pointer and every subsequent
+    POST /api/workout-sessions/{stale_id}/sets returns 404, leaving the
+    user stuck (Cancel also 404s on the missing session).
+    """
+    from app.models import PlannedSession, ProgramDay, TrainingProgram
+
+    prog = TrainingProgram(name="P")
+    session.add(prog)
+    session.flush()
+    day = ProgramDay(program_id=prog.id, day_label="A")
+    session.add(day)
+    session.flush()
+    planned = PlannedSession(
+        program_day_id=day.id,
+        date=workout_session.date,
+        status="in_progress",
+        workout_session_id=workout_session.id,
+    )
+    session.add(planned)
+    session.commit()
+    planned_id = planned.id
+
+    resp = client.delete(f"/api/workout-sessions/{workout_session.id}")
+    assert resp.status_code == 204
+
+    session.expire_all()
+    refreshed = session.get(PlannedSession, planned_id)
+    assert refreshed is not None
+    assert refreshed.workout_session_id is None
+    assert refreshed.status == "planned"
+
+
+def test_get_active_self_heals_dangling_workout_session_pointer(
+    client, session: Session, exercise: Exercise
+):
+    """If a PlannedSession.workout_session_id points to a missing WorkoutSession
+    (e.g., DB hand-edit, or pre-cascade delete from old code), GET
+    /api/planner/active must self-heal by clearing the pointer and demoting
+    'in_progress' → 'planned'. Otherwise the user is stuck because the
+    frontend POSTs /sets at the dead session_id forever (404).
+    """
+    import datetime as dt
+
+    from app.models import PlannedSession, ProgramDay, TrainingProgram
+
+    plan_date = dt.date(2026, 3, 15)
+    prog = TrainingProgram(name="P")
+    session.add(prog)
+    session.flush()
+    day = ProgramDay(program_id=prog.id, day_label="Quick Start")
+    session.add(day)
+    session.flush()
+    planned = PlannedSession(
+        program_day_id=day.id,
+        date=plan_date,
+        status="in_progress",
+        workout_session_id=999_999,  # never existed
+    )
+    session.add(planned)
+    session.commit()
+    planned_id = planned.id
+
+    resp = client.get(f"/api/planner/active?as_of={plan_date.isoformat()}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["workout_session_id"] is None
+    assert body["status"] == "planned"
+
+    session.expire_all()
+    refreshed = session.get(PlannedSession, planned_id)
+    assert refreshed.workout_session_id is None
+    assert refreshed.status == "planned"
+
+
 # ── PATCH /api/program-day-exercises/{pde_id} ─────────────────────────
 
 

@@ -208,6 +208,21 @@ def _serialize_saved_plan(session: Session, planned: PlannedSession) -> dict:
         limit=40,
     )
     if planned.workout_session_id:
+        # Self-heal: if the referenced WorkoutSession was deleted out from
+        # under us (e.g., via DELETE /api/workout-sessions/{id} before this
+        # router cascade-cleared the FK), clear the dangling pointer so the
+        # frontend doesn't keep POSTing /sets at a 404. Otherwise the user is
+        # stuck — they can't log sets, and Cancel also 404s on the missing
+        # session.
+        ws_exists = session.get(WorkoutSession, planned.workout_session_id)
+        if ws_exists is None:
+            planned.workout_session_id = None
+            if planned.status == "in_progress":
+                planned.status = "planned"
+            session.add(planned)
+            session.commit()
+            session.refresh(planned)
+    if planned.workout_session_id:
         sets = session.exec(
             select(WorkoutSet)
             .where(WorkoutSet.session_id == planned.workout_session_id)

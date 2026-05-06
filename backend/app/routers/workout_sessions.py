@@ -16,6 +16,7 @@ from app.exercise_loads import (
 )
 from app.models import (
     Exercise,
+    PlannedSession,
     WeightLog,
     WorkoutSession,
     WorkoutSet,
@@ -299,5 +300,17 @@ def delete_session(
         raise HTTPException(status_code=404, detail="Session not found")
     for s in session.exec(select(WorkoutSet).where(WorkoutSet.session_id == ws.id)).all():
         session.delete(s)
+    # Clear any PlannedSession rows that point at this WorkoutSession so the
+    # plan doesn't keep advertising an "in_progress" workout against a
+    # workout_session_id that no longer exists. Without this the next
+    # /api/workout-sessions/{stale_id}/sets POST 404s and the user is stuck.
+    referencing = session.exec(
+        select(PlannedSession).where(PlannedSession.workout_session_id == ws.id)
+    ).all()
+    for planned in referencing:
+        planned.workout_session_id = None
+        if planned.status == "in_progress":
+            planned.status = "planned"
+        session.add(planned)
     session.delete(ws)
     session.commit()
