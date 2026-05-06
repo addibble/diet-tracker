@@ -411,6 +411,34 @@ def test_chat_uses_client_local_datetime_for_inferred_defaults(client):
     assert data["saved_meal"]["date"] == "2026-03-01"
 
 
+def test_chat_executor_coerces_stringified_changes(client, session):
+    """Some LLMs emit `changes` as a JSON-encoded string instead of an array.
+    The executor must coerce it back to a real list before dispatching."""
+    captured: dict = {}
+
+    async def fake_chat(
+        messages, known_foods, known_recipes, recent_meals,
+        tool_executor, **kwargs,
+    ):
+        # Simulate Qwen's double-encoded changes payload
+        result = await tool_executor("set_weight_logs", {
+            "changes": '[{"operation": "create", "set": {"weight_lb": 175.2}}]',
+        })
+        captured["result"] = result
+        return "Logged."
+
+    with patch("app.routers.parse.chat_meal", new_callable=AsyncMock) as mock_llm:
+        mock_llm.side_effect = fake_chat
+        resp = client.post("/api/meals/chat", json={
+            "messages": [{"role": "user", "content": "log weight"}],
+        })
+
+    assert resp.status_code == 200
+    assert captured["result"]["created_count"] == 1
+    weights = session.exec(select(WeightLog)).all()
+    assert any(w.weight_lb == 175.2 for w in weights)
+
+
 def test_chat_can_log_weight(client, session):
     async def fake_chat(
         messages,

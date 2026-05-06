@@ -93,7 +93,13 @@ SET_FOODS_DEF = {
             "Create, update, or delete food records. "
             "Set name, brand, serving_size_grams, and 8 macro "
             "values per serving (calories, fat, saturated_fat, "
-            "cholesterol, sodium, carbs, fiber, protein)."
+            "cholesterol, sodium, carbs, fiber, protein).\n"
+            "IMPORTANT: For update/upsert/delete, provide match criteria "
+            "inside a 'match' object. Do NOT put id at the top level.\n"
+            "Example update:\n"
+            '  {"changes":[{"operation":"update",'
+            '"match":{"id":{"eq":12}},'
+            '"set":{"calories_per_serving":210,"protein_per_serving":24}}]}'
         ),
         "parameters": {
             "type": "object",
@@ -421,7 +427,13 @@ SET_RECIPES_DEF = {
         "name": "set_recipes",
         "description": (
             "Create, update, or delete recipes. Manage component "
-            "lists through the components relation with mode=replace."
+            "lists through the components relation with mode=replace.\n"
+            "Example create:\n"
+            '  {"changes":[{"operation":"create",'
+            '"set":{"name":"Tuna Salad"},'
+            '"relations":{"components":{"mode":"replace","records":['
+            '{"food_id":3,"amount_grams":100},'
+            '{"food_id":7,"amount_grams":30}]}}}]}'
         ),
         "parameters": {
             "type": "object",
@@ -735,7 +747,17 @@ SET_MEAL_LOGS_DEF = {
         "description": (
             "Create, update, or delete meal logs. Moving a meal "
             "to another date is just updating its date field. "
-            "Manage items through the items relation (mode=replace)."
+            "Manage items through the items relation (mode=replace "
+            "to overwrite, mode=append to add to existing).\n"
+            "Example create:\n"
+            '  {"changes":[{"operation":"create",'
+            '"set":{"date":"2026-05-05","meal_type":"lunch"},'
+            '"relations":{"items":{"mode":"replace","records":['
+            '{"food_id":12,"amount_grams":150},'
+            '{"recipe_id":4,"amount_grams":200}]}}}]}\n'
+            "Example move to another date:\n"
+            '  {"changes":[{"operation":"update",'
+            '"match":{"id":{"eq":98}},"set":{"date":"2026-05-04"}}]}'
         ),
         "parameters": {
             "type": "object",
@@ -1131,7 +1153,13 @@ SET_WEIGHT_LOGS_DEF = {
         "description": (
             "Log body weight. Create new weight entries in pounds. "
             "If the user gives kilograms, convert to pounds first "
-            "(1 kg = 2.20462 lb)."
+            "(1 kg = 2.20462 lb).\n"
+            "Example create:\n"
+            '  {"changes":[{"operation":"create",'
+            '"set":{"weight_lb":182.4}}]}\n'
+            "Example with explicit timestamp:\n"
+            '  {"changes":[{"operation":"create",'
+            '"set":{"weight_lb":180.0,"logged_at":"2026-05-05T07:30:00"}}]}'
         ),
         "parameters": {
             "type": "object",
@@ -1271,7 +1299,11 @@ SET_MACRO_TARGETS_DEF = {
             "so upsert is natural. Set any combination of: "
             "calories, fat, saturated_fat, cholesterol, sodium, "
             "carbs, fiber, protein. Unspecified fields stay unchanged "
-            "on update or default to 0 on create."
+            "on update or default to 0 on create.\n"
+            "Example upsert:\n"
+            '  {"changes":[{"operation":"upsert",'
+            '"match":{"day":{"eq":"2026-05-05"}},'
+            '"set":{"day":"2026-05-05","calories":2200,"protein":180}}]}'
         ),
         "parameters": {
             "type": "object",

@@ -33,6 +33,7 @@ from app.llm import (
     parse_meal_description,
 )
 from app.llm_tools import TOOL_HANDLERS, get_workout_context
+from app.llm_tools.shared import coerce_json_args
 from app.macros import MACRO_FIELDS
 from app.models import Food, MealItem, MealLog, Recipe, RecipeComponent
 from app.usda import search_usda
@@ -324,6 +325,17 @@ def _make_tool_executor(
         handler = TOOL_HANDLERS.get(name)
         if not handler:
             return {"error": f"Unknown tool: {name}"}
+
+        # Defend against LLMs that emit nested arrays/objects as JSON
+        # strings instead of native structures (e.g. Qwen tool-calling
+        # quirk where `changes` arrives as a stringified array).
+        if isinstance(args, dict):
+            coerced = coerce_json_args(args)
+            if coerced != args:
+                logger.info(
+                    "Coerced stringified JSON args for tool %s", name
+                )
+                args = coerced
 
         import inspect
 

@@ -999,7 +999,11 @@ SET_TISSUES_DEF = {
     "function": {
         "name": "set_tissues",
         "description": (
-            "Create, update, or delete tissue definitions."
+            "Create, update, or delete tissue definitions.\n"
+            "Example update:\n"
+            '  {"changes":[{"operation":"update",'
+            '"match":{"name":{"eq":"biceps_brachii"}},'
+            '"set":{"recovery_hours":48}}]}'
         ),
         "parameters": {
             "type": "object",
@@ -1267,10 +1271,17 @@ SET_WORKOUT_SESSIONS_DEF = {
         "description": (
             "Record COMPLETED sets in an active workout. Use ONLY for logging "
             "sets that the user has actually performed (reps, weight, RPE). "
-            "Do NOT use to add, remove, or reorder planned exercises ΓÇö "
+            "Do NOT use to add, remove, or reorder planned exercises — "
             "use modify_workout_plan for that instead. "
             "Add sets via the sets relation: mode=append to add new sets, "
-            "mode=replace to overwrite all sets for a session."
+            "mode=replace to overwrite all sets for a session.\n"
+            "Example log new sets to today's session:\n"
+            '  {"changes":[{"operation":"update",'
+            '"match":{"date":{"eq":"2026-05-05"}},'
+            '"relations":{"sets":{"mode":"append","records":['
+            '{"exercise_name":"Bench Press","reps":8,"weight":185,"rpe":7.5},'
+            '{"exercise_name":"Bench Press","reps":7,"weight":185,"rpe":8.5,'
+            '"rep_completion":"partial"}]}}}]}'
         ),
         "parameters": {
             "type": "object",
@@ -1718,8 +1729,15 @@ SET_WORKOUTS_DEF = {
     "function": {
         "name": "set_workouts",
         "description": (
-            "Import or manage external workout records. "
-            "Uses sync_key for deduplication on upsert."
+            "Import or manage external workout records (e.g. cardio "
+            "synced from a wearable). Uses sync_key for deduplication "
+            "on upsert.\n"
+            "Example upsert:\n"
+            '  {"changes":[{"operation":"upsert",'
+            '"match":{"sync_key":{"eq":"strava-12345"}},'
+            '"set":{"sync_key":"strava-12345","date":"2026-05-05",'
+            '"workout_type":"run","duration_minutes":42,'
+            '"active_calories":480,"distance_km":7.2,"source":"strava"}}]}'
         ),
         "parameters": {
             "type": "object",

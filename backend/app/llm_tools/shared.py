@@ -4,11 +4,62 @@ Provides fuzzy matching, SQL filter application, and standard response
 builders used by all get_<table> / set_<table> handlers.
 """
 
+import json
 from datetime import UTC, date, datetime
 from difflib import SequenceMatcher
 from typing import Any
 
 from sqlmodel import Session, col, select
+
+# ── JSON arg coercion ─────────────────────────────────────────────────
+#
+# Some LLMs (notably Qwen and a few smaller open-weight models served
+# through OpenRouter) emit tool-call arguments where nested arrays or
+# objects are JSON-encoded as a single string instead of being inlined.
+# For example, instead of
+#   {"changes": [{"operation": "update", ...}]}
+# they produce
+#   {"changes": "[{\"operation\": \"update\", ...}]"}
+# Iterating the resulting Python string yields characters and breaks
+# every setter handler with `TypeError: string indices must be integers`.
+#
+# coerce_json_args() recursively walks the top-level args dict and
+# replaces any string that parses cleanly as a JSON object or array
+# with the parsed value. Plain strings (names, notes, dates, etc.) are
+# left untouched because they don't start with `[` or `{`.
+
+
+def _maybe_json(value: Any) -> Any:
+    """If *value* is a string starting with `[` or `{` and parses as JSON,
+    return the parsed structure (recursed). Otherwise return *value*."""
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    if not stripped or stripped[0] not in "[{":
+        return value
+    try:
+        parsed = json.loads(stripped)
+    except (ValueError, TypeError):
+        return value
+    if isinstance(parsed, (dict, list)):
+        return coerce_json_args(parsed)
+    return value
+
+
+def coerce_json_args(value: Any) -> Any:
+    """Recursively coerce JSON-encoded string values back to native types.
+
+    Walks dicts and lists, JSON-decoding any string value whose first
+    non-whitespace character is `[` or `{` and which parses cleanly.
+    Returns a new structure of the same shape with stringified
+    arrays/objects replaced. Used at the tool-executor boundary as a
+    defensive measure against LLMs that double-encode tool arguments.
+    """
+    if isinstance(value, dict):
+        return {k: coerce_json_args(_maybe_json(v)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [coerce_json_args(_maybe_json(v)) for v in value]
+    return _maybe_json(value)
 
 # ── Fuzzy matching ────────────────────────────────────────────────────
 
