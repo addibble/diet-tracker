@@ -539,6 +539,9 @@ def _load_recent_sets(
     # Exclude bodyweight and non-strength exercises at the exercise level
     if (exercise.load_input_mode or "external_weight") in BODYWEIGHT_MODES:
         return exercise, []
+    # Exclude duration-mode exercises — see supports_strength_estimate.
+    if (exercise.set_metric_mode or "reps") == "duration":
+        return exercise, []
 
     anchor = as_of if as_of is not None else user_today()
     cutoff = anchor - timedelta(days=days)
@@ -1063,6 +1066,36 @@ def prescribe_next_set(
                 "target_reps": target_value,
                 "target_endurance": target_value,
                 "target_rir": None,
+                "metric_kind": metric.kind,
+                "display_unit": metric.display_unit,
+            },
+        }
+
+    # Duration-mode exercises (e.g., weighted plank) are non-progressive:
+    # the curve doesn't reflect the user's actual practice (they hold a
+    # constant weight for a constant time). Prescribe the median historical
+    # (weight, seconds) pair so the recommendation matches the lifestyle.
+    if metric.kind == "duration":
+        suggestion = get_duration_suggestion(exercise_id, session)
+        n_done = len(prior_sets)
+        target_sets = suggestion.get("sets", 3)
+        target_secs = suggestion.get("endurance_per_set", 30)
+        target_weight = suggestion.get("weight", 0.0)
+        target_rir = suggestion.get("rir_target", 2)
+        return {
+            "has_curve": False,
+            "mode": "duration_fixed",
+            "metric_kind": metric.kind,
+            "display_unit": metric.display_unit,
+            "suggestion": suggestion,
+            "exercise_complete": n_done >= target_sets,
+            "next_set": None if n_done >= target_sets else {
+                "set_number": n_done + 1,
+                "proposed_weight": target_weight,
+                "proposed_entered_weight_lb": target_weight,
+                "target_reps": target_secs,
+                "target_endurance": target_secs,
+                "target_rir": target_rir,
                 "metric_kind": metric.kind,
                 "display_unit": metric.display_unit,
             },
@@ -2608,6 +2641,60 @@ def get_bodyweight_suggestion(
         "metric_kind": metric.kind,
         "display_unit": metric.display_unit,
         "notes": "Non-progressive: fixed " + metric.label + " target",
+    }
+
+
+def get_duration_suggestion(
+    exercise_id: int, session: Session
+) -> dict:
+    """Non-progressive prescription for duration-mode exercises.
+
+    Weighted timed exercises (weighted plank, etc.) don't follow a strength
+    curve in the same way as reps — the user holds a fixed weight for a
+    fixed time. We suggest the median historical (weight, seconds) pair so
+    the prescription matches the user's actual practice instead of letting
+    the curve invert into a low-time / high-weight extrapolation.
+    """
+    exercise = session.get(Exercise, exercise_id)
+    metric = _metric_for(exercise) if exercise is not None else _METRIC_REPS
+    cutoff = user_today() - timedelta(days=90)
+    stmt = (
+        select(WorkoutSet.endurance_value, WorkoutSet.weight)
+        .join(WorkoutSession, WorkoutSet.session_id == WorkoutSession.id)
+        .where(
+            WorkoutSet.exercise_id == exercise_id,
+            WorkoutSet.endurance_value.is_not(None),
+            WorkoutSet.endurance_value > 0,
+            WorkoutSession.date >= cutoff,
+        )
+        .order_by(WorkoutSession.date.desc(), WorkoutSet.set_order.desc())
+        .limit(20)
+    )
+    rows = session.exec(stmt).all()
+    secs_values = [float(ev) for (ev, _w) in rows if ev is not None]
+    weight_values = [
+        float(w) for (_ev, w) in rows if w is not None and w > 0
+    ]
+
+    if secs_values:
+        target_secs = float(np.median(secs_values))
+        if metric.int_valued:
+            target_secs = int(round(target_secs))
+    else:
+        target_secs = 30
+
+    target_weight = float(np.median(weight_values)) if weight_values else 0.0
+    target_weight = round(target_weight, 1)
+
+    return {
+        "sets": 3,
+        "endurance_per_set": target_secs,
+        "weight": target_weight,
+        "metric_kind": metric.kind,
+        "display_unit": metric.display_unit,
+        "rir_target": 2,
+        "notes": "Non-progressive: median historical weight x duration",
+        "samples": len(secs_values),
     }
 
 

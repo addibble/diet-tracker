@@ -111,9 +111,15 @@ class TestDistanceCurve:
 
 
 class TestDurationCurve:
-    """Weighted Plank-style: external weight, duration metric."""
+    """Weighted Plank-style: external weight, duration metric.
 
-    def test_fits_with_duration_endurance(self, engine):
+    Duration-mode exercises do not get curve fits in v4.1+ — they're
+    routed to ``get_duration_suggestion`` so the prescription matches
+    the user's actual practice (constant weight, constant time) instead
+    of inverting a strength curve into a low-time / high-weight pair.
+    """
+
+    def test_duration_curves_disabled(self, engine):
         with Session(engine) as s:
             ex = _make_exercise(s, name="Weighted Plank", set_metric_mode="duration")
             today = date(2026, 4, 20)
@@ -128,10 +134,7 @@ class TestDurationCurve:
                 )
 
             fit = fit_curve(ex.id, s, as_of=today)
-            assert fit is not None
-            cd = _curve_dict(fit, ex, bodyweight_lb=180.0)
-            assert cd["metric_kind"] == "duration"
-            assert cd["display_unit"] == "s"
+            assert fit is None
 
 
 class TestBodyweightSuggestion:
@@ -217,3 +220,81 @@ class TestPrescribeNextSetMetricKind:
             assert result["metric_kind"] == "duration"
             assert result["display_unit"] == "s"
             assert result["next_set"]["target_endurance"] > 0
+
+
+class TestWeightedDurationSuggestion:
+    """Weighted plank-style: external_weight + duration → median-pair prescription."""
+
+    def test_returns_median_weight_and_seconds(self, engine):
+        from app.strength_model import get_duration_suggestion
+        with Session(engine) as s:
+            ex = _make_exercise(
+                s, name="Weighted Plank",
+                load_input_mode="external_weight",
+                set_metric_mode="duration",
+            )
+            today = date(2026, 4, 20)
+            # Mostly 45 lb x 45-50s — the curve would otherwise extrapolate
+            # to 100 lb x 20s. We want the prescription to stay near the
+            # historical pair.
+            for offset, (w, secs) in enumerate([
+                (45, 45), (45, 50), (40, 50), (45, 40), (50, 45),
+                (45, 50), (45, 45),
+            ]):
+                _add_session_with_sets(
+                    s, ex.id, today - timedelta(days=offset),
+                    [{"weight": w, "endurance_value": secs, "rpe": 8.0}],
+                )
+            sug = get_duration_suggestion(ex.id, s)
+            assert sug["metric_kind"] == "duration"
+            assert sug["endurance_per_set"] == 45  # median of [40,45,45,45,45,50,50]
+            assert sug["weight"] == 45.0  # median weight
+            assert sug["samples"] == 7
+
+    def test_no_history_returns_default(self, engine):
+        from app.strength_model import get_duration_suggestion
+        with Session(engine) as s:
+            ex = _make_exercise(
+                s, name="Weighted Plank",
+                load_input_mode="external_weight",
+                set_metric_mode="duration",
+            )
+            sug = get_duration_suggestion(ex.id, s)
+            assert sug["endurance_per_set"] == 30
+            assert sug["weight"] == 0.0
+            assert sug["samples"] == 0
+
+
+class TestPrescribeWeightedDuration:
+    """End-to-end: prescribe_next_set on weighted plank skips the curve."""
+
+    def test_prescribes_median_pair_not_curve_extrapolation(self, engine):
+        with Session(engine) as s:
+            ex = _make_exercise(
+                s, name="Weighted Plank",
+                load_input_mode="external_weight",
+                set_metric_mode="duration",
+            )
+            today = date(2026, 4, 20)
+            # Build history where a curve fit would push toward higher
+            # weight at lower time. Median pair stays at (45, 45).
+            for offset, (w, secs, rpe) in enumerate([
+                (45, 45, 8.0), (45, 50, 8.5), (45, 40, 9.0),
+                (50, 30, 9.0), (40, 55, 8.0), (45, 45, 8.5),
+            ]):
+                _add_session_with_sets(
+                    s, ex.id, today - timedelta(days=offset),
+                    [{"weight": w, "endurance_value": secs, "rpe": rpe}],
+                )
+            result = prescribe_next_set(
+                ex.id, s, prior_sets=[], bodyweight_lb=180.0,
+            )
+            assert result["mode"] == "duration_fixed"
+            assert result["metric_kind"] == "duration"
+            assert result["has_curve"] is False
+            ns = result["next_set"]
+            # Pinned to the historical median, not curve-extrapolated.
+            assert ns["proposed_weight"] == 45.0
+            assert ns["target_endurance"] == 45
+            assert ns["target_rir"] == 2
+

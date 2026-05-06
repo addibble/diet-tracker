@@ -125,8 +125,15 @@ def supports_strength_estimate(exercise: Exercise, workout_set: WorkoutSet) -> b
     """True when this set has the (weight, endurance, RPE) triple needed to fit a curve.
 
     Pure-bodyweight exercises are filtered out at a higher level (they're
-    routed to ``get_bodyweight_suggestion`` instead).
+    routed to ``get_bodyweight_suggestion`` instead). Duration-mode
+    exercises (e.g., weighted plank) are excluded here: their endurance is
+    seconds, which doesn't follow a strength-curve shape and produces
+    pathological prescriptions like "100 lb x 20 s" when historical
+    practice is "45 lb x 45 s". They are routed to
+    ``get_duration_suggestion`` instead.
     """
+    if (exercise.set_metric_mode or "reps") == "duration":
+        return False
     endurance = workout_set.endurance_value
     if endurance is None or endurance < 1:
         return False

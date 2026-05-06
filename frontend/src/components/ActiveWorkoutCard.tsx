@@ -80,6 +80,88 @@ function moveCursorToEnd(e: FocusEvent<HTMLInputElement>) {
   })
 }
 
+// ── Duration timer ──
+//
+// 5-second countdown ("get into position") then a count-up clock for
+// duration-mode sets (e.g., weighted plank). On Stop we hand the elapsed
+// seconds back to the parent via ``onCommit``; the parent owns the actual
+// secs input field so the user can still hand-edit afterwards.
+
+const COUNTDOWN_SECS = 5
+
+function DurationTimer({ onCommit }: { onCommit: (secs: number) => void }) {
+  // Single timeline: startedAt = when the user pressed Start.
+  // First COUNTDOWN_SECS seconds = countdown; everything after = run time.
+  const [startedAt, setStartedAt] = useState<number | null>(null)
+  const [now, setNow] = useState(() => Date.now())
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  useEffect(() => {
+    if (startedAt == null) return
+    tickRef.current = setInterval(() => setNow(Date.now()), 100)
+    return () => { if (tickRef.current) clearInterval(tickRef.current) }
+  }, [startedAt])
+
+  const start = () => {
+    const t = Date.now()
+    setNow(t)
+    setStartedAt(t)
+  }
+
+  const stop = () => {
+    if (startedAt != null) {
+      const elapsedMs = Date.now() - startedAt
+      const runMs = elapsedMs - COUNTDOWN_SECS * 1000
+      if (runMs > 0) {
+        const secs = Math.max(0, Math.round(runMs / 1000))
+        onCommit(secs)
+      }
+    }
+    setStartedAt(null)
+  }
+
+  if (startedAt == null) {
+    return (
+      <button
+        type="button"
+        onClick={start}
+        className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800 transition-colors hover:bg-emerald-100"
+        title="5s countdown, then count up"
+      >
+        ▶ Start
+      </button>
+    )
+  }
+
+  const elapsed = (now - startedAt) / 1000
+  const isCountdown = elapsed < COUNTDOWN_SECS
+  const display = isCountdown
+    ? String(Math.max(0, Math.ceil(COUNTDOWN_SECS - elapsed)))
+    : String(Math.floor(elapsed - COUNTDOWN_SECS))
+
+  return (
+    <div className="flex items-center gap-2">
+      <span
+        className={`tabular-nums rounded-lg border px-3 py-2 text-sm font-semibold ${
+          isCountdown
+            ? 'border-amber-300 bg-amber-50 text-amber-800'
+            : 'border-emerald-300 bg-emerald-50 text-emerald-800'
+        }`}
+      >
+        {isCountdown ? `Get ready · ${display}` : `${display}s`}
+      </span>
+      <button
+        type="button"
+        onClick={stop}
+        className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50"
+      >
+        ⏹ Stop
+      </button>
+    </div>
+  )
+}
+
+
 // ── Types ──
 
 interface LoggedSet {
@@ -1081,18 +1163,21 @@ function ExerciseWorkout({
                   </div>
                 )}
                 {showSecs && (
-                  <div className="w-20">
-                    <label className="block text-[10px] font-medium text-gray-500">Secs</label>
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      pattern="[0-9]*"
-                      value={secs}
-                      onChange={e => setSecs(e.target.value)}
-                      onFocus={moveCursorToEnd}
-                      className="mt-0.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400"
-                      placeholder="0"
-                    />
+                  <div className="flex items-end gap-2">
+                    <div className="w-20">
+                      <label className="block text-[10px] font-medium text-gray-500">Secs</label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        value={secs}
+                        onChange={e => setSecs(e.target.value)}
+                        onFocus={moveCursorToEnd}
+                        className="mt-0.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm tabular-nums focus:border-gray-500 focus:ring-1 focus:ring-gray-400"
+                        placeholder="0"
+                      />
+                    </div>
+                    <DurationTimer onCommit={(s) => setSecs(String(s))} />
                   </div>
                 )}
                 {showDistance && (

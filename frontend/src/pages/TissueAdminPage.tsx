@@ -136,6 +136,22 @@ function ExerciseEditor({
   const [equipment, setEquipment] = useState(exercise.equipment ?? '')
   const [laterality, setLaterality] = useState(exercise.laterality)
   const [notes, setNotes] = useState(exercise.notes ?? '')
+  const [setMetricMode, setSetMetricMode] = useState(exercise.set_metric_mode || 'reps')
+  const [loadInputMode, setLoadInputMode] = useState(exercise.load_input_mode || 'external_weight')
+  const [allowHeavyLoading, setAllowHeavyLoading] = useState(exercise.allow_heavy_loading)
+  const [bodyweightFraction, setBodyweightFraction] = useState(
+    String(exercise.bodyweight_fraction ?? 0),
+  )
+  const [externalLoadMultiplier, setExternalLoadMultiplier] = useState(
+    String(exercise.external_load_multiplier ?? 1),
+  )
+  const [estimatedMinutes, setEstimatedMinutes] = useState(
+    String(exercise.estimated_minutes_per_set ?? 2),
+  )
+  const [variantGroup, setVariantGroup] = useState(exercise.variant_group ?? '')
+  const [gripStyle, setGripStyle] = useState(exercise.grip_style || 'none')
+  const [gripWidth, setGripWidth] = useState(exercise.grip_width || 'none')
+  const [supportStyle, setSupportStyle] = useState(exercise.support_style || 'none')
   const [mappings, setMappings] = useState<WkExerciseTissueMapping[]>(exercise.tissues)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -191,6 +207,16 @@ function ExerciseEditor({
         equipment: equipment || null,
         laterality,
         notes: notes || null,
+        set_metric_mode: setMetricMode,
+        load_input_mode: loadInputMode,
+        allow_heavy_loading: allowHeavyLoading,
+        bodyweight_fraction: parseFloat(bodyweightFraction) || 0,
+        external_load_multiplier: parseFloat(externalLoadMultiplier) || 1,
+        estimated_minutes_per_set: parseFloat(estimatedMinutes) || 2,
+        variant_group: variantGroup || null,
+        grip_style: gripStyle,
+        grip_width: gripWidth,
+        support_style: supportStyle,
         tissues: mappings.map((m) => ({
           tissue_id: m.tissue_id,
           role: m.role,
@@ -251,6 +277,124 @@ function ExerciseEditor({
             <option value="unilateral">unilateral</option>
             <option value="either">either</option>
           </select>
+        </label>
+        <label className="flex flex-col text-xs text-gray-600">
+          Set metric mode
+          <select
+            value={setMetricMode}
+            onChange={(e) => setSetMetricMode(e.target.value)}
+            className="mt-1 px-2 py-1.5 border border-gray-300 rounded text-sm"
+          >
+            <option value="reps">reps</option>
+            <option value="duration">duration (seconds)</option>
+            <option value="distance">distance (steps)</option>
+          </select>
+        </label>
+        <label className="flex flex-col text-xs text-gray-600">
+          Load input mode
+          <select
+            value={loadInputMode}
+            onChange={(e) => setLoadInputMode(e.target.value)}
+            className="mt-1 px-2 py-1.5 border border-gray-300 rounded text-sm"
+          >
+            <option value="external_weight">external_weight</option>
+            <option value="bodyweight">bodyweight</option>
+            <option value="assisted_bodyweight">assisted_bodyweight</option>
+          </select>
+        </label>
+        <label className="flex flex-col text-xs text-gray-600">
+          Variant group
+          <input
+            value={variantGroup}
+            onChange={(e) => setVariantGroup(e.target.value)}
+            placeholder="(none)"
+            className="mt-1 px-2 py-1.5 border border-gray-300 rounded text-sm"
+          />
+        </label>
+        <label className="flex flex-col text-xs text-gray-600">
+          Bodyweight fraction (0–1)
+          <input
+            type="number"
+            step="0.05"
+            min="0"
+            max="1"
+            value={bodyweightFraction}
+            onChange={(e) => setBodyweightFraction(e.target.value)}
+            className="mt-1 px-2 py-1.5 border border-gray-300 rounded text-sm"
+          />
+        </label>
+        <label className="flex flex-col text-xs text-gray-600">
+          External load multiplier
+          <input
+            type="number"
+            step="0.05"
+            min="0"
+            value={externalLoadMultiplier}
+            onChange={(e) => setExternalLoadMultiplier(e.target.value)}
+            className="mt-1 px-2 py-1.5 border border-gray-300 rounded text-sm"
+          />
+        </label>
+        <label className="flex flex-col text-xs text-gray-600">
+          Estimated minutes / set
+          <input
+            type="number"
+            step="0.5"
+            min="0"
+            value={estimatedMinutes}
+            onChange={(e) => setEstimatedMinutes(e.target.value)}
+            className="mt-1 px-2 py-1.5 border border-gray-300 rounded text-sm"
+          />
+        </label>
+        <label className="flex flex-col text-xs text-gray-600">
+          Grip style
+          <select
+            value={gripStyle}
+            onChange={(e) => setGripStyle(e.target.value)}
+            className="mt-1 px-2 py-1.5 border border-gray-300 rounded text-sm"
+          >
+            <option value="none">none</option>
+            <option value="overhand">overhand</option>
+            <option value="underhand">underhand</option>
+            <option value="neutral">neutral</option>
+            <option value="mixed">mixed</option>
+          </select>
+        </label>
+        <label className="flex flex-col text-xs text-gray-600">
+          Grip width
+          <select
+            value={gripWidth}
+            onChange={(e) => setGripWidth(e.target.value)}
+            className="mt-1 px-2 py-1.5 border border-gray-300 rounded text-sm"
+          >
+            <option value="none">none</option>
+            <option value="narrow">narrow</option>
+            <option value="medium">medium</option>
+            <option value="wide">wide</option>
+          </select>
+        </label>
+        <label className="flex flex-col text-xs text-gray-600">
+          Support style
+          <select
+            value={supportStyle}
+            onChange={(e) => setSupportStyle(e.target.value)}
+            className="mt-1 px-2 py-1.5 border border-gray-300 rounded text-sm"
+          >
+            <option value="none">none</option>
+            <option value="seated">seated</option>
+            <option value="standing">standing</option>
+            <option value="prone">prone</option>
+            <option value="supine">supine</option>
+            <option value="incline">incline</option>
+            <option value="decline">decline</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-2 text-xs text-gray-600 sm:col-span-2">
+          <input
+            type="checkbox"
+            checked={allowHeavyLoading}
+            onChange={(e) => setAllowHeavyLoading(e.target.checked)}
+          />
+          Allow heavy loading (eligible for ≤5-rep sets / 1RM-tier fits)
         </label>
       </div>
 
