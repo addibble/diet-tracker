@@ -4,7 +4,7 @@ const navItems = [
   { to: '/', label: 'Dashboard' },
   { to: '/training', label: 'Training' },
   { to: '/log', label: 'Chat' },
-  { to: '/tissues', label: 'Tissues' },
+  { to: '/database', label: 'Database' },
 ]
 
 export default function Layout() {

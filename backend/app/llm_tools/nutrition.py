@@ -26,6 +26,7 @@ from .shared import (
     apply_fuzzy_post_filter,
     apply_sort,
     error_response,
+    execute_paginated,
     getter_response,
     parse_date_val,
     record_to_dict,
@@ -75,10 +76,21 @@ GET_FOODS_DEF = {
                 "limit": {
                     "type": "integer",
                     "default": 50,
+                    "maximum": 200,
+                    "description": (
+                        "Max foods to return (cap 200). "
+                        "Use offset to paginate; response includes "
+                        "total_count and has_more."
+                    ),
                 },
                 "offset": {
                     "type": "integer",
                     "default": 0,
+                    "description": (
+                        "Skip this many foods before returning. "
+                        "Combine with limit to iterate through "
+                        "long histories."
+                    ),
                 },
             },
         },
@@ -90,16 +102,24 @@ SET_FOODS_DEF = {
     "function": {
         "name": "set_foods",
         "description": (
-            "Create, update, or delete food records. "
+            "Create, update, delete, or MERGE food records. "
             "Set name, brand, serving_size_grams, and 8 macro "
             "values per serving (calories, fat, saturated_fat, "
             "cholesterol, sodium, carbs, fiber, protein).\n"
-            "IMPORTANT: For update/upsert/delete, provide match criteria "
-            "inside a 'match' object. Do NOT put id at the top level.\n"
+            "IMPORTANT: For update/upsert/delete/merge, provide match "
+            "criteria inside a 'match' object. Do NOT put id at the top "
+            "level.\n"
             "Example update:\n"
             '  {"changes":[{"operation":"update",'
             '"match":{"id":{"eq":12}},'
-            '"set":{"calories_per_serving":210,"protein_per_serving":24}}]}'
+            '"set":{"calories_per_serving":210,'
+            '"protein_per_serving":24}}]}\n'
+            "Example merge (deduplicate two foods, reassign meal_items "
+            "and recipe_components from source -> merge_into, then "
+            "delete source):\n"
+            '  {"changes":[{"operation":"merge",'
+            '"match":{"id":{"eq":17}},'
+            '"merge_into":{"id":{"eq":42}}}]}'
         ),
         "parameters": {
             "type": "object",
@@ -118,6 +138,7 @@ SET_FOODS_DEF = {
                                     "update",
                                     "upsert",
                                     "delete",
+                                    "merge",
                                 ],
                             },
                             "match": {
@@ -125,6 +146,14 @@ SET_FOODS_DEF = {
                                 "description": (
                                     "Filter to select records. "
                                     "Supports id, name (fuzzy)."
+                                ),
+                            },
+                            "merge_into": {
+                                "type": "object",
+                                "description": (
+                                    "Required for operation=merge. "
+                                    "Selects the target food to keep. "
+                                    "Same filter syntax as match."
                                 ),
                             },
                             "set": {
@@ -171,20 +200,18 @@ def handle_get_foods(args: dict, session: Session) -> dict:
     stmt = apply_sort(
         stmt, Food, args.get("sort") or [{"field": "name", "direction": "asc"}]
     )
-    limit = args.get("limit", 50)
-    offset = args.get("offset", 0)
-    stmt = stmt.offset(offset).limit(limit)
-    records = list(session.exec(stmt).all())
-
-    match_info: list[dict] = []
-    if fuzzy_specs:
-        records, match_info = apply_fuzzy_post_filter(records, fuzzy_specs)
+    records, match_info, total, limit, offset = execute_paginated(
+        session, stmt, args, fuzzy_specs=fuzzy_specs, default_limit=50,
+    )
 
     return getter_response(
         "foods",
         [_food_to_dict(f) for f in records],
         filters_applied=filters,
         match_info=match_info or None,
+        total_count=total,
+        offset=offset,
+        limit=limit,
     )
 
 
@@ -214,6 +241,10 @@ GET_FOODS_AND_RECIPES_DEF = {
                 "limit": {
                     "type": "integer",
                     "default": 25,
+                    "maximum": 200,
+                    "description": (
+                        "Max combined foods+recipes to return (cap 200)."
+                    ),
                 },
             },
         },
@@ -367,6 +398,45 @@ def handle_set_foods(args: dict, session: Session) -> dict:
                 results.append({"id": rec.id, "name": rec.name})
                 deleted += 1
 
+        elif op == "merge":
+            from app.routers.foods import _merge_foods
+
+            from .shared import resolve_match
+            target_spec = change.get("merge_into")
+            if not target_spec:
+                return error_response(
+                    "foods",
+                    "operation=merge requires 'merge_into' selecting "
+                    "the target food to keep.",
+                )
+            src_records, _, src_err = resolve_match(
+                session, Food, match_spec,
+                fuzzy_fields=["name", "brand"],
+            )
+            if not src_records:
+                return error_response(
+                    "foods", src_err or "No source food matched"
+                )
+            tgt_records, _, tgt_err = resolve_match(
+                session, Food, target_spec,
+                fuzzy_fields=["name", "brand"],
+            )
+            if not tgt_records:
+                return error_response(
+                    "foods", tgt_err or "No target food matched"
+                )
+            target = tgt_records[0]
+            # Commit any in-flight writes before merge cascades.
+            session.flush()
+            for src in src_records:
+                if src.id == target.id:
+                    continue
+                merge_result = _merge_foods(session, src.id, target.id)
+                results.append(merge_result.model_dump())
+                deleted += 1
+                changed += merge_result.merged_meal_items
+                changed += merge_result.merged_recipe_components
+
     session.commit()
     return setter_response(
         "foods", args["changes"][0]["operation"] if args.get("changes") else "noop",
@@ -415,7 +485,17 @@ GET_RECIPES_DEF = {
                         "macro_totals",
                     ],
                 },
-                "limit": {"type": "integer", "default": 25},
+                "limit": {
+                    "type": "integer", "default": 25, "maximum": 200,
+                    "description": (
+                        "Max recipes to return (cap 200). Response includes "
+                        "total_count and has_more for pagination."
+                    ),
+                },
+                "offset": {
+                    "type": "integer", "default": 0,
+                    "description": "Skip this many recipes before returning.",
+                },
             },
         },
     },
@@ -541,19 +621,18 @@ def handle_get_recipes(args: dict, session: Session) -> dict:
     stmt = apply_sort(
         stmt, Recipe, args.get("sort") or [{"field": "name", "direction": "asc"}]
     )
-    limit = args.get("limit", 25)
-    stmt = stmt.limit(limit)
-    records = list(session.exec(stmt).all())
-
-    match_info: list[dict] = []
-    if fuzzy_specs:
-        records, match_info = apply_fuzzy_post_filter(records, fuzzy_specs)
+    records, match_info, total, limit, offset = execute_paginated(
+        session, stmt, args, fuzzy_specs=fuzzy_specs, default_limit=25,
+    )
 
     return getter_response(
         "recipes",
         [_build_recipe_dict(r, session) for r in records],
         filters_applied=filters,
         match_info=match_info or None,
+        total_count=total,
+        offset=offset,
+        limit=limit,
     )
 
 
@@ -734,7 +813,18 @@ GET_MEAL_LOGS_DEF = {
                         },
                     },
                 },
-                "limit": {"type": "integer", "default": 25},
+                "limit": {
+                    "type": "integer", "default": 25, "maximum": 200,
+                    "description": (
+                        "Max meal logs to return (cap 200). Response includes "
+                        "total_count and has_more for pagination — raise "
+                        "offset to iterate through long histories."
+                    ),
+                },
+                "offset": {
+                    "type": "integer", "default": 0,
+                    "description": "Skip this many meal logs before returning.",
+                },
             },
         },
     },
@@ -927,14 +1017,17 @@ def handle_get_meal_logs(args: dict, session: Session) -> dict:
         {"field": "created_at", "direction": "desc"},
     ]
     stmt = apply_sort(stmt, MealLog, args.get("sort") or default_sort)
-    limit = args.get("limit", 25)
-    stmt = stmt.limit(limit)
-    records = list(session.exec(stmt).all())
+    records, _match_info, total, limit, offset = execute_paginated(
+        session, stmt, args, fuzzy_specs=fuzzy_specs, default_limit=25,
+    )
 
     return getter_response(
         "meal_logs",
         [_build_meal_dict(m, session) for m in records],
         filters_applied=filters,
+        total_count=total,
+        offset=offset,
+        limit=limit,
     )
 
 
@@ -1140,7 +1233,17 @@ GET_WEIGHT_LOGS_DEF = {
                         "logged_at({gte,lte}) with ISO timestamps."
                     ),
                 },
-                "limit": {"type": "integer", "default": 30},
+                "limit": {
+                    "type": "integer", "default": 30, "maximum": 200,
+                    "description": (
+                        "Max weight logs to return (cap 200). Response "
+                        "includes total_count and has_more."
+                    ),
+                },
+                "offset": {
+                    "type": "integer", "default": 0,
+                    "description": "Skip this many weight logs.",
+                },
             },
         },
     },
@@ -1205,13 +1308,16 @@ def handle_get_weight_logs(args: dict, session: Session) -> dict:
     stmt = select(WeightLog)
     stmt, _ = apply_filters(stmt, WeightLog, filters)
     stmt = stmt.order_by(col(WeightLog.logged_at).desc())
-    limit = args.get("limit", 30)
-    stmt = stmt.limit(limit)
-    records = list(session.exec(stmt).all())
+    records, _match_info, total, limit, offset = execute_paginated(
+        session, stmt, args, default_limit=30,
+    )
     return getter_response(
         "weight_logs",
         [record_to_dict(r) for r in records],
         filters_applied=filters,
+        total_count=total,
+        offset=offset,
+        limit=limit,
     )
 
 
@@ -1284,7 +1390,14 @@ GET_MACRO_TARGETS_DEF = {
                     "type": "object",
                     "description": "day({eq,gte,lte}).",
                 },
-                "limit": {"type": "integer", "default": 25},
+                "limit": {
+                    "type": "integer", "default": 25, "maximum": 200,
+                    "description": "Max macro target rows (cap 200).",
+                },
+                "offset": {
+                    "type": "integer", "default": 0,
+                    "description": "Skip this many rows before returning.",
+                },
             },
         },
     },
@@ -1370,9 +1483,10 @@ def handle_get_macro_targets(args: dict, session: Session) -> dict:
     stmt = select(MacroTarget)
     stmt, _ = apply_filters(stmt, MacroTarget, filters)
     stmt = stmt.order_by(MacroTarget.day)
-    limit = args.get("limit", 25)
-    stmt = stmt.limit(limit)
-    targets = list(session.exec(stmt).all())
+    records, _match_info, total, limit, offset = execute_paginated(
+        session, stmt, args, default_limit=25,
+    )
+    targets = list(records)
 
     result = []
     for i, t in enumerate(targets):
@@ -1381,7 +1495,8 @@ def handle_get_macro_targets(args: dict, session: Session) -> dict:
         result.append(d)
 
     return getter_response(
-        "macro_targets", result, filters_applied=filters
+        "macro_targets", result, filters_applied=filters,
+        total_count=total, offset=offset, limit=limit,
     )
 
 

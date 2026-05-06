@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { getFoods, getRecipes, createRecipe, deleteRecipe, MACRO_KEYS, MACRO_LABELS, type Food, type Recipe } from '../api'
+import { getFoods, getRecipes, createRecipe, deleteRecipe, auditRecipes, MACRO_KEYS, MACRO_LABELS, type Food, type Recipe, type RecipeAuditResponse } from '../api'
 import ScrollablePage from '../components/ScrollablePage'
 
 interface ComponentForm {
@@ -14,6 +14,18 @@ export default function RecipesPage() {
   const [name, setName] = useState('')
   const [components, setComponents] = useState<ComponentForm[]>([{ food_id: '', amount_grams: '' }])
   const [expanded, setExpanded] = useState<number | null>(null)
+  const [showAudit, setShowAudit] = useState(false)
+  const [audit, setAudit] = useState<RecipeAuditResponse | null>(null)
+  const [auditLoading, setAuditLoading] = useState(false)
+
+  const refreshAudit = async () => {
+    setAuditLoading(true)
+    try {
+      setAudit(await auditRecipes())
+    } finally {
+      setAuditLoading(false)
+    }
+  }
 
   const load = async () => {
     const [r, f] = await Promise.all([getRecipes(), getFoods()])
@@ -62,11 +74,95 @@ export default function RecipesPage() {
     <ScrollablePage>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-semibold text-gray-900">Recipes</h1>
-        <button onClick={() => setShowForm(!showForm)}
-          className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700">
-          {showForm ? 'Cancel' : 'New Recipe'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              const next = !showAudit
+              setShowAudit(next)
+              if (next && !audit) refreshAudit()
+            }}
+            className={`px-3 py-2 text-sm font-medium rounded-md border ${
+              showAudit
+                ? 'bg-amber-100 border-amber-300 text-amber-900'
+                : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            {showAudit ? 'Hide Audit' : 'Audit'}
+          </button>
+          <button onClick={() => setShowForm(!showForm)}
+            className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700">
+            {showForm ? 'Cancel' : 'New Recipe'}
+          </button>
+        </div>
       </div>
+
+      {showAudit && (
+        <div className="mb-6 bg-amber-50 border border-amber-200 rounded-lg p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold text-amber-900">Recipe Audit</h2>
+            <button
+              onClick={refreshAudit}
+              className="text-xs px-2 py-1 bg-white border border-amber-300 rounded hover:bg-amber-100"
+            >
+              {auditLoading ? 'Refreshing...' : 'Refresh'}
+            </button>
+          </div>
+          {!audit ? (
+            <p className="text-sm text-amber-800">{auditLoading ? 'Loading...' : 'No data'}</p>
+          ) : (
+            <div className="space-y-4 text-sm">
+              <div>
+                <h3 className="font-medium text-amber-900 mb-1">
+                  Empty Recipes ({audit.empty.length})
+                </h3>
+                {audit.empty.length === 0 ? (
+                  <p className="text-gray-600">None.</p>
+                ) : (
+                  <ul className="text-xs flex flex-wrap gap-2">
+                    {audit.empty.map((r) => (
+                      <li key={r.id} className="px-2 py-0.5 bg-white border border-amber-200 rounded flex items-center gap-1">
+                        <span>{r.name}</span>
+                        <button
+                          onClick={async () => {
+                            if (confirm(`Delete empty recipe "${r.name}"?`)) {
+                              await deleteRecipe(r.id)
+                              await load()
+                              await refreshAudit()
+                            }
+                          }}
+                          className="text-red-500 hover:text-red-700"
+                          title="Delete"
+                        >
+                          ×
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div>
+                <h3 className="font-medium text-amber-900 mb-1">
+                  Macro Anomalies ({audit.macro_anomalies.length})
+                </h3>
+                {audit.macro_anomalies.length === 0 ? (
+                  <p className="text-gray-600">None.</p>
+                ) : (
+                  <ul className="text-xs space-y-1">
+                    {audit.macro_anomalies.map((r) => (
+                      <li key={r.id} className="px-2 py-0.5 bg-white border border-amber-200 rounded">
+                        <span className="font-medium">{r.name}</span>
+                        <span className="text-gray-500 ml-2">
+                          {r.component_count} components · {r.total_calories} cal · {r.total_grams}g
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {showForm && (
         <form onSubmit={handleSubmit} className="bg-white p-4 rounded-lg border border-gray-200 mb-6">

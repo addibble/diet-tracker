@@ -63,6 +63,15 @@ def list_recipes(
     return [_build_recipe_response(r, session) for r in recipes]
 
 
+@router.get("/audit")
+def audit_recipes(
+    session: Session = Depends(get_session),
+    _user: str = Depends(get_current_user),
+):
+    from app.routers.foods import _audit_recipes
+    return _audit_recipes(session)
+
+
 @router.get("/{recipe_id}")
 def get_recipe(
     recipe_id: int,

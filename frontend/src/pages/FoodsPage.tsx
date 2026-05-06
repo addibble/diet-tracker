@@ -1,5 +1,9 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
-import { getFoods, createFood, updateFood, deleteFood, foodMacroPerServing, importFoodLabel, MACRO_KEYS, MACRO_LABELS, type Food, type FoodImportResult } from '../api'
+import {
+  getFoods, createFood, updateFood, deleteFood, foodMacroPerServing,
+  importFoodLabel, mergeFoods, auditFoods, MACRO_KEYS, MACRO_LABELS,
+  type Food, type FoodImportResult, type FoodAuditResponse, type FoodAuditSummary,
+} from '../api'
 import ScrollablePage from '../components/ScrollablePage'
 
 const FOOD_MACRO_FIELDS = MACRO_KEYS.map((m) => `${m}_per_serving` as const)
@@ -38,8 +42,23 @@ export default function FoodsPage() {
   const [form, setForm] = useState<FormState>(emptyForm())
   const [importing, setImporting] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [mergeModal, setMergeModal] = useState<{ a: Food; b: Food } | null>(null)
+  const [merging, setMerging] = useState(false)
+  const [showAudit, setShowAudit] = useState(false)
+  const [audit, setAudit] = useState<FoodAuditResponse | null>(null)
+  const [auditLoading, setAuditLoading] = useState(false)
 
   const load = async () => { setFoods(await getFoods(search || undefined)) }
+  const refreshAudit = async () => {
+    setAuditLoading(true)
+    try {
+      setAudit(await auditFoods())
+    } finally {
+      setAuditLoading(false)
+    }
+  }
+
   useEffect(() => {
     let cancelled = false
     getFoods(search || undefined)
@@ -96,11 +115,78 @@ export default function FoodsPage() {
     }
   }
 
+  const toggleSelect = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const beginMerge = () => {
+    if (selected.size !== 2) return
+    const ids = Array.from(selected)
+    const a = foods.find((f) => f.id === ids[0])
+    const b = foods.find((f) => f.id === ids[1])
+    if (a && b) setMergeModal({ a, b })
+  }
+
+  const confirmMerge = async (keep: Food, remove: Food) => {
+    setMerging(true)
+    try {
+      const result = await mergeFoods(remove.id, keep.id)
+      alert(
+        `Merged "${remove.name}" into "${keep.name}".\n` +
+        `Reassigned ${result.merged_meal_items} meal items, ` +
+        `${result.merged_recipe_components} recipe components.`,
+      )
+      setSelected(new Set())
+      setMergeModal(null)
+      await load()
+      if (showAudit) await refreshAudit()
+    } catch (err) {
+      alert(`Merge failed: ${err instanceof Error ? err.message : err}`)
+    } finally {
+      setMerging(false)
+    }
+  }
+
+  const beginAuditMerge = (a: FoodAuditSummary, b: FoodAuditSummary) => {
+    const fa = foods.find((f) => f.id === a.id)
+    const fb = foods.find((f) => f.id === b.id)
+    if (fa && fb) setMergeModal({ a: fa, b: fb })
+  }
+
   return (
     <ScrollablePage>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 flex-wrap gap-2">
         <h1 className="text-2xl font-semibold text-gray-900">Foods</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={() => {
+              const next = !showAudit
+              setShowAudit(next)
+              if (next && !audit) refreshAudit()
+            }}
+            className={`px-3 py-2 text-sm font-medium rounded-md border ${
+              showAudit ? 'bg-amber-100 border-amber-300 text-amber-900' : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            {showAudit ? 'Hide Audit' : 'Audit'}
+          </button>
+          <button
+            disabled={selected.size !== 2}
+            onClick={beginMerge}
+            className={`px-3 py-2 text-sm font-medium rounded-md ${
+              selected.size === 2
+                ? 'bg-amber-600 text-white hover:bg-amber-700'
+                : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+            }`}
+            title="Select exactly 2 foods to merge"
+          >
+            Merge ({selected.size})
+          </button>
           <label
             className={`px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-md ${
               importing ? 'opacity-60 cursor-not-allowed' : 'hover:bg-emerald-700 cursor-pointer'
@@ -126,6 +212,111 @@ export default function FoodsPage() {
       {importError && (
         <div className="mb-4 px-3 py-2 rounded-md border border-red-200 bg-red-50 text-sm text-red-700">
           {importError}
+        </div>
+      )}
+
+      {showAudit && (
+        <div className="mb-6 bg-amber-50 border border-amber-200 rounded-lg p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold text-amber-900">Food Audit</h2>
+            <button
+              onClick={refreshAudit}
+              className="text-xs px-2 py-1 bg-white border border-amber-300 rounded hover:bg-amber-100"
+            >
+              {auditLoading ? 'Refreshing...' : 'Refresh'}
+            </button>
+          </div>
+          {!audit ? (
+            <p className="text-sm text-amber-800">{auditLoading ? 'Loading...' : 'No data'}</p>
+          ) : (
+            <div className="space-y-4 text-sm">
+              <div>
+                <h3 className="font-medium text-amber-900 mb-1">
+                  Possible Duplicates ({audit.duplicate_groups.length} groups)
+                </h3>
+                {audit.duplicate_groups.length === 0 ? (
+                  <p className="text-gray-600">None detected.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {audit.duplicate_groups.map((group, i) => (
+                      <li key={i} className="bg-white border border-amber-200 rounded p-2">
+                        <div className="flex flex-wrap gap-2">
+                          {group.foods.map((f) => (
+                            <span
+                              key={f.id}
+                              className="px-2 py-0.5 bg-gray-100 rounded text-xs"
+                              title={`${f.usage_count} uses (${f.meal_item_count} meal items + ${f.recipe_component_count} components)`}
+                            >
+                              {f.name}{f.brand ? ` · ${f.brand}` : ''} ({f.usage_count})
+                            </span>
+                          ))}
+                        </div>
+                        {group.foods.length === 2 && (
+                          <button
+                            onClick={() => beginAuditMerge(group.foods[0], group.foods[1])}
+                            className="mt-2 text-xs px-2 py-1 bg-amber-600 text-white rounded hover:bg-amber-700"
+                          >
+                            Merge these two
+                          </button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div>
+                <h3 className="font-medium text-amber-900 mb-1">
+                  Missing Macros ({audit.missing_macros.length})
+                </h3>
+                {audit.missing_macros.length === 0 ? (
+                  <p className="text-gray-600">None.</p>
+                ) : (
+                  <ul className="text-xs flex flex-wrap gap-2">
+                    {audit.missing_macros.slice(0, 30).map((f) => (
+                      <li key={f.id} className="px-2 py-0.5 bg-white border border-amber-200 rounded">
+                        {f.name}{f.brand ? ` · ${f.brand}` : ''}
+                      </li>
+                    ))}
+                    {audit.missing_macros.length > 30 && (
+                      <li className="text-gray-500">...and {audit.missing_macros.length - 30} more</li>
+                    )}
+                  </ul>
+                )}
+              </div>
+              <div>
+                <h3 className="font-medium text-amber-900 mb-1">
+                  Unused ({audit.unused.length})
+                </h3>
+                {audit.unused.length === 0 ? (
+                  <p className="text-gray-600">None.</p>
+                ) : (
+                  <ul className="text-xs flex flex-wrap gap-2">
+                    {audit.unused.slice(0, 30).map((f) => (
+                      <li key={f.id} className="px-2 py-0.5 bg-white border border-amber-200 rounded flex items-center gap-1">
+                        <span>{f.name}{f.brand ? ` · ${f.brand}` : ''}</span>
+                        <button
+                          onClick={async () => {
+                            if (confirm(`Delete unused food "${f.name}"?`)) {
+                              await deleteFood(f.id)
+                              await load()
+                              await refreshAudit()
+                            }
+                          }}
+                          className="text-red-500 hover:text-red-700"
+                          title="Delete"
+                        >
+                          ×
+                        </button>
+                      </li>
+                    ))}
+                    {audit.unused.length > 30 && (
+                      <li className="text-gray-500">...and {audit.unused.length - 30} more</li>
+                    )}
+                  </ul>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -164,6 +355,7 @@ export default function FoodsPage() {
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-gray-50 text-gray-500 text-xs">
+              <th className="text-center font-medium px-2 py-2 w-8"></th>
               <th className="text-left font-medium px-3 py-2">Name</th>
               <th className="text-left font-medium px-3 py-2">Brand</th>
               <th className="text-right font-medium px-3 py-2">Serving</th>
@@ -177,6 +369,13 @@ export default function FoodsPage() {
           <tbody>
             {foods.map((food) => (
               <tr key={food.id} className="border-t border-gray-100 text-gray-700">
+                <td className="px-2 py-2 text-center">
+                  <input
+                    type="checkbox"
+                    checked={selected.has(food.id)}
+                    onChange={() => toggleSelect(food.id)}
+                  />
+                </td>
                 <td className="px-3 py-2">{food.name}</td>
                 <td className="px-3 py-2 text-gray-500">{food.brand ?? ''}</td>
                 <td className="px-3 py-2 text-right">{food.serving_size_grams}g</td>
@@ -193,11 +392,51 @@ export default function FoodsPage() {
               </tr>
             ))}
             {foods.length === 0 && (
-              <tr><td colSpan={MACRO_KEYS.length + 5} className="px-3 py-8 text-center text-gray-400">No foods found</td></tr>
+              <tr><td colSpan={MACRO_KEYS.length + 6} className="px-3 py-8 text-center text-gray-400">No foods found</td></tr>
             )}
           </tbody>
         </table>
       </div>
+
+      {mergeModal && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-lg w-full p-5">
+            <h2 className="text-lg font-semibold mb-2">Merge Foods</h2>
+            <p className="text-sm text-gray-600 mb-4">
+              Choose which food to keep. The other will be deleted, and all
+              meal items, recipe components, and overrides referencing it
+              will be reassigned to the kept food.
+            </p>
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              {[mergeModal.a, mergeModal.b].map((f, i) => (
+                <button
+                  key={f.id}
+                  disabled={merging}
+                  onClick={() => {
+                    const other = i === 0 ? mergeModal.b : mergeModal.a
+                    confirmMerge(f, other)
+                  }}
+                  className="border border-gray-300 rounded-md p-3 hover:border-blue-500 hover:bg-blue-50 text-left"
+                >
+                  <div className="font-medium text-sm">{f.name}</div>
+                  {f.brand && <div className="text-xs text-gray-500">{f.brand}</div>}
+                  <div className="text-xs text-gray-500 mt-1">
+                    {f.calories_per_serving} cal / {f.serving_size_grams}g
+                  </div>
+                  <div className="text-xs text-blue-700 mt-2">Keep this →</div>
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => setMergeModal(null)}
+              disabled={merging}
+              className="px-3 py-1.5 text-sm bg-gray-200 rounded hover:bg-gray-300"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </ScrollablePage>
   )
 }

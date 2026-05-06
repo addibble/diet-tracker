@@ -34,9 +34,9 @@ from app.workout_queries import (
 
 from .shared import (
     apply_filters,
-    apply_fuzzy_post_filter,
     apply_sort,
     error_response,
+    execute_paginated,
     fuzzy_score,
     getter_response,
     parse_date_val,
@@ -388,7 +388,17 @@ GET_EXERCISES_DEF = {
                     },
                     "default": ["current_tissues"],
                 },
-                "limit": {"type": "integer", "default": 50},
+                "limit": {
+                    "type": "integer", "default": 50, "maximum": 200,
+                    "description": (
+                        "Max exercises to return (cap 200). Response "
+                        "includes total_count and has_more."
+                    ),
+                },
+                "offset": {
+                    "type": "integer", "default": 0,
+                    "description": "Skip this many exercises before returning.",
+                },
                 "sort": {
                     "type": "array",
                     "description": "Sort by name.",
@@ -663,13 +673,9 @@ def handle_get_exercises(args: dict, session: Session) -> dict:
         stmt, Exercise,
         args.get("sort") or [{"field": "name", "direction": "asc"}],
     )
-    limit = args.get("limit", 50)
-    stmt = stmt.limit(limit)
-    records = list(session.exec(stmt).all())
-
-    match_info: list[dict] = []
-    if fuzzy_specs:
-        records, match_info = apply_fuzzy_post_filter(records, fuzzy_specs)
+    records, match_info, total, limit, offset = execute_paginated(
+        session, stmt, args, fuzzy_specs=fuzzy_specs, default_limit=50,
+    )
 
     results = []
     for ex in records:
@@ -684,6 +690,7 @@ def handle_get_exercises(args: dict, session: Session) -> dict:
         "exercises", results,
         filters_applied=filters,
         match_info=match_info or None,
+        total_count=total, offset=offset, limit=limit,
     )
 
 
@@ -988,7 +995,7 @@ GET_TISSUES_DEF = {
                         ],
                     },
                 },
-                "limit": {"type": "integer", "default": 200},
+                "limit": {"type": "integer", "default": 200, "maximum": 200},
             },
         },
     },
@@ -1258,7 +1265,17 @@ GET_WORKOUT_SESSIONS_DEF = {
                     },
                     "default": ["sets", "sets.exercise"],
                 },
-                "limit": {"type": "integer", "default": 20},
+                "limit": {
+                    "type": "integer", "default": 20, "maximum": 200,
+                    "description": (
+                        "Max workout sessions to return (cap 200). Response "
+                        "includes total_count and has_more for pagination."
+                    ),
+                },
+                "offset": {
+                    "type": "integer", "default": 0,
+                    "description": "Skip this many sessions before returning.",
+                },
             },
         },
     },
@@ -1546,9 +1563,9 @@ def handle_get_workout_sessions(
 
     stmt, fuzzy_specs = apply_filters(stmt, WorkoutSession, filters)
     stmt = stmt.order_by(col(WorkoutSession.date).desc())
-    limit = args.get("limit", 20)
-    stmt = stmt.limit(limit)
-    records = list(session.exec(stmt).all())
+    records, _match_info, total, limit, offset = execute_paginated(
+        session, stmt, args, fuzzy_specs=fuzzy_specs, default_limit=20,
+    )
 
     # Filter by exercise name if specified
     if exercise_name:
@@ -1557,6 +1574,7 @@ def handle_get_workout_sessions(
             return getter_response(
                 "workout_sessions", [],
                 warnings=[f"Exercise '{exercise_name}' not found"],
+                total_count=0, offset=offset, limit=limit,
             )
         filtered = []
         for ws in records:
@@ -1573,6 +1591,7 @@ def handle_get_workout_sessions(
         "workout_sessions",
         [_build_session_summary(ws, session) for ws in records],
         filters_applied=filters or None,
+        total_count=total, offset=offset, limit=limit,
     )
 
 
@@ -1718,7 +1737,17 @@ GET_WORKOUTS_DEF = {
                         "source({eq})."
                     ),
                 },
-                "limit": {"type": "integer", "default": 25},
+                "limit": {
+                    "type": "integer", "default": 25, "maximum": 200,
+                    "description": (
+                        "Max workouts to return (cap 200). Response includes "
+                        "total_count and has_more."
+                    ),
+                },
+                "offset": {
+                    "type": "integer", "default": 0,
+                    "description": "Skip this many workouts before returning.",
+                },
             },
         },
     },
@@ -1787,13 +1816,14 @@ def handle_get_workouts(args: dict, session: Session) -> dict:
     stmt = select(Workout)
     stmt, _ = apply_filters(stmt, Workout, filters)
     stmt = stmt.order_by(col(Workout.date).desc())
-    limit = args.get("limit", 25)
-    stmt = stmt.limit(limit)
-    records = list(session.exec(stmt).all())
+    records, _match_info, total, limit, offset = execute_paginated(
+        session, stmt, args, default_limit=25,
+    )
     return getter_response(
         "workouts",
         [record_to_dict(r) for r in records],
         filters_applied=filters,
+        total_count=total, offset=offset, limit=limit,
     )
 
 

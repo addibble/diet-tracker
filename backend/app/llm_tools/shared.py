@@ -9,6 +9,7 @@ from datetime import UTC, date, datetime
 from difflib import SequenceMatcher
 from typing import Any
 
+from sqlalchemy import func
 from sqlmodel import Session, col, select
 
 # ── JSON arg coercion ─────────────────────────────────────────────────
@@ -213,6 +214,82 @@ def apply_sort(stmt, model_class, sort_spec: list[dict] | None):
     return stmt
 
 
+# ── Pagination ────────────────────────────────────────────────────────
+
+
+# Cap on the `limit` arg accepted from LLM tool calls. Higher values let
+# the LLM iterate through long histories (food logs, weight logs,
+# exercise logs) but stay below a level that would blow up the prompt.
+MAX_GETTER_LIMIT = 200
+
+
+def parse_pagination_args(
+    args: dict, *, default_limit: int = 50, max_limit: int = MAX_GETTER_LIMIT,
+) -> tuple[int, int]:
+    """Extract and validate (limit, offset) from a getter args dict.
+
+    Both bounds are clamped: limit is forced into [1, max_limit] and
+    offset is forced to be non-negative. Non-numeric values fall back
+    to the default limit / zero offset rather than raising.
+    """
+    raw_limit = args.get("limit", default_limit)
+    try:
+        limit = int(raw_limit) if raw_limit is not None else default_limit
+    except (TypeError, ValueError):
+        limit = default_limit
+    if limit <= 0:
+        limit = default_limit
+    limit = min(limit, max_limit)
+
+    raw_offset = args.get("offset", 0)
+    try:
+        offset = int(raw_offset) if raw_offset is not None else 0
+    except (TypeError, ValueError):
+        offset = 0
+    if offset < 0:
+        offset = 0
+
+    return limit, offset
+
+
+def execute_paginated(
+    session: Session,
+    stmt,
+    args: dict,
+    *,
+    fuzzy_specs: list[tuple[str, str]] | None = None,
+    default_limit: int = 50,
+    max_limit: int = MAX_GETTER_LIMIT,
+):
+    """Run *stmt* with pagination + optional fuzzy post-filter.
+
+    Returns ``(records, match_info, total, limit, offset)``.
+
+    For non-fuzzy queries the total count is computed via a SQL
+    ``COUNT(*)`` subquery (cheap, even for large tables). For fuzzy
+    queries the full result set is loaded, scored in Python, and then
+    paginated — total reflects the post-fuzzy count.
+    """
+    limit, offset = parse_pagination_args(
+        args, default_limit=default_limit, max_limit=max_limit,
+    )
+
+    match_info: list[dict] = []
+    if fuzzy_specs:
+        all_recs = list(session.exec(stmt).all())
+        all_recs, match_info = apply_fuzzy_post_filter(all_recs, fuzzy_specs)
+        total = len(all_recs)
+        records = all_recs[offset:offset + limit]
+        match_info = match_info[offset:offset + limit]
+    else:
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        total = int(session.exec(count_stmt).one())
+        paged = stmt.offset(offset).limit(limit)
+        records = list(session.exec(paged).all())
+
+    return records, match_info, total, limit, offset
+
+
 # ── Resolve a match spec to records ──────────────────────────────────
 
 
@@ -268,13 +345,30 @@ def getter_response(
     filters_applied: dict | None = None,
     match_info: list[dict] | None = None,
     warnings: list[str] | None = None,
+    total_count: int | None = None,
+    offset: int = 0,
+    limit: int | None = None,
 ) -> dict:
-    """Standard getter response envelope."""
+    """Standard getter response envelope.
+
+    When *total_count* is provided the response also exposes pagination
+    metadata so the LLM can iterate through large result sets:
+      - ``total_count``: total rows matching the filter (before paging)
+      - ``offset``: the offset that was applied
+      - ``limit``: the limit that was applied
+      - ``has_more``: True if more rows remain past offset+len(matches)
+    """
     r: dict[str, Any] = {
         "table": table,
         "count": len(matches),
         "matches": matches,
     }
+    if total_count is not None:
+        r["total_count"] = total_count
+        r["offset"] = offset
+        if limit is not None:
+            r["limit"] = limit
+        r["has_more"] = offset + len(matches) < total_count
     if filters_applied:
         r["filters_applied"] = filters_applied
     if match_info:

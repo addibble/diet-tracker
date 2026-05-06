@@ -75,3 +75,62 @@ export const searchFoodsAndRecipes = (search: string) =>
   request<FoodSearchResult[]>(
     `/food-search?search=${encodeURIComponent(search)}`,
   );
+
+export interface FoodMergeResult {
+  target_id: number;
+  source_id: number;
+  merged_meal_items: number;
+  merged_recipe_components: number;
+  merged_overrides_original: number;
+  merged_overrides_replacement: number;
+}
+
+export const mergeFoods = (source_id: number, target_id: number) =>
+  request<FoodMergeResult>('/foods/merge', {
+    method: 'POST',
+    body: JSON.stringify({ source_id, target_id }),
+  });
+
+export interface FoodAuditSummary {
+  id: number;
+  name: string;
+  brand: string | null;
+  serving_size_grams: number;
+  calories_per_serving: number;
+  fat_per_serving: number;
+  carbs_per_serving: number;
+  protein_per_serving: number;
+  source: string;
+  meal_item_count: number;
+  recipe_component_count: number;
+  usage_count: number;
+}
+
+export interface FoodAuditResponse {
+  total_foods: number;
+  duplicate_groups: { size: number; foods: FoodAuditSummary[] }[];
+  missing_macros: FoodAuditSummary[];
+  unused: FoodAuditSummary[];
+}
+
+export const auditFoods = (threshold = 0.85) =>
+  request<FoodAuditResponse>(
+    `/foods/audit?duplicate_threshold=${threshold}`,
+  );
+
+export interface RecipeAuditEntry {
+  id: number;
+  name: string;
+  component_count?: number;
+  total_calories?: number;
+  total_grams?: number;
+}
+
+export interface RecipeAuditResponse {
+  total_recipes: number;
+  empty: RecipeAuditEntry[];
+  macro_anomalies: RecipeAuditEntry[];
+}
+
+export const auditRecipes = () =>
+  request<RecipeAuditResponse>('/recipes/audit');
