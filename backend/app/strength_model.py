@@ -453,7 +453,17 @@ def _fit_params(
 ) -> tuple[float, float, float, float, bool]:
     """Run multi-restart optimization. Returns (M, k, gamma, delta, success)."""
     max_W = float(np.max(W))
-    delta_upper = max(50.0, max_W * 0.5)
+    # Cap delta at 50% of the observed weight range. The earlier
+    # `max(50.0, max_W * 0.5)` floor allowed delta to balloon to 50 lb on
+    # light exercises (e.g. rotator-cuff PT work with max_W ≈ 6-8 lb),
+    # making the (M, k, gamma, delta) fit non-identifiable and producing
+    # absurd extrapolations at small W (e.g. 30+ reps at 6 lb where v3
+    # predicted ~16). Tying the bound to max_W keeps delta on the same
+    # scale as the data the curve was trained on. We still enforce a tiny
+    # absolute floor so the optimizer has room to move on truly tiny
+    # weights (sub-1-lb exercises are rare, but max_W * 0.5 = 0 would
+    # collapse to v3 with no exploration).
+    delta_upper = max(0.5, max_W * 0.5)
     best_result = None
     best_loss = float("inf")
 

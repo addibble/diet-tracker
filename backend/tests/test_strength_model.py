@@ -1293,3 +1293,37 @@ class TestPrescribeCurveBlock:
         assert result.get("mode") == "bootstrap"
         assert result["next_set"]["set_number"] == 2
 
+
+
+class TestDeltaUpperBound:
+    """Regression: delta upper bound must scale with the observed weight range.
+
+    The earlier `delta_upper = max(50.0, max_W * 0.5)` floor allowed delta to
+    grow up to 50 lb on any low-weight exercise (e.g. rotator-cuff PT work
+    with max_W ≈ 6-8 lb), making the (M, k, gamma, delta) fit
+    non-identifiable and producing absurd extrapolations at small W.
+    """
+
+    def test_delta_bounded_by_observed_weight_range(self):
+        from app.strength_model import _fit_params
+
+        # Light-weight PT-style exercise: max observed weight = 8 lb.
+        # If the bound is `max(50, 0.5*max_W)` delta could go up to 50;
+        # with the corrected bound it must stay <= 4 lb.
+        W = np.array([5.0, 6.0, 7.5, 8.0, 8.0, 8.0, 6.0, 6.0, 5.0, 5.0, 5.0])
+        r = np.array([25.0, 20.0, 18.0, 19.0, 15.0, 14.0, 17.0, 16.0, 22.0, 22.0, 22.0])
+        fw = np.ones_like(W)
+        M_fit, k_fit, g_fit, d_fit, ok = _fit_params(
+            W, r, fw,
+            M_lower=W.max() * 1.05, M_upper=W.max() * 5.0,
+            M_prior=W.max() * 1.5, lambda_M=0.5,
+            fixed_gamma=DEFAULT_GAMMA,
+        )
+        assert ok
+        max_W = float(W.max())
+        # Hard upper bound from `_fit_params` -- must scale with max_W.
+        assert 0.0 <= d_fit <= max(0.5, max_W * 0.5) + 1e-6, (
+            f"delta={d_fit} exceeds 0.5 * max_W={max_W * 0.5}"
+        )
+        # Specific guard: delta on a max_W=8 exercise must never exceed 8 lb.
+        assert d_fit <= max_W, f"delta={d_fit} exceeds max observed weight {max_W}"
