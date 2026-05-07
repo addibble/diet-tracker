@@ -6,6 +6,14 @@ from pydantic import BaseModel
 from sqlmodel import Session, col, select
 
 from app.auth import get_current_user
+from app.chart_cache import (
+    KIND_BETA_EVOL,
+    beta_evol_key,
+    cache_get,
+    cache_set,
+    invalidate_for_session_delete,
+    invalidate_for_set_change,
+)
 from app.database import get_session
 from app.exercise_history import empty_scheme_history, get_exercise_scheme_history_map
 from app.exercise_laterality import default_performed_side
@@ -245,11 +253,20 @@ def get_beta_evolution(
     sets only — drives the in-session readiness sparkline that shows how
     today's signal evolved as the user worked through their workout.
     ``beta`` is ``null`` for prefixes with too few RPE-tagged sets.
+
+    Lazy-cached via ``chart_cache``: invalidated by add/update/delete of
+    workout sets in this session, plus same-exercise sets in any session
+    within the prior 30 days, plus bodyweight log and exercise-model
+    changes.
     """
+    key = beta_evol_key(session_id)
+    cached = cache_get(session, key)
+    if cached is not None:
+        return cached
     points = session_beta_evolution(session, session_id)
     if points is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    return {
+    response = {
         "session_id": session_id,
         "points": [
             {
@@ -264,6 +281,11 @@ def get_beta_evolution(
             for p in points
         ],
     }
+    cache_set(
+        session, key, KIND_BETA_EVOL, response,
+        workout_session_id=session_id,
+    )
+    return response
 
 
 @router.post("", status_code=201)
@@ -319,6 +341,16 @@ def update_session(
     ws = session.get(WorkoutSession, session_id)
     if not ws:
         raise HTTPException(status_code=404, detail="Session not found")
+    # Capture state needed to invalidate the chart cache after we mutate
+    # the session: the *old* date plus every exercise the session ever
+    # touched (existing + adds + removes). A session-date change also
+    # affects curve windows on both old and new dates.
+    old_date = ws.date
+    affected_ex_ids: set[int] = set(session.exec(
+        select(WorkoutSet.exercise_id).where(WorkoutSet.session_id == ws.id)
+    ).all())
+    if data.add_sets:
+        affected_ex_ids.update(s.exercise_id for s in data.add_sets)
     if data.date is not None:
         ws.date = data.date
     if data.notes is not None:
@@ -356,6 +388,11 @@ def update_session(
                 rep_completion=s.rep_completion,
                 notes=s.notes,
             ))
+    new_date = ws.date
+    for ex_id in affected_ex_ids:
+        invalidate_for_set_change(session, ws.id, ex_id, old_date)
+        if new_date != old_date:
+            invalidate_for_set_change(session, ws.id, ex_id, new_date)
     session.commit()
     return _build_session_response(ws, session)
 
@@ -369,6 +406,12 @@ def delete_session(
     ws = session.get(WorkoutSession, session_id)
     if not ws:
         raise HTTPException(status_code=404, detail="Session not found")
+    # Capture exercise IDs so the cache invalidator can drop affected
+    # curve windows for every exercise this session touched.
+    set_ex_ids = list(session.exec(
+        select(WorkoutSet.exercise_id).where(WorkoutSet.session_id == ws.id)
+    ).all())
+    invalidate_for_session_delete(session, ws.id, ws.date, set_ex_ids)
     for s in session.exec(select(WorkoutSet).where(WorkoutSet.session_id == ws.id)).all():
         session.delete(s)
     # Clear any PlannedSession rows that point at this WorkoutSession so the

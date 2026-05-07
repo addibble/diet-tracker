@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.auth import get_current_user
+from app.chart_cache import invalidate_all_charts
 from app.database import get_session
 from app.exercise_history import build_scheme_history, get_exercise_history_map
 from app.exercise_laterality import default_mapping_laterality_mode, infer_exercise_laterality
@@ -487,6 +488,11 @@ def update_exercise(
     if data.notes is not None:
         exercise.notes = data.notes
     session.add(exercise)
+    # Exercise model fields (allow_heavy_loading, load_input_mode,
+    # bodyweight_fraction, external_load_multiplier, set_metric_mode)
+    # change how every cached curve / β-evolution payload is computed.
+    # Cheap to nuke and lazy-refill.
+    invalidate_all_charts(session)
     session.commit()
     if data.tissues is not None:
         # Delete existing mappings and replace

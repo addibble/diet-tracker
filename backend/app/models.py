@@ -334,6 +334,32 @@ class RehabCheckIn(SQLModel, table=True):
     next_day_flare: int = 0
     confidence_0_10: int = 5
     notes: str | None = None
+
+
+class ChartCache(SQLModel, table=True):
+    """Cache of expensive chart-render payloads (curve snapshots and
+    in-session β evolution). Lazy-filled on first read; invalidated on
+    any mutation that could change the cached output.
+
+    ``cache_key`` is version-prefixed so a model/payload-shape change can
+    be rolled out by bumping the version constant in ``chart_cache.py``
+    without a manual purge. The auxiliary index columns
+    (``workout_session_id``, ``exercise_id``, ``on_date``) drive the
+    invalidation queries — they're nullable because each cache ``kind``
+    only populates the columns relevant to its key.
+    """
+    __tablename__ = "chart_cache"
+    __table_args__ = (
+        UniqueConstraint("cache_key", name="uq_chart_cache_key"),
+    )
+    id: int | None = Field(default=None, primary_key=True)
+    cache_key: str = Field(index=True)
+    kind: str = Field(index=True)
+    workout_session_id: int | None = Field(default=None, index=True)
+    exercise_id: int | None = Field(default=None, index=True)
+    on_date: dt.date | None = Field(default=None, index=True)
+    payload_json: str
+    computed_at: datetime = Field(default_factory=_utcnow)
     recorded_at: datetime = Field(default_factory=_utcnow, index=True)
 
 

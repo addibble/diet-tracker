@@ -11,6 +11,7 @@ from sqlmodel import Session, func, select
 
 from app.auth import get_current_user
 from app.auth_models import User
+from app.chart_cache import invalidate_for_set_change
 from app.database import get_session
 from app.exercise_history import REP_SCHEME_VERSION, empty_scheme_history, get_exercise_scheme_history_map
 from app.exercise_laterality import default_performed_side
@@ -231,14 +232,22 @@ def update_set(
         setattr(ws, key, value)
     session.add(ws)
     _normalize_session_set_order(session, ws.session_id)
+    # Invalidate chart cache in the same transaction so a failed commit
+    # leaves no stale rows. Curve / β-evolution depend on rpe, weight,
+    # and endurance_value (anything else can't change the fit).
+    readiness_fields = {"rpe", "endurance_value", "weight"}
+    touched_readiness = bool(readiness_fields & set(updates.keys())) or bool(legacy_in)
+    parent_session = session.get(WorkoutSession, ws.session_id)
+    if touched_readiness and parent_session is not None:
+        invalidate_for_set_change(
+            session, ws.session_id, ws.exercise_id, parent_session.date,
+        )
     session.commit()
     session.refresh(ws)
     # Live readiness re-fit: only when the patch actually touches a field
     # that influences β (rpe, reps/endurance, weight). Edits to notes/side/
     # ordering should not pay the refit cost; nor do duration- or
     # bodyweight-mode sets (they're filtered out of the curve fit).
-    readiness_fields = {"rpe", "endurance_value", "weight"}
-    touched_readiness = bool(readiness_fields & set(updates.keys())) or bool(legacy_in)
     if (
         ws.rpe is not None
         and touched_readiness
@@ -314,6 +323,7 @@ def add_set(
     session.add(new_set)
     session.flush()
     _normalize_session_set_order(session, session_id)
+    invalidate_for_set_change(session, session_id, data.exercise_id, ws.date)
     session.commit()
     session.refresh(new_set)
     if new_set.rpe is not None and _exercise_can_change_readiness(exercise):
@@ -330,6 +340,11 @@ def delete_set(
     ws = session.get(WorkoutSet, set_id)
     if not ws:
         raise HTTPException(status_code=404, detail="Set not found")
+    parent = session.get(WorkoutSession, ws.session_id)
+    if parent is not None:
+        invalidate_for_set_change(
+            session, ws.session_id, ws.exercise_id, parent.date,
+        )
     session.delete(ws)
     session.commit()
 

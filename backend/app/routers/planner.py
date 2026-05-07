@@ -20,6 +20,12 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.auth import get_current_user
+from app.chart_cache import (
+    KIND_CURVE,
+    cache_get,
+    cache_set,
+    curve_key,
+)
 from app.config import user_today
 from app.database import get_session
 from app.exercise_groups import get_group_exercise_menu
@@ -222,10 +228,26 @@ def curve_snapshot(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    """Historical curve fit for the completed-exercise view (Recent Sessions)."""
+    """Historical curve fit for the completed-exercise view (Recent Sessions).
+
+    Lazy-cached via ``chart_cache``: invalidated by add/update/delete of
+    workout sets within the 30-day fitting window of ``date``, plus
+    bodyweight log changes and exercise-model edits.
+    """
+    key = curve_key(exercise_id, date)
+    cached = cache_get(session, key)
+    if cached is not None:
+        return cached
     bw_lookup = _get_bw_lookup(session)
     bw_lb = latest_bodyweight(bw_lookup, date)
-    return curve_snapshot_for_date(exercise_id, session, date, bodyweight_lb=bw_lb)
+    payload = curve_snapshot_for_date(
+        exercise_id, session, date, bodyweight_lb=bw_lb,
+    )
+    cache_set(
+        session, key, KIND_CURVE, payload,
+        exercise_id=exercise_id, on_date=date,
+    )
+    return payload
 
 
 @router.get("/fatigue-profile/{exercise_id}")

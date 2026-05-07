@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.auth import get_current_user
+from app.chart_cache import invalidate_all_charts
 from app.config import user_today
 from app.database import get_session
 from app.macros import compute_food_macros
@@ -322,6 +323,12 @@ def put_today_weight(
     else:
         existing = WeightLog(weight_lb=body.weight_lb, logged_at=now)
         session.add(existing)
+
+    # Bodyweight changes propagate into curve fits and β-evolution
+    # through effective_weight() for every bodyweight-dependent
+    # exercise, so a narrow invalidation isn't sufficient — clear all
+    # chart cache rows in the same transaction.
+    invalidate_all_charts(session)
 
     session.commit()
     session.refresh(existing)

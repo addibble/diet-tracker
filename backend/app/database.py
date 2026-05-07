@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 RUNTIME_REQUIRED_TABLES = {
     "tissue_region_links",
+    "chart_cache",
 }
 
 RUNTIME_REQUIRED_COLUMNS = {
