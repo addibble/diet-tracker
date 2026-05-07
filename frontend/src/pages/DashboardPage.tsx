@@ -802,6 +802,7 @@ function RecentSessionsCard({
                         key={`spark-${ws.id}`}
                         sessionId={ws.id}
                         exerciseName={arr.length > 1 ? `Session ${i + 1}` : 'Session'}
+                        large
                       />
                     ))}
                   {editingDates.has(date) ? (

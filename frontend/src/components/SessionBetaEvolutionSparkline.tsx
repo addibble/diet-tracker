@@ -11,6 +11,10 @@ export interface SessionBetaEvolutionSparklineProps {
   /** Bumping this string forces a refetch (e.g. after a set is logged). */
   refreshKey?: string | number
   exerciseName?: string
+  /** Stacked, full-width layout for the dashboard expanded view. Renders
+   *  the label on a line above and the sparkline as a tall, container-wide
+   *  SVG below. Defaults to the compact inline layout used in-session. */
+  large?: boolean
 }
 
 /** In-session β evolution: one node per completed exercise (in completion
@@ -19,7 +23,7 @@ export interface SessionBetaEvolutionSparklineProps {
  *  (β < 0) with a dashed 0-line down the middle. Nodes with insufficient
  *  data are rendered as hollow circles and skipped from the path. */
 export function SessionBetaEvolutionSparkline({
-  sessionId, refreshKey, exerciseName,
+  sessionId, refreshKey, exerciseName, large = false,
 }: SessionBetaEvolutionSparklineProps) {
   const [data, setData] = useState<SessionBetaEvolution | null>(null)
 
@@ -38,19 +42,23 @@ export function SessionBetaEvolutionSparkline({
   const labelText = lastWithBeta?.beta != null
     ? `β ${lastWithBeta.beta >= 0 ? '+' : ''}${lastWithBeta.beta.toFixed(2)}`
     : 'β —'
+  const namePrefix = exerciseName ?? 'Session'
 
   if (pts.length === 0) {
     return (
       <div className="text-[11px] text-gray-500 mt-1">
-        <span className="mr-1 opacity-80">{exerciseName ?? 'Session'} β:</span>
+        <span className="mr-1 opacity-80">{namePrefix} β:</span>
         <span className="opacity-60">—</span>
       </div>
     )
   }
 
+  // viewBox stays in fixed coordinates; outer width is fixed for the
+  // inline variant (compact, sits next to a label), and 100% for the
+  // large variant so the SVG stretches to match the curve pane below.
   const W = 140
-  const H = 28
-  const PAD = 3
+  const H = large ? 84 : 28
+  const PAD = large ? 6 : 3
   // Symmetric range so 0-line sits at the visual midpoint.
   const betas = pts.map((p) => p.beta).filter((b): b is number => b != null)
   const maxAbs = Math.max(0.1, ...betas.map((b) => Math.abs(b)))
@@ -70,40 +78,67 @@ export function SessionBetaEvolutionSparkline({
     path += `${penDown ? 'L' : 'M'}${cx.toFixed(2)},${cy.toFixed(2)} `
     penDown = true
   })
+  const tooltip = pts.map((p) =>
+    `${p.exercise_name}: β ${p.beta == null ? '—' : p.beta.toFixed(2)} (${p.set_count} sets)`
+  ).join('\n')
+  const lastDotR = large ? 4 : 2.75
+  const dotR = large ? 2.5 : 1.75
+  const svg = (
+    <svg
+      width={large ? '100%' : W}
+      height={large ? undefined : H}
+      viewBox={`0 0 ${W} ${H}`}
+      preserveAspectRatio="none"
+      className={large ? 'block w-full' : 'overflow-visible'}
+      style={large ? { height: `${H}px` } : undefined}
+    >
+      <rect x={PAD} y={PAD} width={W - 2 * PAD} height={yZero - PAD}
+            fill="#dcfce7" />
+      <rect x={PAD} y={yZero} width={W - 2 * PAD} height={H - PAD - yZero}
+            fill="#fee2e2" />
+      <line x1={PAD} y1={yZero} x2={W - PAD} y2={yZero}
+            stroke="currentColor" strokeOpacity="0.35" strokeDasharray="2,2" />
+      <path d={path} fill="none" stroke="currentColor"
+            strokeWidth={large ? 1.75 : 1.5} strokeOpacity="0.7"
+            vectorEffect="non-scaling-stroke" />
+      {pts.map((p, i) => {
+        const cx = PAD + i * xStep
+        const isLast = i === pts.length - 1
+        if (p.beta == null) {
+          return (
+            <circle key={`${p.exercise_id}-${i}`} cx={cx} cy={yZero}
+              r={dotR} fill="white" stroke="currentColor"
+              strokeOpacity={0.6} strokeWidth={1}
+              vectorEffect="non-scaling-stroke" />
+          )
+        }
+        return (
+          <circle key={`${p.exercise_id}-${i}`} cx={cx} cy={y(p.beta)}
+            r={isLast ? lastDotR : dotR}
+            fill="currentColor"
+            fillOpacity={isLast ? 1 : 0.7} />
+        )
+      })}
+    </svg>
+  )
+
+  if (large) {
+    return (
+      <div className="text-[11px] text-gray-500 mt-1" title={tooltip}>
+        <div className="mb-1">
+          <span className="opacity-80">{namePrefix} β:</span>{' '}
+          <span className="opacity-90 font-medium">{labelText}</span>
+        </div>
+        {svg}
+      </div>
+    )
+  }
 
   return (
     <div className="text-[11px] text-gray-500 mt-1 flex items-center gap-2"
-         title={pts.map((p) =>
-           `${p.exercise_name}: β ${p.beta == null ? '—' : p.beta.toFixed(2)} (${p.set_count} sets)`
-         ).join('\n')}>
-      <span className="opacity-80">{exerciseName ?? 'Session'} β:</span>
-      <svg width={W} height={H} className="overflow-visible">
-        <rect x={PAD} y={PAD} width={W - 2 * PAD} height={yZero - PAD}
-              fill="#dcfce7" />
-        <rect x={PAD} y={yZero} width={W - 2 * PAD} height={H - PAD - yZero}
-              fill="#fee2e2" />
-        <line x1={PAD} y1={yZero} x2={W - PAD} y2={yZero}
-              stroke="currentColor" strokeOpacity="0.35" strokeDasharray="2,2" />
-        <path d={path} fill="none" stroke="currentColor"
-              strokeWidth={1.5} strokeOpacity="0.7" />
-        {pts.map((p, i) => {
-          const cx = PAD + i * xStep
-          const isLast = i === pts.length - 1
-          if (p.beta == null) {
-            return (
-              <circle key={`${p.exercise_id}-${i}`} cx={cx} cy={yZero}
-                r={2} fill="white" stroke="currentColor"
-                strokeOpacity={0.6} strokeWidth={1} />
-            )
-          }
-          return (
-            <circle key={`${p.exercise_id}-${i}`} cx={cx} cy={y(p.beta)}
-              r={isLast ? 2.75 : 1.75}
-              fill="currentColor"
-              fillOpacity={isLast ? 1 : 0.7} />
-          )
-        })}
-      </svg>
+         title={tooltip}>
+      <span className="opacity-80">{namePrefix} β:</span>
+      {svg}
       <span className="opacity-70">{labelText}</span>
     </div>
   )
