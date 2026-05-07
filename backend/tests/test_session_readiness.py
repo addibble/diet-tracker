@@ -209,3 +209,82 @@ class TestUpdateSessionReadiness:
         assert result is None
         session.refresh(ws)
         assert ws.readiness_beta is None
+
+
+class TestSessionBetaEvolution:
+    def test_returns_none_for_missing_session(self, session):
+        from app.session_readiness import session_beta_evolution
+        assert session_beta_evolution(session, 99999) is None
+
+    def test_returns_empty_list_for_no_sets(self, session):
+        from app.session_readiness import session_beta_evolution
+        ws = _make_session(session, date(2026, 1, 15))
+        assert session_beta_evolution(session, ws.id) == []
+
+    def test_one_point_per_exercise_in_completion_order(self, session):
+        from app.session_readiness import session_beta_evolution
+
+        bench = _make_exercise(session, name="Bench Press")
+        squat = _make_exercise(session, name="Back Squat")
+        baseline = date(2026, 1, 15)
+        # Prior history for each exercise so curves can fit.
+        _seed_history(
+            session, bench, baseline_date=baseline,
+            weights=[150, 160, 170, 180, 190, 200],
+            reps_list=[10, 9, 8, 7, 6, 5],
+            rpes=[8.5, 8.5, 8.5, 8.5, 8.5, 9.0],
+        )
+        _seed_history(
+            session, squat, baseline_date=baseline,
+            weights=[200, 220, 240, 260, 280, 300],
+            reps_list=[10, 9, 8, 7, 6, 5],
+            rpes=[8.5, 8.5, 8.5, 8.5, 8.5, 9.0],
+        )
+        ws = _make_session(session, baseline)
+        # Bench first (set_orders 1-2), then squat (3-4), then bench again (5).
+        # Completion order should be by max set_order: bench (5) after squat (4).
+        _add_set(session, ws.id, bench.id, weight=180, reps=8, rpe=8.5, set_order=1)
+        _add_set(session, ws.id, bench.id, weight=180, reps=7, rpe=9.0, set_order=2)
+        _add_set(session, ws.id, squat.id, weight=240, reps=8, rpe=8.5, set_order=3)
+        _add_set(session, ws.id, squat.id, weight=240, reps=7, rpe=9.0, set_order=4)
+        _add_set(session, ws.id, bench.id, weight=185, reps=6, rpe=9.0, set_order=5)
+
+        points = session_beta_evolution(session, ws.id)
+        assert points is not None
+        assert [p["exercise_id"] for p in points] == [squat.id, bench.id]
+        assert points[0]["exercise_name"] == "Back Squat"
+        assert points[1]["exercise_name"] == "Bench Press"
+        # Cumulative set_count grows monotonically.
+        assert points[0]["set_count"] >= 2
+        assert points[1]["set_count"] >= points[0]["set_count"]
+        # Each point has either a numeric β or null with the contract fields.
+        for p in points:
+            assert "beta" in p
+            assert p["beta"] is None or BETA_MIN <= p["beta"] <= BETA_MAX
+
+    def test_node_per_exercise_even_without_rpe(self, session):
+        from app.session_readiness import session_beta_evolution
+
+        bench = _make_exercise(session, name="Bench Press")
+        baseline = date(2026, 1, 15)
+        _seed_history(
+            session, bench, baseline_date=baseline,
+            weights=[150, 160, 170, 180, 190, 200],
+            reps_list=[10, 9, 8, 7, 6, 5],
+            rpes=[8.5, 8.5, 8.5, 8.5, 8.5, 9.0],
+        )
+        # Logged set with NO rpe → not RPE-eligible. Should still produce a
+        # node, with beta=None (not enough cumulative observations).
+        ws = _make_session(session, baseline)
+        s = WorkoutSet(
+            session_id=ws.id, exercise_id=bench.id, set_order=1,
+            weight=180, endurance_value=8.0, rpe=None,
+        )
+        session.add(s)
+        session.commit()
+
+        points = session_beta_evolution(session, ws.id)
+        assert points is not None
+        assert len(points) == 1
+        assert points[0]["beta"] is None
+        assert points[0]["set_count"] == 0  # no RPE-eligible obs accumulated

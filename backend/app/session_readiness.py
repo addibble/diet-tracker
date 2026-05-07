@@ -195,6 +195,56 @@ def _solve_beta(
     return float(res.x)
 
 
+def _build_curve_cache(
+    session: SQLSession,
+    exercise_ids: Iterable[int],
+    as_of: object,
+) -> dict[int, tuple[float, float, float, float] | None]:
+    """Fit per-exercise fresh-curves once, excluding today's session sets."""
+    curves: dict[int, tuple[float, float, float, float] | None] = {}
+    for ex_id in {int(x) for x in exercise_ids}:
+        cf = fit_curve(
+            ex_id, session, days=30,
+            allow_heavy=True,
+            exclude_today=True,
+            as_of=as_of,
+        )
+        curves[ex_id] = (
+            (cf.M, cf.k, cf.gamma, cf.delta) if cf is not None else None
+        )
+    return curves
+
+
+def _fit_beta_from_observations(
+    obs: list[tuple[int, float, float, float]],
+    curves: dict[int, tuple[float, float, float, float] | None],
+) -> float | None:
+    """Solve β given (ex_id, ew, rtf, conf) tuples and a curve cache.
+
+    Returns None if fewer than ``MIN_SETS_FOR_BETA`` observations have a
+    valid curve and a positive predicted r_fresh.
+    """
+    r_obs: list[float] = []
+    r_pred: list[float] = []
+    weights: list[float] = []
+    for ex_id, ew, rtf, conf in obs:
+        params = curves.get(ex_id)
+        if params is None:
+            continue
+        M, k, gamma, delta = params  # noqa: N806 (M matches the math symbol)
+        pred = float(fresh_curve(ew, M, k, gamma, delta))
+        if pred <= 0:
+            continue
+        r_obs.append(rtf)
+        r_pred.append(pred)
+        weights.append(conf)
+
+    if len(r_obs) < MIN_SETS_FOR_BETA:
+        return None
+
+    return _solve_beta(r_obs, r_pred, weights)
+
+
 def fit_session_beta(
     session: SQLSession,
     workout_session_id: int,
@@ -217,37 +267,82 @@ def fit_session_beta(
     if len(obs) < MIN_SETS_FOR_BETA:
         return None
 
-    # For each unique exercise, fit a curve excluding the current session
-    # (so the curve reflects strictly-prior history, not today's performance).
-    curves: dict[int, tuple[float, float, float, float] | None] = {}
-    for ex_id in {ex_id for ex_id, _, _, _ in obs}:
-        cf = fit_curve(
-            ex_id, session, days=30,
-            allow_heavy=True,
-            exclude_today=True,
-            as_of=workout_session.date,
-        )
-        curves[ex_id] = (cf.M, cf.k, cf.gamma, cf.delta) if cf is not None else None
+    curves = _build_curve_cache(
+        session,
+        {ex_id for ex_id, _, _, _ in obs},
+        as_of=workout_session.date,
+    )
+    return _fit_beta_from_observations(obs, curves)
 
-    r_obs: list[float] = []
-    r_pred: list[float] = []
-    weights: list[float] = []
-    for ex_id, ew, rtf, conf in obs:
-        params = curves.get(ex_id)
-        if params is None:
-            continue
-        M, k, gamma, delta = params  # noqa: N806 (M matches the math symbol)
-        pred = float(fresh_curve(ew, M, k, gamma, delta))
-        if pred <= 0:
-            continue
-        r_obs.append(rtf)
-        r_pred.append(pred)
-        weights.append(conf)
 
-    if len(r_obs) < MIN_SETS_FOR_BETA:
+def session_beta_evolution(
+    session: SQLSession,
+    workout_session_id: int,
+) -> list[dict] | None:
+    """Per-exercise cumulative β trajectory within a single workout session.
+
+    Walks the session's exercises in completion order (defined as the
+    maximum ``set_order`` of each exercise's sets), and at each step fits β
+    over the cumulative set of RPE-eligible observations from all prior
+    exercises plus the current one. Useful for showing how the day's
+    readiness signal evolved as the user progressed through their workout.
+
+    Returns a list of points ``[{exercise_id, exercise_name, set_count,
+    beta}]`` ordered by completion. ``beta`` may be ``None`` for prefixes
+    with too few RPE-eligible observations (typically the first exercise
+    or anything <2 RPE sets cumulatively). Returns ``None`` when the
+    session does not exist.
+    """
+    workout_session = session.get(WorkoutSession, workout_session_id)
+    if workout_session is None:
         return None
 
-    return _solve_beta(r_obs, r_pred, weights)
+    obs = _collect_session_observations(session, workout_session)
+
+    # Determine completion order from ALL of the session's sets (not just
+    # RPE-eligible) so an exercise without RPE tags still gets a node.
+    sets_for_order = session.exec(
+        select(WorkoutSet)
+        .where(WorkoutSet.session_id == workout_session.id)
+        .order_by(WorkoutSet.set_order)
+    ).all()
+    last_order: dict[int, int] = {}
+    name_cache: dict[int, str] = {}
+    for ws in sets_for_order:
+        prior = last_order.get(ws.exercise_id)
+        if prior is None or ws.set_order > prior:
+            last_order[ws.exercise_id] = ws.set_order
+        if ws.exercise_id not in name_cache:
+            ex = session.get(Exercise, ws.exercise_id)
+            if ex is not None:
+                name_cache[ws.exercise_id] = ex.name
+    completion_order = sorted(last_order.keys(), key=lambda eid: last_order[eid])
+
+    if not completion_order:
+        return []
+
+    # Build the curve cache once for all involved exercises.
+    curves = _build_curve_cache(
+        session, completion_order, as_of=workout_session.date,
+    )
+
+    # Group observations by exercise for prefix accumulation.
+    by_ex: dict[int, list[tuple[int, float, float, float]]] = {}
+    for row in obs:
+        by_ex.setdefault(row[0], []).append(row)
+
+    points: list[dict] = []
+    cumulative: list[tuple[int, float, float, float]] = []
+    for ex_id in completion_order:
+        cumulative.extend(by_ex.get(ex_id, []))
+        beta = _fit_beta_from_observations(cumulative, curves)
+        points.append({
+            "exercise_id": ex_id,
+            "exercise_name": name_cache.get(ex_id, f"Exercise {ex_id}"),
+            "set_count": len(cumulative),
+            "beta": beta,
+        })
+    return points
 
 
 def update_session_readiness(

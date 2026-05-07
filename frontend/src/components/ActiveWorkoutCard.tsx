@@ -26,7 +26,8 @@ import {
   type WkSession,
   type WkSetDetail,
 } from '../api'
-import { ExerciseReadinessSparkline, ReadinessBanner } from './ReadinessBanner'
+import { ReadinessBanner } from './ReadinessBanner'
+import { SessionBetaEvolutionSparkline } from './SessionBetaEvolutionSparkline'
 
 function today() {
   const now = new Date()
@@ -549,7 +550,7 @@ export default function ActiveWorkoutCard({
             ...s,
             prescription: rx,
             prescribing: false,
-            complete: rx.exercise_complete ?? false,
+            complete: s.complete || (rx.exercise_complete ?? false),
             inflection_detected: rx.inflection_detected ?? null,
             estimated_1rm: rx.estimated_1rm ?? null,
           }
@@ -815,11 +816,25 @@ export default function ActiveWorkoutCard({
                 setExStates(prev => prev.map((s, i) => {
                   if (i !== idx) return s
                   const nextSets = [...s.sets, loggedSet]
+                  // Heavy mode permits one bonus set beyond target_sets (the
+                  // backend's "suggested_set4" feature). Optimistically mark
+                  // complete only AFTER that bonus set, so set-N+1 still
+                  // appears after set N. For non-heavy modes, hitting the
+                  // target ends the exercise.
+                  const optimisticComplete = s.training_mode === 'heavy'
+                    ? nextSets.length > s.target_sets
+                    : nextSets.length >= s.target_sets
+                  // Persist heavy auto-completion to localStorage so it
+                  // survives a tab switch even if the backend prescription
+                  // pulls back to "incomplete".
+                  if (optimisticComplete && s.training_mode === 'heavy') {
+                    addSkipped(sessionId, s.exercise_id)
+                  }
                   return {
                     ...s,
                     sets: nextSets,
                     prescription: null,
-                    complete: nextSets.length >= s.target_sets,
+                    complete: optimisticComplete,
                   }
                 }))
                 // Pull the freshly-refit β a moment later so the banner
@@ -1165,16 +1180,18 @@ function ExerciseWorkout({
   }, [sparkWeight, sparkReps, rx, sessionId, state.exercise_id, state.training_mode, logging, onSetLogged])
   return (
     <div className="space-y-3">
-      {/* Per-exercise readiness β trend sparkline */}
+      {/* In-session β evolution sparkline — one node per completed exercise
+          today, in completion order, with a green/red split background and
+          0-line down the middle. */}
       {wkSession && (
-        <ExerciseReadinessSparkline
-          session={wkSession}
-          exerciseId={state.exercise_id}
+        <SessionBetaEvolutionSparkline
+          sessionId={sessionId}
+          refreshKey={`${state.exercise_id}:${state.sets.length}:${wkSession.readiness_beta ?? ''}`}
           exerciseName={state.name}
         />
       )}
       {/* Training mode toggle (only before first set when heavy or burnout is available) */}
-      {(state.allow_heavy_loading || state.burnout_available) && (
+      {(state.allow_heavy_loading || state.burnout_available) && !state.complete && (
         <div className="flex items-center gap-2">
           <div className="flex rounded-lg border border-gray-200 bg-gray-50 p-0.5">
             <button
@@ -1239,8 +1256,10 @@ function ExerciseWorkout({
           )}
         </div>
       )}
-      {/* Logged sets summary (hidden when the completed curve pane handles it) */}
-      {state.sets.length > 0 && !useCompletedCurvePane && (
+      {/* Logged sets summary — always shown so the user can see today's
+          work after completion. The completed curve pane below adds the
+          chart but doesn't list each set. */}
+      {state.sets.length > 0 && (
         <div className="space-y-1">
           {state.sets.map((s, i) => {
             const parts: string[] = []

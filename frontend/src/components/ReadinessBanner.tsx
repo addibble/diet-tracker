@@ -160,20 +160,3 @@ export function ReadinessBanner({ session, title, exerciseId, exerciseName }: Re
     </div>
   )
 }
-
-/** Standalone per-exercise sparkline without the surrounding banner — used
- *  inside individual exercise cards in ActiveWorkoutCard. */
-export function ExerciseReadinessSparkline({
-  session, exerciseId, exerciseName,
-}: { session: WkSession; exerciseId: number; exerciseName?: string }) {
-  return (
-    <div className="text-[11px] text-gray-500 mt-1">
-      <span className="mr-1 opacity-80">
-        {exerciseName ?? 'Exercise'} β:
-      </span>
-      <span className="inline-block align-middle">
-        <ReadinessSparkline session={session} exerciseId={exerciseId} />
-      </span>
-    </div>
-  )
-}

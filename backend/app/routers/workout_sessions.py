@@ -26,6 +26,7 @@ from app.session_readiness import (
     is_beta_clamped,
     readiness_label,
     readiness_pct,
+    session_beta_evolution,
 )
 from app.units import endurance_value_from_legacy, legacy_metric_fields
 
@@ -227,6 +228,42 @@ def get_session_detail(
     if not ws:
         raise HTTPException(status_code=404, detail="Session not found")
     return _build_session_response(ws, session)
+
+
+@router.get("/{session_id}/beta-evolution")
+def get_beta_evolution(
+    session_id: int,
+    session: Session = Depends(get_session),
+    _user: str = Depends(get_current_user),
+):
+    """Per-exercise cumulative β trajectory within a single workout session.
+
+    Returns one point per exercise that has at least one logged set, in
+    completion order (defined by the maximum ``set_order`` of the
+    exercise's sets). For each prefix of exercises through the current
+    one, ``beta`` is the session β fit over those exercises' RPE-eligible
+    sets only — drives the in-session readiness sparkline that shows how
+    today's signal evolved as the user worked through their workout.
+    ``beta`` is ``null`` for prefixes with too few RPE-tagged sets.
+    """
+    points = session_beta_evolution(session, session_id)
+    if points is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {
+        "session_id": session_id,
+        "points": [
+            {
+                "exercise_id": p["exercise_id"],
+                "exercise_name": p["exercise_name"],
+                "set_count": p["set_count"],
+                "beta": p["beta"],
+                "readiness_label": readiness_label(p["beta"]),
+                "readiness_pct": readiness_pct(p["beta"]),
+                "readiness_clamped": is_beta_clamped(p["beta"]),
+            }
+            for p in points
+        ],
+    }
 
 
 @router.post("", status_code=201)

@@ -276,6 +276,26 @@ export const getExerciseReadinessTrend = (exerciseId: number, days: number = 14)
     `/workout-sessions/readiness/trend?days=${days}&exercise_id=${exerciseId}`,
   );
 
+export interface SessionBetaEvolutionPoint {
+  exercise_id: number;
+  exercise_name: string;
+  set_count: number;
+  beta: number | null;
+  readiness_label: WkSession['readiness_label'];
+  readiness_pct: number | null;
+  readiness_clamped: boolean;
+}
+
+export interface SessionBetaEvolution {
+  session_id: number;
+  points: SessionBetaEvolutionPoint[];
+}
+
+export const getSessionBetaEvolution = (sessionId: number) =>
+  request<SessionBetaEvolution>(
+    `/workout-sessions/${sessionId}/beta-evolution`,
+  );
+
 export const updateWorkoutSet = (setId: number, data: WorkoutSetUpdateInput) =>
   request<WkSetDetail>(`/workout-sets/${setId}`, {
     method: 'PATCH',
