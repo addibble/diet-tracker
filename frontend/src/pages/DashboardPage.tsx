@@ -26,6 +26,7 @@ import MealItemEditor from '../components/MealItemEditor'
 import WorkoutSetEditor from '../components/WorkoutSetEditor'
 import { type CompletedSet } from '../components/CurvePane'
 import CurvePaneWithFatigue from '../components/CurvePaneWithFatigue'
+import { SessionBetaEvolutionSparkline } from '../components/SessionBetaEvolutionSparkline'
 import { asEntered, asRepsDone, asRir } from '../lib/units'
 import { getCurveSnapshot, type CurveSnapshotResponse } from '../api/planner'
 
@@ -791,6 +792,18 @@ function RecentSessionsCard({
               </button>
               {isExpanded && (
                 <div className="px-3 pb-3 space-y-2">
+                  {/* In-session β evolution sparklines (one per session in
+                      the day). Lazy-mounted on expand so the per-exercise
+                      curve fits don't run for collapsed days. */}
+                  {daySessions
+                    .filter((ws) => ws.sets.length > 0)
+                    .map((ws, i, arr) => (
+                      <SessionBetaEvolutionSparkline
+                        key={`spark-${ws.id}`}
+                        sessionId={ws.id}
+                        exerciseName={arr.length > 1 ? `Session ${i + 1}` : 'Session'}
+                      />
+                    ))}
                   {editingDates.has(date) ? (
                     <>
                       {daySessions.map((ws) => (
