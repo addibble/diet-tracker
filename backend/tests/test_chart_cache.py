@@ -7,10 +7,12 @@ from datetime import date, timedelta
 from app.chart_cache import (
     KIND_BETA_EVOL,
     KIND_CURVE,
+    KIND_FATIGUE,
     beta_evol_key,
     cache_get,
     cache_set,
     curve_key,
+    fatigue_key,
     invalidate_all_charts,
     invalidate_for_session_delete,
     invalidate_for_set_change,
@@ -206,6 +208,36 @@ class TestInvalidateForSetChange:
         assert cache_get(session, beta_evol_key(ws_too_late.id)) is not None
         # Different-exercise session kept.
         assert cache_get(session, beta_evol_key(ws_other_ex.id)) is not None
+
+    def test_drops_fatigue_for_exercise_only(self, session):
+        ex1 = _ex(session, name="Bench")
+        ex2 = _ex(session, name="Squat")
+        d0 = date(2026, 1, 15)
+        # Both auto-keyed and explicit-date-keyed fatigue rows for ex1.
+        cache_set(
+            session, fatigue_key(ex1.id, 30, None), KIND_FATIGUE,
+            {"e": 1}, exercise_id=ex1.id, on_date=None,
+        )
+        cache_set(
+            session, fatigue_key(ex1.id, 30, d0 - timedelta(days=400)),
+            KIND_FATIGUE, {"e": 1, "old": True},
+            exercise_id=ex1.id, on_date=d0 - timedelta(days=400),
+        )
+        cache_set(
+            session, fatigue_key(ex2.id, 30, None), KIND_FATIGUE,
+            {"e": 2}, exercise_id=ex2.id, on_date=None,
+        )
+        ws = _ws(session, d0)
+        invalidate_for_set_change(session, ws.id, ex1.id, d0)
+        session.commit()
+        # All ex1 fatigue rows dropped (regardless of on_date).
+        assert cache_get(session, fatigue_key(ex1.id, 30, None)) is None
+        assert cache_get(
+            session,
+            fatigue_key(ex1.id, 30, d0 - timedelta(days=400)),
+        ) is None
+        # ex2 fatigue cache preserved.
+        assert cache_get(session, fatigue_key(ex2.id, 30, None)) == {"e": 2}
 
 
 class TestInvalidateForSessionDelete:

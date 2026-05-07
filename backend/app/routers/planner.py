@@ -22,9 +22,11 @@ from sqlmodel import Session, select
 from app.auth import get_current_user
 from app.chart_cache import (
     KIND_CURVE,
+    KIND_FATIGUE,
     cache_get,
     cache_set,
     curve_key,
+    fatigue_key,
 )
 from app.config import user_today
 from app.database import get_session
@@ -265,9 +267,18 @@ def get_fatigue_profile(
     Pass ``session_date`` to anchor ``session_observations`` to a specific
     historical session (otherwise the most recent session in the window).
     """
-    return fatigue_profile(
+    key = fatigue_key(exercise_id, days, session_date)
+    cached = cache_get(session, key)
+    if cached is not None:
+        return cached
+    payload = fatigue_profile(
         exercise_id, session, days=days, session_date=session_date,
     )
+    cache_set(
+        session, key, KIND_FATIGUE, payload,
+        exercise_id=exercise_id, on_date=session_date,
+    )
+    return payload
 
 
 def _get_bw_lookup(session: Session) -> dict:

@@ -44,6 +44,7 @@ CACHE_VERSION = "v1"
 
 KIND_CURVE = "curve_snapshot"
 KIND_BETA_EVOL = "beta_evolution"
+KIND_FATIGUE = "fatigue_profile"
 
 # Match fit_curve's lookback window in strength_model.
 WINDOW_DAYS = 30
@@ -55,6 +56,13 @@ def curve_key(exercise_id: int, on_date: date) -> str:
 
 def beta_evol_key(workout_session_id: int) -> str:
     return f"betaevol:{CACHE_VERSION}:{workout_session_id}"
+
+
+def fatigue_key(
+    exercise_id: int, days: int, session_date: date | None,
+) -> str:
+    sd = session_date.isoformat() if session_date is not None else "auto"
+    return f"fatigue:{CACHE_VERSION}:{exercise_id}:{days}:{sd}"
 
 
 def cache_get(session: Session, key: str) -> dict[str, Any] | None:
@@ -182,6 +190,21 @@ def _drop_betaevol_for_later_sessions_with_exercise(
     )
 
 
+def _drop_fatigue_for_exercise(
+    session: Session, exercise_id: int,
+) -> None:
+    """``fatigue_profile`` depends on the trailing 30-day window of sets
+    for ``exercise_id`` plus a "latest session" anchor that's data-driven.
+    Any set change for the exercise can shift the window contents or the
+    auto-anchor, so drop every cached row for this exercise."""
+    session.exec(
+        delete(ChartCache).where(
+            ChartCache.kind == KIND_FATIGUE,
+            ChartCache.exercise_id == exercise_id,
+        )
+    )
+
+
 def invalidate_for_set_change(
     session: Session,
     workout_session_id: int,
@@ -202,6 +225,7 @@ def invalidate_for_set_change(
     _drop_betaevol_for_later_sessions_with_exercise(
         session, exercise_id, on_date,
     )
+    _drop_fatigue_for_exercise(session, exercise_id)
 
 
 def invalidate_for_session_delete(
@@ -218,6 +242,7 @@ def invalidate_for_session_delete(
         _drop_betaevol_for_later_sessions_with_exercise(
             session, ex_id, on_date,
         )
+        _drop_fatigue_for_exercise(session, ex_id)
 
 
 def invalidate_all_charts(session: Session) -> None:
