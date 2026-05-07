@@ -25,12 +25,32 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
+from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _enable_sqlite_wal(engine: Engine) -> None:
+    """Enable WAL journaling + relaxed sync on a SQLite engine.
+
+    WAL lets readers proceed concurrently with a single writer, which is
+    important here because background tasks (readiness β refit) can hold
+    a write transaction while user-facing reads (prescribe-next, session
+    refresh) need to make progress.
+    """
+
+    @event.listens_for(engine, "connect")
+    def _set_pragmas(dbapi_connection, _connection_record):  # type: ignore[no-untyped-def]
+        cur = dbapi_connection.cursor()
+        try:
+            cur.execute("PRAGMA journal_mode=WAL")
+            cur.execute("PRAGMA synchronous=NORMAL")
+        finally:
+            cur.close()
 
 
 def _data_root() -> Path:
@@ -83,6 +103,7 @@ def auth_engine() -> Engine:
             path = auth_db_path()
             path.parent.mkdir(parents=True, exist_ok=True)
             engine = create_engine(f"sqlite:///{path}", echo=False)
+            _enable_sqlite_wal(engine)
             ensure_auth_db_ready(engine)
             _auth_engine = engine
     return _auth_engine
@@ -154,6 +175,7 @@ def user_engine(user_id: str) -> Engine:
         path = user_db_path(user_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         eng = create_engine(f"sqlite:///{path}", echo=False)
+        _enable_sqlite_wal(eng)
 
         from app.database import ensure_runtime_db_ready
 

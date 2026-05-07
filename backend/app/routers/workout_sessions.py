@@ -21,7 +21,12 @@ from app.models import (
     WorkoutSession,
     WorkoutSet,
 )
-from app.session_readiness import is_beta_clamped, readiness_label, readiness_pct
+from app.session_readiness import (
+    fit_session_beta,
+    is_beta_clamped,
+    readiness_label,
+    readiness_pct,
+)
 from app.units import endurance_value_from_legacy, legacy_metric_fields
 
 router = APIRouter(prefix="/api/workout-sessions", tags=["workout-sessions"])
@@ -154,10 +159,16 @@ def list_sessions(
 @router.get("/readiness/trend")
 def readiness_trend(
     days: int = Query(default=14, ge=1, le=90),
+    exercise_id: int | None = Query(default=None),
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    """Recent per-session readiness β values for the trend sparkline."""
+    """Recent per-session readiness β values for the trend sparkline.
+
+    With ``exercise_id``, β at each session is recomputed using only that
+    exercise's RPE-eligible sets, so the sparkline tracks the user's
+    per-exercise trend rather than the overall session readiness.
+    """
     from app.config import user_today
     end = user_today()
     start = end - datetime.timedelta(days=days - 1)
@@ -168,9 +179,27 @@ def readiness_trend(
         .order_by(col(WorkoutSession.date).asc())
     )
     sessions = session.exec(stmt).all()
+
+    # When filtering by exercise, drop sessions that didn't include it; this
+    # keeps the sparkline's x-axis tight around days the user actually
+    # trained that exercise instead of showing many null gaps.
+    if exercise_id is not None and sessions:
+        ids = [ws.id for ws in sessions]
+        rows = session.exec(
+            select(WorkoutSet.session_id)
+            .where(WorkoutSet.session_id.in_(ids))
+            .where(WorkoutSet.exercise_id == exercise_id)
+            .distinct()
+        ).all()
+        present = {row for row in rows}
+        sessions = [ws for ws in sessions if ws.id in present]
+
     points = []
     for ws in sessions:
-        beta = ws.readiness_beta
+        if exercise_id is None:
+            beta = ws.readiness_beta
+        else:
+            beta = fit_session_beta(session, ws.id, exercise_id=exercise_id)
         points.append({
             "date": ws.date.isoformat(),
             "session_id": ws.id,
@@ -179,8 +208,13 @@ def readiness_trend(
             "readiness_pct": readiness_pct(beta),
             "readiness_clamped": is_beta_clamped(beta),
         })
-    return {"days": days, "start": start.isoformat(), "end": end.isoformat(),
-            "points": points}
+    return {
+        "days": days,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "exercise_id": exercise_id,
+        "points": points,
+    }
 
 
 @router.get("/{session_id}")

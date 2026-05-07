@@ -23,8 +23,10 @@ import {
   prescribeNext,
   type ExerciseMenuItem,
   type PrescribeNextResponse,
+  type WkSession,
   type WkSetDetail,
 } from '../api'
+import { ExerciseReadinessSparkline, ReadinessBanner } from './ReadinessBanner'
 
 function today() {
   const now = new Date()
@@ -216,7 +218,35 @@ export default function ActiveWorkoutCard({
   const [availableExercises, setAvailableExercises] = useState<ExerciseMenuItem[]>([])
   const [addingExercise, setAddingExercise] = useState(false)
   const [editing, setEditing] = useState(false)
+  // Latest WkSession including readiness β fields. Drives the readiness
+  // banner above the exercise tabs and the per-exercise sparkline.
+  const [wkSession, setWkSession] = useState<WkSession | null>(null)
   const initRef = useRef(false)
+  const readinessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const refreshWkSession = useCallback(async () => {
+    try {
+      const s = await getWorkoutSession(sessionId)
+      setWkSession(s)
+    } catch { /* ignore */ }
+  }, [sessionId])
+
+  // After a set log, the backend refits readiness β in a BackgroundTask.
+  // Wait briefly so the refit has committed, then re-pull the session so
+  // the banner reflects the fresh β. Debounced across rapid set logs.
+  const scheduleReadinessRefresh = useCallback(() => {
+    if (readinessTimerRef.current) clearTimeout(readinessTimerRef.current)
+    readinessTimerRef.current = setTimeout(() => {
+      readinessTimerRef.current = null
+      refreshWkSession()
+    }, 1500)
+  }, [refreshWkSession])
+
+  useEffect(() => {
+    return () => {
+      if (readinessTimerRef.current) clearTimeout(readinessTimerRef.current)
+    }
+  }, [])
 
   // Initialize exercise states and load any existing sets from session
   useEffect(() => {
@@ -230,6 +260,7 @@ export default function ActiveWorkoutCard({
       try {
         const session = await getWorkoutSession(sessionId)
         existingSets = session.sets || []
+        setWkSession(session)
       } catch { /* new session, no sets yet */ }
 
       const states: ExerciseState[] = exercises.map(ex => {
@@ -293,6 +324,7 @@ export default function ActiveWorkoutCard({
     try {
       const session = await getWorkoutSession(sessionId)
       const freshSets = session.sets || []
+      setWkSession(session)
       const skipped = loadSkipped(sessionId)
       setExStates(prev => {
         const updated: ExerciseState[] = []
@@ -538,6 +570,14 @@ export default function ActiveWorkoutCard({
         />
       ) : (
         <>
+          {/* Readiness β banner — live multiplicative readiness from
+              today's RPE-tagged sets, plus a 14-day session-level trend. */}
+          {wkSession && (
+            <div className="mb-3">
+              <ReadinessBanner session={wkSession} title="Today" />
+            </div>
+          )}
+
           {/* Exercise tabs */}
           <div className="mb-4 flex flex-wrap gap-1.5 pb-1">
             {exStates.map((ex, i) => (
@@ -603,6 +643,7 @@ export default function ActiveWorkoutCard({
             <ExerciseWorkout
               key={exStates[activeIdx].exercise_id}
               sessionId={sessionId}
+              wkSession={wkSession}
               state={exStates[activeIdx]}
               onSetLogged={(loggedSet) => {
                 const idx = activeIdx
@@ -618,6 +659,9 @@ export default function ActiveWorkoutCard({
                     complete: nextSets.length >= s.target_sets,
                   }
                 }))
+                // Pull the freshly-refit β a moment later so the banner
+                // updates without slowing down the prescribe-next call.
+                scheduleReadinessRefresh()
               }}
               onMarkComplete={() => {
                 const ex = exStates[activeIdx]
@@ -660,12 +704,14 @@ export default function ActiveWorkoutCard({
 
 function ExerciseWorkout({
   sessionId,
+  wkSession,
   state,
   onSetLogged,
   onMarkComplete,
   onModeChange,
 }: {
   sessionId: number
+  wkSession: WkSession | null
   state: ExerciseState
   onSetLogged: (set: LoggedSet) => void
   onMarkComplete: () => void
@@ -956,6 +1002,14 @@ function ExerciseWorkout({
   }, [sparkWeight, sparkReps, rx, sessionId, state.exercise_id, state.training_mode, logging, onSetLogged])
   return (
     <div className="space-y-3">
+      {/* Per-exercise readiness β trend sparkline */}
+      {wkSession && (
+        <ExerciseReadinessSparkline
+          session={wkSession}
+          exerciseId={state.exercise_id}
+          exerciseName={state.name}
+        />
+      )}
       {/* Training mode toggle (only before first set when heavy or burnout is available) */}
       {(state.allow_heavy_loading || state.burnout_available) && (
         <div className="flex items-center gap-2">

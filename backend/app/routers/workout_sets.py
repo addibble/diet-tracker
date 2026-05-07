@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, func, select
 
 from app.auth import get_current_user
+from app.auth_models import User
 from app.database import get_session
 from app.exercise_history import REP_SCHEME_VERSION, empty_scheme_history, get_exercise_scheme_history_map
 from app.exercise_laterality import default_performed_side
@@ -19,9 +21,54 @@ from app.models import (
     WorkoutSet,
 )
 from app.session_readiness import update_session_readiness
+from app.strength_model import BODYWEIGHT_MODES
 from app.units import endurance_value_from_legacy, legacy_metric_fields
 
 router = APIRouter(tags=["workout-sets"])
+
+logger = logging.getLogger(__name__)
+
+
+def _exercise_can_change_readiness(exercise: Exercise | None) -> bool:
+    """Return True when sets on this exercise contribute to β.
+
+    Bodyweight and duration-mode exercises are filtered out of the curve fit
+    and therefore add no observations to ``fit_session_beta``. Saving a set
+    on those exercises cannot change β, so we skip the (~0.5–1.5 s) refit.
+    """
+    if exercise is None:
+        return False
+    if (exercise.set_metric_mode or "reps") == "duration":
+        return False
+    if (exercise.load_input_mode or "") in BODYWEIGHT_MODES:
+        return False
+    return True
+
+
+def _schedule_readiness_refit(
+    background: BackgroundTasks, user_id: str, workout_session_id: int,
+) -> None:
+    """Queue a non-blocking readiness refit on a fresh DB session.
+
+    The refit is computation-heavy (fits one curve per unique exercise in
+    the session); running it inline on the request thread serialises the
+    next ``prescribe-next`` call behind it. Pushing to a BackgroundTask
+    lets the set-save response return immediately.
+    """
+
+    def _job() -> None:
+        from app.db_engines import user_engine
+
+        try:
+            with Session(user_engine(user_id)) as sess:
+                update_session_readiness(sess, workout_session_id)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "background readiness refit failed (user=%s, session=%s)",
+                user_id, workout_session_id,
+            )
+
+    background.add_task(_job)
 
 
 # ---------------------------------------------------------------------------
@@ -146,8 +193,9 @@ def _normalize_session_set_order(session: Session, session_id: int) -> None:
 def update_set(
     set_id: int,
     data: SetUpdate,
+    background: BackgroundTasks,
     session: Session = Depends(get_session),
-    _user: str = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     ws = session.get(WorkoutSet, set_id)
     if not ws:
@@ -187,15 +235,16 @@ def update_set(
     session.refresh(ws)
     # Live readiness re-fit: only when the patch actually touches a field
     # that influences β (rpe, reps/endurance, weight). Edits to notes/side/
-    # ordering should not pay the ~0.5–1s refit cost.
+    # ordering should not pay the refit cost; nor do duration- or
+    # bodyweight-mode sets (they're filtered out of the curve fit).
     readiness_fields = {"rpe", "endurance_value", "weight"}
     touched_readiness = bool(readiness_fields & set(updates.keys())) or bool(legacy_in)
-    if ws.rpe is not None and touched_readiness:
-        try:
-            update_session_readiness(session, ws.session_id)
-        except Exception:
-            # Readiness fit is best-effort and must never block a set update.
-            session.rollback()
+    if (
+        ws.rpe is not None
+        and touched_readiness
+        and _exercise_can_change_readiness(exercise)
+    ):
+        _schedule_readiness_refit(background, current_user.id, ws.session_id)
     return _set_response(ws, session)
 
 
@@ -203,8 +252,9 @@ def update_set(
 def add_set(
     session_id: int,
     data: SetCreate,
+    background: BackgroundTasks,
     session: Session = Depends(get_session),
-    _user: str = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     ws = session.get(WorkoutSession, session_id)
     if not ws:
@@ -266,11 +316,8 @@ def add_set(
     _normalize_session_set_order(session, session_id)
     session.commit()
     session.refresh(new_set)
-    if new_set.rpe is not None:
-        try:
-            update_session_readiness(session, session_id)
-        except Exception:
-            session.rollback()
+    if new_set.rpe is not None and _exercise_can_change_readiness(exercise):
+        _schedule_readiness_refit(background, current_user.id, session_id)
     return _set_response(new_set, session)
 
 

@@ -127,19 +127,28 @@ def _rpe_confidence(rpe: float) -> float:
 
 
 def _collect_session_observations(
-    session: SQLSession, workout_session: WorkoutSession,
+    session: SQLSession,
+    workout_session: WorkoutSession,
+    *,
+    exercise_id: int | None = None,
 ) -> list[tuple[int, float, float, float]]:
     """Return [(exercise_id, effective_weight, reps_to_failure, weight)] for
     RPE-eligible rep-mode sets in this WorkoutSession.
+
+    When ``exercise_id`` is provided, only sets for that exercise are
+    considered (used by the per-exercise β trend).
     """
     bw_lookup = bodyweight_by_date(
         list(session.exec(select(WeightLog).order_by(WeightLog.logged_at)).all())
     )
-    sets = session.exec(
+    stmt = (
         select(WorkoutSet)
         .where(WorkoutSet.session_id == workout_session.id)
         .order_by(WorkoutSet.set_order)
-    ).all()
+    )
+    if exercise_id is not None:
+        stmt = stmt.where(WorkoutSet.exercise_id == exercise_id)
+    sets = session.exec(stmt).all()
     out: list[tuple[int, float, float, float]] = []
     for ws in sets:
         if ws.rpe is None or ws.rpe < MIN_RPE_FOR_FIT or ws.rpe > 10.0:
@@ -187,18 +196,24 @@ def _solve_beta(
 
 
 def fit_session_beta(
-    session: SQLSession, workout_session_id: int,
+    session: SQLSession,
+    workout_session_id: int,
+    *,
+    exercise_id: int | None = None,
 ) -> float | None:
     """Compute β for a single workout session using current per-exercise curves.
 
-    Returns None if the session has fewer than ``MIN_SETS_FOR_BETA`` usable
-    RPE sets across all exercises.
+    When ``exercise_id`` is provided, β is fit using only that exercise's
+    RPE-eligible sets (used by the per-exercise readiness sparkline).
+    Returns None if there are fewer than ``MIN_SETS_FOR_BETA`` usable sets.
     """
     workout_session = session.get(WorkoutSession, workout_session_id)
     if workout_session is None:
         return None
 
-    obs = _collect_session_observations(session, workout_session)
+    obs = _collect_session_observations(
+        session, workout_session, exercise_id=exercise_id,
+    )
     if len(obs) < MIN_SETS_FOR_BETA:
         return None
 

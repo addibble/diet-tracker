@@ -124,6 +124,80 @@ def test_rpe_update_triggers_readiness_refit(
     assert calls == [workout_set.session_id]
 
 
+def test_bodyweight_set_save_skips_readiness_refit(
+    client, session: Session, workout_session, monkeypatch
+):
+    """Saving / updating a bodyweight-mode set must NOT trigger the β refit:
+    bodyweight observations are filtered out of fit_curve so they cannot
+    move β. The refit is the dominant cost on set-save (~0.5–1.5 s)."""
+    bw_ex = Exercise(name="Pull-up", load_input_mode="bodyweight")
+    session.add(bw_ex)
+    session.commit()
+    session.refresh(bw_ex)
+    s = WorkoutSet(
+        session_id=workout_session.id,
+        exercise_id=bw_ex.id,
+        set_order=1,
+        endurance_value=10,
+        rpe=7.0,
+    )
+    session.add(s)
+    session.commit()
+    session.refresh(s)
+
+    from app.routers import workout_sets as ws_router
+    calls: list[int] = []
+    monkeypatch.setattr(
+        ws_router, "update_session_readiness",
+        lambda _sess, sid: calls.append(sid),
+    )
+
+    # PATCH with an rpe change
+    resp = client.patch(f"/api/workout-sets/{s.id}", json={"rpe": 8.0})
+    assert resp.status_code == 200
+    assert calls == []
+
+    # POST a new bodyweight set
+    resp = client.post(
+        f"/api/workout-sessions/{workout_session.id}/sets",
+        json={"exercise_id": bw_ex.id, "reps": 8, "rpe": 8.0},
+    )
+    assert resp.status_code == 201
+    assert calls == []
+
+
+def test_duration_set_save_skips_readiness_refit(
+    client, session: Session, workout_session, monkeypatch
+):
+    """Duration-mode sets are routed to get_duration_suggestion and don't
+    fit a strength curve, so they cannot influence β either."""
+    dur_ex = Exercise(
+        name="Weighted Plank",
+        load_input_mode="external_weight",
+        set_metric_mode="duration",
+    )
+    session.add(dur_ex)
+    session.commit()
+    session.refresh(dur_ex)
+
+    from app.routers import workout_sets as ws_router
+    calls: list[int] = []
+    monkeypatch.setattr(
+        ws_router, "update_session_readiness",
+        lambda _sess, sid: calls.append(sid),
+    )
+
+    resp = client.post(
+        f"/api/workout-sessions/{workout_session.id}/sets",
+        json={
+            "exercise_id": dur_ex.id, "duration_secs": 45,
+            "weight": 25.0, "rpe": 8.0,
+        },
+    )
+    assert resp.status_code == 201
+    assert calls == []
+
+
 def test_update_set_persists_tissue_feedback_removed(client, session: Session, workout_set: WorkoutSet):
     """Placeholder — tissue_feedback subsystem removed; endpoint silently ignores the field."""
     resp = client.patch(

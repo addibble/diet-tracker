@@ -264,11 +264,17 @@ export interface ReadinessTrend {
   days: number;
   start: string;
   end: string;
+  exercise_id?: number | null;
   points: ReadinessTrendPoint[];
 }
 
 export const getReadinessTrend = (days: number = 14) =>
   request<ReadinessTrend>(`/workout-sessions/readiness/trend?days=${days}`);
+
+export const getExerciseReadinessTrend = (exerciseId: number, days: number = 14) =>
+  request<ReadinessTrend>(
+    `/workout-sessions/readiness/trend?days=${days}&exercise_id=${exerciseId}`,
+  );
 
 export const updateWorkoutSet = (setId: number, data: WorkoutSetUpdateInput) =>
   request<WkSetDetail>(`/workout-sets/${setId}`, {
