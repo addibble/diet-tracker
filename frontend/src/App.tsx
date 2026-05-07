@@ -20,6 +20,7 @@ export default function App() {
         <Route path="/foods" element={<Navigate to="/database?tab=foods" replace />} />
         <Route path="/recipes" element={<Navigate to="/database?tab=recipes" replace />} />
         <Route path="/tissues" element={<Navigate to="/database?tab=tissues" replace />} />
+        <Route path="/exercises" element={<Navigate to="/database?tab=exercises" replace />} />
         <Route path="/log" element={<MealLogPage />} />
         <Route path="/training" element={<TrainingPage />} />
         <Route path="/account" element={<AccountPage />} />

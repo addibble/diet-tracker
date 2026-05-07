@@ -629,12 +629,16 @@ function ExercisePanel({
 
 // ── Main page ──
 
-export default function TissueAdminPage() {
+export default function TissueAdminPage({ mode }: { mode?: View } = {}) {
   const [tissues, setTissues] = useState<WkTissue[]>([])
   const [exercises, setExercises] = useState<WkExercise[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [view, setView] = useState<View>('tissues')
+  const [view, setView] = useState<View>(mode ?? 'tissues')
+
+  useEffect(() => {
+    if (mode) setView(mode)
+  }, [mode])
 
   useEffect(() => {
     let cancelled = false
@@ -663,29 +667,31 @@ export default function TissueAdminPage() {
 
   return (
     <ScrollablePage className="space-y-4">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <h1 className="text-2xl font-semibold text-gray-900">Tissues & Exercises</h1>
-        <div className="inline-flex rounded-lg border border-gray-300 bg-white p-0.5 text-sm">
-          <button
-            type="button"
-            onClick={() => setView('tissues')}
-            className={`px-3 py-1 rounded ${
-              view === 'tissues' ? 'bg-blue-600 text-white' : 'text-gray-700'
-            }`}
-          >
-            Tissues
-          </button>
-          <button
-            type="button"
-            onClick={() => setView('exercises')}
-            className={`px-3 py-1 rounded ${
-              view === 'exercises' ? 'bg-blue-600 text-white' : 'text-gray-700'
-            }`}
-          >
-            Exercises
-          </button>
+      {!mode && (
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <h1 className="text-2xl font-semibold text-gray-900">Tissues & Exercises</h1>
+          <div className="inline-flex rounded-lg border border-gray-300 bg-white p-0.5 text-sm">
+            <button
+              type="button"
+              onClick={() => setView('tissues')}
+              className={`px-3 py-1 rounded ${
+                view === 'tissues' ? 'bg-blue-600 text-white' : 'text-gray-700'
+              }`}
+            >
+              Tissues
+            </button>
+            <button
+              type="button"
+              onClick={() => setView('exercises')}
+              className={`px-3 py-1 rounded ${
+                view === 'exercises' ? 'bg-blue-600 text-white' : 'text-gray-700'
+              }`}
+            >
+              Exercises
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {error && (
         <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-700">

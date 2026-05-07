@@ -4,10 +4,11 @@ import FoodsPage from './FoodsPage'
 import RecipesPage from './RecipesPage'
 import TissueAdminPage from './TissueAdminPage'
 
-type Tab = 'tissues' | 'foods' | 'recipes'
+type Tab = 'tissues' | 'exercises' | 'foods' | 'recipes'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'tissues', label: 'Tissues' },
+  { id: 'exercises', label: 'Exercises' },
   { id: 'foods', label: 'Foods' },
   { id: 'recipes', label: 'Recipes' },
 ]
@@ -46,7 +47,8 @@ export default function DatabasePage() {
         ))}
       </div>
       <div className="flex-1 min-h-0">
-        {tab === 'tissues' ? <TissueAdminPage /> : null}
+        {tab === 'tissues' ? <TissueAdminPage mode="tissues" /> : null}
+        {tab === 'exercises' ? <TissueAdminPage mode="exercises" /> : null}
         {tab === 'foods' ? <FoodsPage /> : null}
         {tab === 'recipes' ? <RecipesPage /> : null}
       </div>
