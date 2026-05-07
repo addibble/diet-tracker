@@ -91,20 +91,154 @@ function moveCursorToEnd(e: FocusEvent<HTMLInputElement>) {
 
 const COUNTDOWN_SECS = 5
 
-function DurationTimer({ onCommit }: { onCommit: (secs: number) => void }) {
+// ── Audio cue helper ────────────────────────────────────────────────────
+//
+// Plays sine-wave beeps via the Web Audio API so the user can keep their
+// phone holstered during a duration set and get audible cues through their
+// headphones / earbuds.
+//
+//   • 5 s pre-roll: 3 mid-pitch beeps then 1 high-pitch "go" beep.
+//   • Every 10 s during the run: 1 mid-pitch beep.
+//   • At the prescribed target time: 3 fast high-pitch beeps.
+//   • After the target: continue the every-10-s mid-pitch beeps until stop.
+//
+// Browsers require AudioContext to be created from a user gesture, so we
+// instantiate it on the first Start click and cache it for the lifetime
+// of the component.
+function makeAudioPlayer() {
+  type AudioCtxCtor = typeof AudioContext
+  const Ctx: AudioCtxCtor | undefined =
+    typeof window !== 'undefined'
+      ? (window.AudioContext
+          ?? (window as unknown as { webkitAudioContext?: AudioCtxCtor })
+            .webkitAudioContext)
+      : undefined
+  if (!Ctx) return null
+  const ctx = new Ctx()
+
+  const beep = (freq: number, durMs: number, atOffsetMs = 0, gain = 0.18) => {
+    const t0 = ctx.currentTime + atOffsetMs / 1000
+    const osc = ctx.createOscillator()
+    const env = ctx.createGain()
+    osc.type = 'sine'
+    osc.frequency.value = freq
+    // Short attack/decay envelope to avoid clicks.
+    env.gain.setValueAtTime(0, t0)
+    env.gain.linearRampToValueAtTime(gain, t0 + 0.01)
+    env.gain.linearRampToValueAtTime(gain, t0 + durMs / 1000 - 0.02)
+    env.gain.linearRampToValueAtTime(0, t0 + durMs / 1000)
+    osc.connect(env).connect(ctx.destination)
+    osc.start(t0)
+    osc.stop(t0 + durMs / 1000 + 0.05)
+  }
+
+  return {
+    resume: () => { if (ctx.state === 'suspended') void ctx.resume() },
+    close: () => { void ctx.close() },
+    // Mid-pitch tick beep used for countdown ticks 3..1 and every-10s marks.
+    tick: () => beep(660, 110),
+    // High-pitch "go" / target beep — an octave above tick.
+    chirp: (atOffsetMs = 0) => beep(1320, 140, atOffsetMs, 0.22),
+    // Three fast high-pitch beeps signalling the prescribed target was hit.
+    triple: () => {
+      beep(1320, 90, 0, 0.22)
+      beep(1320, 90, 140, 0.22)
+      beep(1320, 90, 280, 0.22)
+    },
+  }
+}
+
+type AudioPlayer = NonNullable<ReturnType<typeof makeAudioPlayer>>
+
+function DurationTimer({
+  onCommit,
+  targetSecs,
+}: {
+  onCommit: (secs: number) => void
+  /** Prescribed target in seconds. When the run timer crosses this value,
+   *  the audio scheduler plays the "target reached" trill. */
+  targetSecs?: number | null
+}) {
   // Single timeline: startedAt = when the user pressed Start.
   // First COUNTDOWN_SECS seconds = countdown; everything after = run time.
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const audioRef = useRef<AudioPlayer | null>(null)
+  // Cue-deduplication: each cue has a stable id ("pre-3", "run-10",
+  // "target", "post-10") so the scheduler doesn't fire twice if a render
+  // straddles the trigger time.
+  const playedRef = useRef<Set<string>>(new Set())
+  // Track whether the target-reached trill has fired so we know when to
+  // start emitting "post-10" beeps relative to the target.
+  const targetHitRef = useRef(false)
 
   useEffect(() => {
     if (startedAt == null) return
-    tickRef.current = setInterval(() => setNow(Date.now()), 100)
+    // High-frequency tick (50 ms) so audio cues fire close to their
+    // intended sample times even when the tab is backgrounded briefly.
+    tickRef.current = setInterval(() => setNow(Date.now()), 50)
     return () => { if (tickRef.current) clearInterval(tickRef.current) }
   }, [startedAt])
 
+  // Schedule audio cues based on elapsed time since startedAt.
+  useEffect(() => {
+    if (startedAt == null) return
+    const audio = audioRef.current
+    if (!audio) return
+    const elapsed = (now - startedAt) / 1000
+    const played = playedRef.current
+
+    const fire = (id: string, action: () => void) => {
+      if (played.has(id)) return
+      played.add(id)
+      action()
+    }
+
+    // ── Pre-roll cues: ticks at countdown=4,3,2 and "go" at countdown=1 ──
+    //
+    // Countdown displays Math.ceil(COUNTDOWN_SECS - elapsed); we want the
+    // beep to land exactly when the digit changes, i.e. at
+    // elapsed = 1, 2, 3 s for the three mid ticks, and elapsed = 4 s for
+    // the high "go" beep that announces the imminent run start.
+    if (elapsed >= 1 && elapsed < COUNTDOWN_SECS) fire('pre-3', audio.tick)
+    if (elapsed >= 2 && elapsed < COUNTDOWN_SECS) fire('pre-2', audio.tick)
+    if (elapsed >= 3 && elapsed < COUNTDOWN_SECS) fire('pre-1', audio.tick)
+    if (elapsed >= 4 && elapsed < COUNTDOWN_SECS) fire('pre-go', audio.chirp)
+
+    if (elapsed < COUNTDOWN_SECS) return
+
+    // ── Run cues: every 10 s and target-reached trill ──
+    const runSec = elapsed - COUNTDOWN_SECS
+    const target = targetSecs != null && targetSecs > 0 ? targetSecs : null
+
+    // Every-10-s tick before target: 10, 20, 30, ... up to (but not
+    // straddling) the target. After target we resume on the same
+    // 10-s grid relative to the target itself.
+    if (target == null || runSec < target) {
+      const k = Math.floor(runSec / 10)
+      if (k >= 1) fire(`run-${k * 10}`, audio.tick)
+    }
+
+    if (target != null && runSec >= target && !targetHitRef.current) {
+      targetHitRef.current = true
+      fire('target', audio.triple)
+    }
+
+    if (target != null && runSec >= target) {
+      const post = runSec - target
+      const k = Math.floor(post / 10)
+      if (k >= 1) fire(`post-${k * 10}`, audio.tick)
+    }
+  }, [now, startedAt, targetSecs])
+
   const start = () => {
+    // Lazy-create the AudioContext on the first user gesture so browsers
+    // permit playback. Reuse across start/stop cycles.
+    if (audioRef.current == null) audioRef.current = makeAudioPlayer()
+    audioRef.current?.resume()
+    playedRef.current = new Set()
+    targetHitRef.current = false
     const t = Date.now()
     setNow(t)
     setStartedAt(t)
@@ -122,13 +256,15 @@ function DurationTimer({ onCommit }: { onCommit: (secs: number) => void }) {
     setStartedAt(null)
   }
 
+  // ── Render ──
+
   if (startedAt == null) {
     return (
       <button
         type="button"
         onClick={start}
         className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800 transition-colors hover:bg-emerald-100"
-        title="5s countdown, then count up"
+        title="5 s countdown with audio cues, then count up"
       >
         ▶ Start
       </button>
@@ -137,25 +273,52 @@ function DurationTimer({ onCommit }: { onCommit: (secs: number) => void }) {
 
   const elapsed = (now - startedAt) / 1000
   const isCountdown = elapsed < COUNTDOWN_SECS
+  const runSec = Math.floor(elapsed - COUNTDOWN_SECS)
+  const targetReached =
+    targetSecs != null && targetSecs > 0 && !isCountdown && runSec >= targetSecs
   const display = isCountdown
     ? String(Math.max(0, Math.ceil(COUNTDOWN_SECS - elapsed)))
-    : String(Math.floor(elapsed - COUNTDOWN_SECS))
+    : String(runSec)
+
+  // Fullscreen overlay so the timer is huge and easy to see/touch from
+  // across the room. The Stop button takes up the bottom half of the
+  // screen for one-tap-with-oily-hands operation.
+  const overlayBg = isCountdown
+    ? 'bg-amber-500'
+    : targetReached
+      ? 'bg-rose-600'
+      : 'bg-emerald-600'
+  const heading = isCountdown
+    ? 'Get ready'
+    : targetReached
+      ? `Target ${targetSecs}s — keep going or stop`
+      : targetSecs != null && targetSecs > 0
+        ? `Target ${targetSecs}s`
+        : 'Hold'
 
   return (
-    <div className="flex items-center gap-2">
-      <span
-        className={`tabular-nums rounded-lg border px-3 py-2 text-sm font-semibold ${
-          isCountdown
-            ? 'border-amber-300 bg-amber-50 text-amber-800'
-            : 'border-emerald-300 bg-emerald-50 text-emerald-800'
-        }`}
-      >
-        {isCountdown ? `Get ready · ${display}` : `${display}s`}
-      </span>
+    <div
+      className={`fixed inset-0 z-50 flex flex-col items-center justify-between p-6 text-white ${overlayBg}`}
+      style={{ touchAction: 'manipulation' }}
+    >
+      <div className="pt-8 text-center">
+        <p className="text-base font-semibold uppercase tracking-widest opacity-80">
+          {heading}
+        </p>
+      </div>
+      <div className="flex flex-1 items-center justify-center">
+        <span
+          className="select-none tabular-nums font-bold leading-none"
+          style={{ fontSize: 'clamp(8rem, 35vw, 22rem)' }}
+        >
+          {display}
+          {!isCountdown && <span className="ml-2 text-3xl opacity-70">s</span>}
+        </span>
+      </div>
       <button
         type="button"
         onClick={stop}
-        className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50"
+        className="mb-6 w-full max-w-md rounded-2xl bg-white/15 py-8 text-2xl font-bold text-white shadow-lg ring-2 ring-white/40 transition-colors hover:bg-white/25 active:bg-white/30"
       >
         ⏹ Stop
       </button>
@@ -1173,6 +1336,7 @@ function ExerciseWorkout({
               }
               onSparkChange={handleSparkChange}
               onGo={handleGo}
+              onBack={() => setCurveMode('pre')}
               onConfirmRir={handleConfirmRir}
               submitting={logging}
             />
@@ -1231,7 +1395,13 @@ function ExerciseWorkout({
                         placeholder="0"
                       />
                     </div>
-                    <DurationTimer onCommit={(s) => setSecs(String(s))} />
+                    <DurationTimer
+                      onCommit={(s) => setSecs(String(s))}
+                      targetSecs={(() => {
+                        const n = Number(secs)
+                        return Number.isFinite(n) && n > 0 ? n : null
+                      })()}
+                    />
                   </div>
                 )}
                 {showDistance && (

@@ -51,6 +51,9 @@ interface Props {
   acceptableRepMax?: RepsDone
   onSparkChange: (weight: EnteredWeightLb, reps: RepsDone) => void
   onGo: () => void
+  /** Returns from `logging` mode back to `pre` so the user can correct
+   *  the chosen weight. Optional; when absent, the back button is hidden. */
+  onBack?: () => void
   onConfirmRir: (rir: ConfirmedRir) => void
   submitting?: boolean
   completedSets?: CompletedSet[]
@@ -258,6 +261,7 @@ export default function CurvePane({
   acceptableRepMax,
   onSparkChange,
   onGo,
+  onBack,
   onConfirmRir,
   submitting = false,
   completedSets,
@@ -661,9 +665,21 @@ export default function CurvePane({
           </button>
         )}
         {mode === 'logging' && (
-          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
-            log reps
-          </span>
+          onBack ? (
+            <button
+              type="button"
+              onClick={onBack}
+              disabled={submitting}
+              className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-[11px] font-semibold text-amber-800 shadow-sm transition-colors hover:bg-amber-100 disabled:opacity-50"
+              title="Wrong weight? Go back and re-select."
+            >
+              ← Select Weight
+            </button>
+          ) : (
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+              log reps
+            </span>
+          )
         )}
       </div>
 
