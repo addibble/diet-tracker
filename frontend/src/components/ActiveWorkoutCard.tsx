@@ -1,5 +1,6 @@
 import type { FocusEvent } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import WorkoutSetEditor from './WorkoutSetEditor'
 import { type ConfirmedRir } from './CurvePane'
 import CurvePaneWithFatigue from './CurvePaneWithFatigue'
@@ -282,8 +283,11 @@ function DurationTimer({
     : String(runSec)
 
   // Fullscreen overlay so the timer is huge and easy to see/touch from
-  // across the room. The Stop button takes up the bottom half of the
-  // screen for one-tap-with-oily-hands operation.
+  // across the room. Rendered via a portal directly into `document.body`
+  // so it escapes any ancestor stacking context (the layout's mobile
+  // tab bar otherwise lives in the same root context with z-50). The
+  // Stop button is given safe-area + bottom-nav clearance so it never
+  // hides behind the mobile tab switcher.
   const overlayBg = isCountdown
     ? 'bg-amber-500'
     : targetReached
@@ -297,12 +301,12 @@ function DurationTimer({
         ? `Target ${targetSecs}s`
         : 'Hold'
 
-  return (
+  const overlay = (
     <div
-      className={`fixed inset-0 z-50 flex flex-col items-center justify-between p-6 text-white ${overlayBg}`}
+      className={`fixed inset-0 z-[100] flex flex-col items-center justify-between px-6 pt-[calc(env(safe-area-inset-top)+1.5rem)] pb-[calc(env(safe-area-inset-bottom)+5rem)] text-white ${overlayBg}`}
       style={{ touchAction: 'manipulation' }}
     >
-      <div className="pt-8 text-center">
+      <div className="text-center">
         <p className="text-base font-semibold uppercase tracking-widest opacity-80">
           {heading}
         </p>
@@ -319,12 +323,13 @@ function DurationTimer({
       <button
         type="button"
         onClick={stop}
-        className="mb-6 w-full max-w-md rounded-2xl bg-white/15 py-8 text-2xl font-bold text-white shadow-lg ring-2 ring-white/40 transition-colors hover:bg-white/25 active:bg-white/30"
+        className="w-full max-w-md rounded-2xl bg-white/15 py-8 text-2xl font-bold text-white shadow-lg ring-2 ring-white/40 transition-colors hover:bg-white/25 active:bg-white/30"
       >
         ⏹ Stop
       </button>
     </div>
   )
+  return createPortal(overlay, document.body)
 }
 
 
