@@ -12,6 +12,7 @@ import {
   createMeal,
   searchFoodsAndRecipes,
   getVolumeByRegion,
+  getDailyBeta,
   MACRO_KEYS,
   MACRO_LABELS,
   MACRO_UNITS,
@@ -21,12 +22,14 @@ import {
   type WkSession,
   type FoodSearchResult,
   type VolumeByRegion,
+  type DailyBeta,
 } from '../api'
 import MealItemEditor from '../components/MealItemEditor'
 import WorkoutSetEditor from '../components/WorkoutSetEditor'
 import { type CompletedSet } from '../components/CurvePane'
 import CurvePaneWithFatigue from '../components/CurvePaneWithFatigue'
 import { SessionBetaEvolutionSparkline } from '../components/SessionBetaEvolutionSparkline'
+import { DailyBetaSparkline } from '../components/DailyBetaSparkline'
 import { asEntered, asRepsDone, asRir } from '../lib/units'
 import { getCurveSnapshot, type CurveSnapshotResponse } from '../api/planner'
 
@@ -1080,7 +1083,9 @@ function formatRegionLabel(region: string): string {
   return region.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
-function MuscleVolumeCard({ data }: { data: VolumeByRegion | null }) {
+function MuscleVolumeCard(
+  { data, dailyBeta }: { data: VolumeByRegion | null; dailyBeta: DailyBeta | null },
+) {
   if (!data || data.regions.length === 0) {
     return (
       <section className="bg-white border border-gray-200 rounded-2xl p-5">
@@ -1117,6 +1122,8 @@ function MuscleVolumeCard({ data }: { data: VolumeByRegion | null }) {
           Last {n} days · {Math.round(grandTotal).toLocaleString()} lb total
         </span>
       </div>
+
+      <DailyBetaSparkline data={dailyBeta} fallbackDates={data.dates} />
 
       <svg
         viewBox={`0 0 ${W} ${H}`}
@@ -1202,6 +1209,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [sessions, setSessions] = useState<WkSession[]>([])
   const [volumeByRegion, setVolumeByRegion] = useState<VolumeByRegion | null>(null)
+  const [dailyBeta, setDailyBeta] = useState<DailyBeta | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
   const [editingMeals, setEditingMeals] = useState<Set<number>>(new Set())
 
@@ -1247,6 +1255,9 @@ export default function DashboardPage() {
     getVolumeByRegion(10, date)
       .then(setVolumeByRegion)
       .catch(() => setVolumeByRegion(null))
+    getDailyBeta(10, date)
+      .then(setDailyBeta)
+      .catch(() => setDailyBeta(null))
   }, [date])
 
   const activeTarget = summary?.active_macro_target ?? null
@@ -1421,7 +1432,7 @@ export default function DashboardPage() {
 
           <RecentSessionsCard sessions={sessions} onSessionChanged={refreshSessions} />
 
-          <MuscleVolumeCard data={volumeByRegion} />
+          <MuscleVolumeCard data={volumeByRegion} dailyBeta={dailyBeta} />
 
           {workouts.length > 0 && (
             <section className="bg-white border border-gray-200 rounded-2xl p-5">

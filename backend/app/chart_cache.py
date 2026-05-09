@@ -42,6 +42,11 @@ logger = logging.getLogger(__name__)
 # Bump when payload shape or upstream computation semantics change.
 CACHE_VERSION = "v1"
 
+# Per-kind versions override CACHE_VERSION on a single cache namespace
+# without invalidating the others. Bump when a particular endpoint's
+# payload semantics change without touching the rest.
+BETA_EVOL_VERSION = "v2"  # v2: per-exercise β (was: cumulative)
+
 KIND_CURVE = "curve_snapshot"
 KIND_BETA_EVOL = "beta_evolution"
 KIND_FATIGUE = "fatigue_profile"
@@ -55,7 +60,7 @@ def curve_key(exercise_id: int, on_date: date) -> str:
 
 
 def beta_evol_key(workout_session_id: int) -> str:
-    return f"betaevol:{CACHE_VERSION}:{workout_session_id}"
+    return f"betaevol:{BETA_EVOL_VERSION}:{workout_session_id}"
 
 
 def fatigue_key(

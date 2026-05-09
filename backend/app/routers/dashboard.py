@@ -453,3 +453,84 @@ def get_volume_by_region(
         "daily": {r: [round(v, 1) for v in daily[r]] for r in regions},
         "totals": {r: round(totals[r], 1) for r in regions},
     }
+
+
+# ── Daily β strip (per-exercise β averaged per workout day) ────────────
+
+
+@router.get("/daily-beta")
+def get_daily_beta(
+    days: int = Query(10, ge=1, le=_MAX_DAYS_WINDOW),
+    end_date: date | None = Query(None),
+    session: Session = Depends(get_session),
+    user: str = Depends(get_current_user),
+):
+    """Daily mean per-exercise β for the trailing ``days`` window.
+
+    For each WorkoutSession in the window, fits β independently for
+    every exercise present in the session against that exercise's
+    regularized prior fresh-curve (``fit_curve(..., exclude_today=True,
+    as_of=session.date)``). Each day's β is then the **equal-weighted
+    mean of all non-null per-exercise β values across all sessions on
+    that date**.
+
+    Returns one entry per day in ``[start, end]`` (matching
+    ``/volume-by-region``) so the strip can align horizontally with the
+    daily volume bars even when some days have no workout. ``beta`` is
+    ``None`` on rest days and on workout days where every exercise had
+    too few RPE-eligible sets to fit.
+    """
+    from app.session_readiness import compute_session_exercise_betas
+
+    end = end_date or user_today()
+    start = end - timedelta(days=days - 1)
+    dates = [start + timedelta(days=i) for i in range(days)]
+
+    sessions = session.exec(
+        select(WorkoutSession)
+        .where(WorkoutSession.date >= start)
+        .where(WorkoutSession.date <= end)
+    ).all()
+
+    by_date: dict[date, list[float]] = {}
+    set_count_by_date: dict[date, int] = {}
+    exercise_count_by_date: dict[date, int] = {}
+    session_count_by_date: dict[date, int] = {}
+    for ws in sessions:
+        session_count_by_date[ws.date] = (
+            session_count_by_date.get(ws.date, 0) + 1
+        )
+        points = compute_session_exercise_betas(session, ws.id) or []
+        for p in points:
+            beta = p["beta"]
+            if beta is None:
+                continue
+            by_date.setdefault(ws.date, []).append(float(beta))
+            set_count_by_date[ws.date] = (
+                set_count_by_date.get(ws.date, 0) + int(p["set_count"])
+            )
+            exercise_count_by_date[ws.date] = (
+                exercise_count_by_date.get(ws.date, 0) + 1
+            )
+
+    points = []
+    for d in dates:
+        worked_out = session_count_by_date.get(d, 0) > 0
+        betas = by_date.get(d) or []
+        beta = round(sum(betas) / len(betas), 4) if betas else None
+        points.append({
+            "date": d.isoformat(),
+            "worked_out": worked_out,
+            "beta": beta,
+            "session_count": session_count_by_date.get(d, 0),
+            "exercise_count": exercise_count_by_date.get(d, 0),
+            "set_count": set_count_by_date.get(d, 0),
+        })
+
+    return {
+        "days": days,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "dates": [d.isoformat() for d in dates],
+        "points": points,
+    }

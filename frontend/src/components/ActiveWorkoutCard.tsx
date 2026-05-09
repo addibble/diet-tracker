@@ -1180,14 +1180,16 @@ function ExerciseWorkout({
   }, [sparkWeight, sparkReps, rx, sessionId, state.exercise_id, state.training_mode, logging, onSetLogged])
   return (
     <div className="space-y-3">
-      {/* In-session β evolution sparkline — one node per completed exercise
-          today, in completion order, with a green/red split background and
-          0-line down the middle. */}
+      {/* In-session β evolution sparkline — one node per exercise (in
+          completion order today), each fit independently against that
+          exercise's prior history curve. Uses the full-width "large"
+          layout that matches the Recent Sessions card. */}
       {wkSession && (
         <SessionBetaEvolutionSparkline
           sessionId={sessionId}
           refreshKey={`${state.exercise_id}:${state.sets.length}:${wkSession.readiness_beta ?? ''}`}
           exerciseName={state.name}
+          large
         />
       )}
       {/* Training mode toggle (only before first set when heavy or burnout is available) */}

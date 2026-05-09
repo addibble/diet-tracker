@@ -93,6 +93,29 @@ export const getVolumeByRegion = (days = 10, endDate?: string) => {
   return request<VolumeByRegion>(`/dashboard/volume-by-region?${params.toString()}`);
 };
 
+export interface DailyBetaPoint {
+  date: string;
+  worked_out: boolean;
+  beta: number | null;
+  session_count: number;
+  exercise_count: number;
+  set_count: number;
+}
+
+export interface DailyBeta {
+  days: number;
+  start: string;
+  end: string;
+  dates: string[];
+  points: DailyBetaPoint[];
+}
+
+export const getDailyBeta = (days = 10, endDate?: string) => {
+  const params = new URLSearchParams({ days: String(days) });
+  if (endDate) params.set('end_date', endDate);
+  return request<DailyBeta>(`/dashboard/daily-beta?${params.toString()}`);
+};
+
 export const putTodayWeight = (weightLb: number) =>
   request<{ id: number; weight_lb: number; logged_at: string }>('/dashboard/weight', {
     method: 'PUT',

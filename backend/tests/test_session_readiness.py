@@ -254,13 +254,88 @@ class TestSessionBetaEvolution:
         assert [p["exercise_id"] for p in points] == [squat.id, bench.id]
         assert points[0]["exercise_name"] == "Back Squat"
         assert points[1]["exercise_name"] == "Bench Press"
-        # Cumulative set_count grows monotonically.
-        assert points[0]["set_count"] >= 2
-        assert points[1]["set_count"] >= points[0]["set_count"]
+        # Per-exercise set_count: each entry counts only its own RPE-eligible
+        # obs (squat has 2, bench has 3).
+        assert points[0]["set_count"] == 2
+        assert points[1]["set_count"] == 3
         # Each point has either a numeric β or null with the contract fields.
         for p in points:
             assert "beta" in p
             assert p["beta"] is None or BETA_MIN <= p["beta"] <= BETA_MAX
+
+    def test_per_exercise_beta_isolation(self, session):
+        """β for exercise A must not be influenced by exercise B's sets."""
+        from app.session_readiness import session_beta_evolution
+
+        bench = _make_exercise(session, name="Bench Press")
+        squat = _make_exercise(session, name="Back Squat")
+        baseline = date(2026, 1, 15)
+        _seed_history(
+            session, bench, baseline_date=baseline,
+            weights=[150, 160, 170, 180, 190, 200],
+            reps_list=[10, 9, 8, 7, 6, 5],
+            rpes=[8.5, 8.5, 8.5, 8.5, 8.5, 9.0],
+        )
+        _seed_history(
+            session, squat, baseline_date=baseline,
+            weights=[200, 220, 240, 260, 280, 300],
+            reps_list=[10, 9, 8, 7, 6, 5],
+            rpes=[8.5, 8.5, 8.5, 8.5, 8.5, 9.0],
+        )
+
+        # Same WorkoutSession (so curve as_of is identical across both
+        # measurements); add bench sets between the two evolution reads
+        # and verify squat's β is unaffected.
+        ws = _make_session(session, baseline)
+        squat_a = _add_set(session, ws.id, squat.id,
+                           weight=240, reps=8, rpe=8.5, set_order=1)
+        squat_b = _add_set(session, ws.id, squat.id,
+                           weight=240, reps=7, rpe=9.0, set_order=2)
+        before = session_beta_evolution(session, ws.id)
+        assert before is not None
+        squat_before = next(p for p in before if p["exercise_id"] == squat.id)
+        assert squat_before["beta"] is not None
+
+        # Now add some bench sets (a "strong day" pattern). Per-exercise
+        # contract: this must not move squat's β.
+        _add_set(session, ws.id, bench.id,
+                 weight=180, reps=14, rpe=8.0, set_order=3)
+        _add_set(session, ws.id, bench.id,
+                 weight=190, reps=12, rpe=8.5, set_order=4)
+        after = session_beta_evolution(session, ws.id)
+        assert after is not None
+        squat_after = next(p for p in after if p["exercise_id"] == squat.id)
+        assert squat_after["beta"] is not None
+        bench_after = next(p for p in after if p["exercise_id"] == bench.id)
+        assert bench_after["beta"] is not None and bench_after["beta"] > 0.0
+
+        assert squat_after["beta"] == pytest.approx(
+            squat_before["beta"], abs=1e-9,
+        ), (
+            f"Adding bench sets moved squat β: "
+            f"{squat_before['beta']} → {squat_after['beta']}"
+        )
+        # Sanity: silence unused-locals warnings if any.
+        _ = (squat_a, squat_b)
+
+    def test_per_exercise_beta_no_prior_curve(self, session):
+        """Exercise with today's RPE sets but no prior history → β is None."""
+        from app.session_readiness import session_beta_evolution
+
+        ex = _make_exercise(session, name="New Lift")
+        ws = _make_session(session, date(2026, 1, 15))
+        # No history; just two RPE-eligible sets today.
+        _add_set(session, ws.id, ex.id,
+                 weight=100, reps=8, rpe=8.5, set_order=1)
+        _add_set(session, ws.id, ex.id,
+                 weight=110, reps=7, rpe=9.0, set_order=2)
+
+        points = session_beta_evolution(session, ws.id)
+        assert points is not None
+        assert len(points) == 1
+        # 2 RPE-eligible obs but no fittable prior curve → β is None.
+        assert points[0]["beta"] is None
+        assert points[0]["set_count"] == 2
 
     def test_node_per_exercise_even_without_rpe(self, session):
         from app.session_readiness import session_beta_evolution
@@ -287,4 +362,4 @@ class TestSessionBetaEvolution:
         assert points is not None
         assert len(points) == 1
         assert points[0]["beta"] is None
-        assert points[0]["set_count"] == 0  # no RPE-eligible obs accumulated
+        assert points[0]["set_count"] == 0  # no RPE-eligible obs for this exercise

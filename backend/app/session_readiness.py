@@ -275,37 +275,49 @@ def fit_session_beta(
     return _fit_beta_from_observations(obs, curves)
 
 
-def session_beta_evolution(
+def compute_session_exercise_betas(
     session: SQLSession,
     workout_session_id: int,
 ) -> list[dict] | None:
-    """Per-exercise cumulative β trajectory within a single workout session.
+    """Per-exercise β values for a single workout session.
 
-    Walks the session's exercises in completion order (defined as the
-    maximum ``set_order`` of each exercise's sets), and at each step fits β
-    over the cumulative set of RPE-eligible observations from all prior
-    exercises plus the current one. Useful for showing how the day's
-    readiness signal evolved as the user progressed through their workout.
+    For each exercise that appears in the session, fits β using **only**
+    that exercise's RPE-eligible sets (today) against that exercise's
+    regularized fresh-curve fit from strictly-prior history (``fit_curve``
+    with ``exclude_today=True, as_of=session.date``). β is therefore a
+    pure "how did I do today on this exercise vs my historical baseline"
+    signal, with zero contamination from other exercises in the session.
 
-    Returns a list of points ``[{exercise_id, exercise_name, set_count,
-    beta}]`` ordered by completion. ``beta`` may be ``None`` for prefixes
-    with too few RPE-eligible observations (typically the first exercise
-    or anything <2 RPE sets cumulatively). Returns ``None`` when the
-    session does not exist.
+    Each exercise also gets a node when it has logged sets but fewer than
+    ``MIN_SETS_FOR_BETA`` RPE-eligible observations (β = None) — this lets
+    the in-session sparkline show one node per exercise as the user works
+    through the day, including the currently-active one.
+
+    Returns:
+        list of ``{exercise_id, exercise_name, set_count, beta,
+        last_set_order}``, where ``set_count`` is the per-exercise count
+        of RPE-eligible observations, ``last_set_order`` is the
+        ``max(set_order)`` over all the exercise's sets in this session
+        (used by callers to order points by completion), and ``beta`` is
+        ``None`` when the exercise has too few eligible observations or
+        no valid prior curve. Returns ``None`` when the session does not
+        exist; ``[]`` when the session has no logged sets.
     """
     workout_session = session.get(WorkoutSession, workout_session_id)
     if workout_session is None:
         return None
 
-    obs = _collect_session_observations(session, workout_session)
-
-    # Determine completion order from ALL of the session's sets (not just
-    # RPE-eligible) so an exercise without RPE tags still gets a node.
+    # Exercise membership + completion-order anchor come from ALL of the
+    # session's sets (not just RPE-eligible) so an exercise with only
+    # untagged sets still produces a node.
     sets_for_order = session.exec(
         select(WorkoutSet)
         .where(WorkoutSet.session_id == workout_session.id)
         .order_by(WorkoutSet.set_order)
     ).all()
+    if not sets_for_order:
+        return []
+
     last_order: dict[int, int] = {}
     name_cache: dict[int, str] = {}
     for ws in sets_for_order:
@@ -316,33 +328,64 @@ def session_beta_evolution(
             ex = session.get(Exercise, ws.exercise_id)
             if ex is not None:
                 name_cache[ws.exercise_id] = ex.name
-    completion_order = sorted(last_order.keys(), key=lambda eid: last_order[eid])
 
-    if not completion_order:
-        return []
-
-    # Build the curve cache once for all involved exercises.
-    curves = _build_curve_cache(
-        session, completion_order, as_of=workout_session.date,
-    )
-
-    # Group observations by exercise for prefix accumulation.
+    # RPE-eligible observations grouped by exercise.
+    obs = _collect_session_observations(session, workout_session)
     by_ex: dict[int, list[tuple[int, float, float, float]]] = {}
     for row in obs:
         by_ex.setdefault(row[0], []).append(row)
 
+    # One curve cache build for all exercises seen in the session.
+    curves = _build_curve_cache(
+        session, list(last_order.keys()), as_of=workout_session.date,
+    )
+
     points: list[dict] = []
-    cumulative: list[tuple[int, float, float, float]] = []
-    for ex_id in completion_order:
-        cumulative.extend(by_ex.get(ex_id, []))
-        beta = _fit_beta_from_observations(cumulative, curves)
+    for ex_id, last in last_order.items():
+        ex_obs = by_ex.get(ex_id, [])
+        beta = _fit_beta_from_observations(ex_obs, curves)
         points.append({
             "exercise_id": ex_id,
             "exercise_name": name_cache.get(ex_id, f"Exercise {ex_id}"),
-            "set_count": len(cumulative),
+            "set_count": len(ex_obs),
             "beta": beta,
+            "last_set_order": last,
         })
     return points
+
+
+def session_beta_evolution(
+    session: SQLSession,
+    workout_session_id: int,
+) -> list[dict] | None:
+    """Per-exercise β trajectory within a single workout session.
+
+    Walks the session's exercises in completion order (defined as
+    ``max(set_order)`` per exercise) and emits one node per exercise.
+    Each node's β is computed using **only** that exercise's
+    RPE-eligible sets vs the same exercise's regularized prior fresh
+    curve — there is no cross-exercise accumulation, so the chart
+    answers "how did I do today on each exercise vs my history?"
+
+    Returns a list of ``{exercise_id, exercise_name, set_count, beta}``
+    points ordered by completion. ``beta`` may be ``None`` for an
+    exercise with fewer than ``MIN_SETS_FOR_BETA`` RPE-eligible
+    observations or no valid prior curve. Returns ``None`` when the
+    session does not exist.
+    """
+    points = compute_session_exercise_betas(session, workout_session_id)
+    if points is None:
+        return None
+    points.sort(key=lambda p: p["last_set_order"])
+    return [
+        {
+            "exercise_id": p["exercise_id"],
+            "exercise_name": p["exercise_name"],
+            "set_count": p["set_count"],
+            "beta": p["beta"],
+        }
+        for p in points
+    ]
 
 
 def update_session_readiness(
