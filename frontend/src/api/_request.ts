@@ -2,6 +2,8 @@ export const BASE = '/api';
 const MAX_IMPORT_IMAGE_BYTES = 1_500_000;
 const MAX_IMPORT_IMAGE_DIMENSION = 1600;
 
+import { recordEvent } from '../lib/telemetry';
+
 function normalizeServerErrorText(status: number, rawText: string): string {
   const normalized = rawText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   const lower = normalized.toLowerCase();
@@ -95,11 +97,29 @@ export async function request<T>(path: string, options?: RequestInit): Promise<T
     headers.set('Content-Type', 'application/json');
   }
 
+  const method = (options?.method ?? 'GET').toUpperCase();
+  // Skip self-instrumentation of telemetry posts to avoid feedback loops.
+  const skipTelemetry = path.startsWith('/telemetry/');
+  const t0 = performance.now();
   const res = await fetch(`${BASE}${path}`, {
     credentials: 'include',
     ...options,
     headers,
   });
+  if (!skipTelemetry) {
+    const duration = performance.now() - t0;
+    // Coarsen path so the backend aggregation doesn't blow up on every id.
+    const apiPath = path.split('?')[0].replace(/\/\d+/g, '/:id');
+    const serverTiming = res.headers.get('Server-Timing') || undefined;
+    recordEvent({
+      name: `api:${method} ${apiPath}`,
+      duration_ms: duration,
+      meta: {
+        status: res.status,
+        server_timing: serverTiming,
+      },
+    });
+  }
   const errorDetail = await readErrorDetail(res);
   if (errorDetail) {
     throw new Error(errorDetail);

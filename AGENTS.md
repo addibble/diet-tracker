@@ -237,6 +237,56 @@ synthesizes defaults for NOT NULL columns missing from older prod schemas
 (see the `DEFAULTS` dict in the script). Update the script's `ALLOWED` /
 `DEFAULTS` when adding new catalog-table columns.
 
+## Performance Telemetry
+
+The app continuously records per-request and per-frontend-event timings to
+`data/telemetry.db` (SQLite, separate from app data). Use this when asked to
+"go look at the profiles" / "find slow endpoints" after the user has been
+exercising the app.
+
+### What's recorded
+
+- **Requests** — every HTTP request: path, method, status, duration_ms,
+  user_id, db query count, db total ms, phase breakdown.
+- **Slow queries** — top-N slowest SQL per request, with rowcount. High
+  rowcount × frequent × slow is the textbook signal for "add an index".
+- **Frontend events** — every API call from `frontend/src/api/_request.ts`,
+  plus anything wrapped in `time()` / `timeSync()` / `recordEvent()` from
+  `frontend/src/lib/telemetry.ts`. Flushed via `navigator.sendBeacon` on
+  page hide.
+
+Add phase timing to a hot path:
+
+```python
+from app.telemetry import phase
+
+with phase("curve_fit"):
+    ...
+```
+
+Phases show up in the persisted row and in the `Server-Timing` response
+header (visible inline in Chrome DevTools' Network panel).
+
+### Reviewing telemetry
+
+```bash
+# Local
+python tools/telemetry_report.py --hours 24
+
+# Production: hit the summary endpoint (HTTP Basic, same creds as /debug/logs)
+curl -u logs:$LOGS_PASSWORD "$APP_URL/api/debug/telemetry/summary?hours=24"
+```
+
+The report ranks endpoints by total time (n × avg), slow SQL by total time
+with avg/max rowcount, and frontend events similarly. From there:
+
+1. Endpoints with high `db` count and rising `avg_db_ms` → N+1 query
+   problems. Check eager-loading.
+2. Slow queries with high `avg_rows` + no index → run `EXPLAIN QUERY PLAN`
+   in `sqlite3 data/users/<user_id>/diet_tracker.db` and add an index.
+3. Frontend events much slower than the underlying API call → frontend
+   render bottleneck (look at the corresponding component).
+
 ## Lessons Learned
 
 ### Python 3.14 + Pydantic: field name shadowing type imports
