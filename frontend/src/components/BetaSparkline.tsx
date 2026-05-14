@@ -1,3 +1,5 @@
+import type React from 'react'
+
 /** Generic β sparkline shared by the in-session per-exercise variant and
  *  the dashboard daily strip. Renders a horizontal sparkline with a
  *  light-green top half (β > 0) and a light-red bottom half (β < 0),
@@ -19,10 +21,17 @@ export interface BetaSparklineProps {
   /** When true, render the full-width tall variant used inside cards.
    *  When false, render the compact inline variant used next to a label. */
   large?: boolean
+  /** Optional click handler — fires with the index of the clicked point.
+   *  When provided, dots become interactive (pointer cursor + larger hit
+   *  area on touch). */
+  onPointClick?: (index: number) => void
+  /** Highlight this index as the selected dot (drawn with a ring). */
+  selectedIndex?: number | null
 }
 
 export function BetaSparkline({
   points, showNullAsHollow = true, large = false,
+  onPointClick, selectedIndex = null,
 }: BetaSparklineProps) {
   if (points.length === 0) return null
 
@@ -75,20 +84,51 @@ export function BetaSparkline({
       {points.map((p, i) => {
         const cx = PAD + i * xStep
         const isLast = i === points.length - 1
+        const isSelected = selectedIndex === i
+        const clickable = onPointClick != null
+        const handleClick = clickable
+          ? (e: React.MouseEvent) => { e.stopPropagation(); onPointClick(i) }
+          : undefined
+        const cursor = clickable ? 'pointer' : undefined
         if (p.beta == null) {
           if (!showNullAsHollow) return null
           return (
-            <circle key={p.key} cx={cx} cy={yZero}
-              r={dotR} fill="white" stroke="currentColor"
-              strokeOpacity={0.6} strokeWidth={1}
-              vectorEffect="non-scaling-stroke" />
+            <g key={p.key} style={cursor ? { cursor } : undefined}>
+              <circle cx={cx} cy={yZero}
+                r={dotR} fill="white" stroke="currentColor"
+                strokeOpacity={0.6} strokeWidth={1}
+                vectorEffect="non-scaling-stroke" />
+              {clickable && (
+                <circle cx={cx} cy={yZero} r={Math.max(8, dotR * 3)}
+                  fill="transparent" onClick={handleClick} />
+              )}
+              {isSelected && (
+                <circle cx={cx} cy={yZero} r={dotR + 2.5}
+                  fill="none" stroke="currentColor" strokeOpacity={0.9}
+                  strokeWidth={1.25}
+                  vectorEffect="non-scaling-stroke" />
+              )}
+            </g>
           )
         }
+        const cy = y(p.beta)
+        const r = isSelected ? Math.max(lastDotR, dotR + 1.5) : (isLast ? lastDotR : dotR)
         return (
-          <circle key={p.key} cx={cx} cy={y(p.beta)}
-            r={isLast ? lastDotR : dotR}
-            fill="currentColor"
-            fillOpacity={isLast ? 1 : 0.7} />
+          <g key={p.key} style={cursor ? { cursor } : undefined}>
+            <circle cx={cx} cy={cy} r={r}
+              fill="currentColor"
+              fillOpacity={isSelected ? 1 : (isLast ? 1 : 0.7)} />
+            {isSelected && (
+              <circle cx={cx} cy={cy} r={r + 2.5}
+                fill="none" stroke="currentColor" strokeOpacity={0.9}
+                strokeWidth={1.25}
+                vectorEffect="non-scaling-stroke" />
+            )}
+            {clickable && (
+              <circle cx={cx} cy={cy} r={Math.max(8, dotR * 3)}
+                fill="transparent" onClick={handleClick} />
+            )}
+          </g>
         )
       })}
     </svg>

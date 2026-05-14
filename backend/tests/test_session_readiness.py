@@ -363,3 +363,101 @@ class TestSessionBetaEvolution:
         assert len(points) == 1
         assert points[0]["beta"] is None
         assert points[0]["set_count"] == 0  # no RPE-eligible obs for this exercise
+
+
+class TestSessionPerSetBetas:
+    def test_returns_none_for_missing_session(self, session):
+        from app.session_readiness import session_per_set_betas
+        assert session_per_set_betas(session, 99999) is None
+
+    def test_returns_empty_groups_for_no_sets(self, session):
+        from app.session_readiness import session_per_set_betas
+        ws = _make_session(session, date(2026, 1, 15))
+        assert session_per_set_betas(session, ws.id) == {"groups": []}
+
+    def test_one_point_per_eligible_set_grouped_by_exercise_group(self, session):
+        from app.session_readiness import session_per_set_betas
+
+        bench = _make_exercise(session, name="Bench Press")
+        squat = _make_exercise(session, name="Back Squat")
+        baseline = date(2026, 1, 15)
+        _seed_history(
+            session, bench, baseline_date=baseline,
+            weights=[150, 160, 170, 180, 190, 200],
+            reps_list=[10, 9, 8, 7, 6, 5],
+            rpes=[8.5, 8.5, 8.5, 8.5, 8.5, 9.0],
+        )
+        _seed_history(
+            session, squat, baseline_date=baseline,
+            weights=[200, 220, 240, 260, 280, 300],
+            reps_list=[10, 9, 8, 7, 6, 5],
+            rpes=[8.5, 8.5, 8.5, 8.5, 8.5, 9.0],
+        )
+        ws = _make_session(session, baseline)
+        _add_set(session, ws.id, bench.id, weight=180, reps=8, rpe=8.5, set_order=1)
+        _add_set(session, ws.id, squat.id, weight=240, reps=8, rpe=8.5, set_order=2)
+        _add_set(session, ws.id, bench.id, weight=180, reps=7, rpe=9.0, set_order=3)
+        _add_set(session, ws.id, squat.id, weight=240, reps=7, rpe=9.0, set_order=4)
+
+        result = session_per_set_betas(session, ws.id)
+        assert result is not None
+        groups = result["groups"]
+        # Two distinct groups should appear (bench → Push-like,
+        # squat → Legs-like; classifier may map to "Uncategorized" if no
+        # tissue mappings exist, which is fine — just need two buckets).
+        all_points = [p for g in groups for p in g["points"]]
+        assert len(all_points) == 4
+        # Group order is by earliest set_order (bench appeared at set 1).
+        assert groups[0]["points"][0]["exercise_id"] == bench.id
+        # Points within a group are ordered by set_order.
+        for g in groups:
+            orders = [p["set_order"] for p in g["points"]]
+            assert orders == sorted(orders)
+        # set_index is per-exercise 1-based.
+        bench_points = [p for g in groups for p in g["points"]
+                        if p["exercise_id"] == bench.id]
+        assert [p["set_index"] for p in bench_points] == [1, 2]
+        # β is finite when prior curve exists.
+        for p in all_points:
+            assert p["beta"] is None or BETA_MIN <= p["beta"] <= BETA_MAX
+
+    def test_skips_non_rpe_eligible_sets(self, session):
+        from app.session_readiness import session_per_set_betas
+
+        bench = _make_exercise(session, name="Bench Press")
+        baseline = date(2026, 1, 15)
+        _seed_history(
+            session, bench, baseline_date=baseline,
+            weights=[150, 160, 170, 180, 190, 200],
+            reps_list=[10, 9, 8, 7, 6, 5],
+            rpes=[8.5, 8.5, 8.5, 8.5, 8.5, 9.0],
+        )
+        ws = _make_session(session, baseline)
+        # First set: no rpe → ineligible.
+        s = WorkoutSet(
+            session_id=ws.id, exercise_id=bench.id, set_order=1,
+            weight=180, endurance_value=8.0, rpe=None,
+        )
+        session.add(s)
+        session.commit()
+        _add_set(session, ws.id, bench.id, weight=180, reps=7, rpe=9.0, set_order=2)
+
+        result = session_per_set_betas(session, ws.id)
+        assert result is not None
+        all_points = [p for g in result["groups"] for p in g["points"]]
+        # Only the rpe-tagged set produces a point.
+        assert len(all_points) == 1
+        assert all_points[0]["set_order"] == 2
+
+    def test_beta_none_when_no_prior_curve(self, session):
+        from app.session_readiness import session_per_set_betas
+
+        ex = _make_exercise(session, name="New Lift")
+        ws = _make_session(session, date(2026, 1, 15))
+        _add_set(session, ws.id, ex.id, weight=100, reps=8, rpe=8.5, set_order=1)
+
+        result = session_per_set_betas(session, ws.id)
+        assert result is not None
+        all_points = [p for g in result["groups"] for p in g["points"]]
+        assert len(all_points) == 1
+        assert all_points[0]["beta"] is None

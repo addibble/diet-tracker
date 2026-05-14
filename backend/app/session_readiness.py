@@ -46,6 +46,7 @@ from scipy.optimize import minimize_scalar
 from sqlmodel import Session as SQLSession
 from sqlmodel import select
 
+from app.exercise_groups import get_exercise_group
 from app.exercise_loads import (
     bodyweight_by_date,
     effective_weight,
@@ -386,6 +387,145 @@ def session_beta_evolution(
         }
         for p in points
     ]
+
+
+def session_per_set_betas(
+    session: SQLSession,
+    workout_session_id: int,
+) -> dict | None:
+    """Per-set readiness β grouped by exercise group for one workout session.
+
+    For each RPE-eligible rep-mode set in the session, computes the single-set
+    residual ``β_set = log(rtf_obs / r_fresh(W_eff))`` against the exercise's
+    regularized prior fresh-curve (history strictly before today). Sets are
+    then bucketed by ``app.exercise_groups.get_exercise_group`` so that the
+    UI can render one sparkline per training group (Push / Pull / Legs /
+    Shoulders / Core / Uncategorized).
+
+    Returns ``{groups: [{group, points: [...]}]}`` where each point is
+    ``{exercise_id, exercise_name, set_id, set_index, set_order, weight,
+    reps_done, rtf, beta}``. ``beta`` is ``None`` when the exercise lacks a
+    usable prior curve or the predicted fresh rtf is non-positive. Groups
+    are ordered by the earliest ``set_order`` they appear in today; points
+    within a group are ordered by ``set_order``. Returns ``None`` if the
+    session does not exist.
+    """
+    workout_session = session.get(WorkoutSession, workout_session_id)
+    if workout_session is None:
+        return None
+
+    sets = session.exec(
+        select(WorkoutSet)
+        .where(WorkoutSet.session_id == workout_session.id)
+        .order_by(WorkoutSet.set_order)
+    ).all()
+    if not sets:
+        return {"groups": []}
+
+    bw_lookup = bodyweight_by_date(
+        list(session.exec(select(WeightLog).order_by(WeightLog.logged_at)).all())
+    )
+
+    exercise_cache: dict[int, Exercise | None] = {}
+    group_cache: dict[int, str] = {}
+    name_cache: dict[int, str] = {}
+    set_index_counter: dict[int, int] = {}
+
+    def get_exercise(ex_id: int) -> Exercise | None:
+        if ex_id not in exercise_cache:
+            exercise_cache[ex_id] = session.get(Exercise, ex_id)
+        return exercise_cache[ex_id]
+
+    # Collect eligible per-set rows first so we can build the curve cache once.
+    eligible: list[dict] = []
+    for ws in sets:
+        ex = get_exercise(ws.exercise_id)
+        if ex is None:
+            continue
+        if ex.id not in name_cache:
+            name_cache[ex.id] = ex.name
+        if ex.id not in group_cache:
+            group_cache[ex.id] = get_exercise_group(ex.id, session)
+
+        set_index = set_index_counter.get(ws.exercise_id, 0) + 1
+        set_index_counter[ws.exercise_id] = set_index
+
+        if ws.rpe is None or ws.rpe < MIN_RPE_FOR_FIT or ws.rpe > 10.0:
+            continue
+        if ws.endurance_value is None or ws.endurance_value <= 0:
+            continue
+        if not supports_strength_estimate(ex, ws):
+            continue
+        ew = effective_weight(ex, ws, bw_lookup, workout_session.date)
+        if ew <= 0:
+            continue
+        rir = _rpe_to_rir(ws.rpe)
+        rtf = _reps_done_to_rtf(float(ws.endurance_value), rir)
+        if rtf <= 0:
+            continue
+        eligible.append({
+            "set_id": ws.id,
+            "exercise_id": ex.id,
+            "exercise_name": name_cache[ex.id],
+            "group": group_cache[ex.id],
+            "set_index": set_index,
+            "set_order": ws.set_order,
+            "weight": float(ws.weight) if ws.weight is not None else None,
+            "reps_done": float(ws.endurance_value),
+            "rtf": float(rtf),
+            "ew": float(ew),
+        })
+
+    curves = _build_curve_cache(
+        session,
+        {row["exercise_id"] for row in eligible},
+        as_of=workout_session.date,
+    )
+
+    points_by_group: dict[str, list[dict]] = {}
+    first_order_by_group: dict[str, int] = {}
+    for row in eligible:
+        params = curves.get(row["exercise_id"])
+        beta: float | None
+        if params is None:
+            beta = None
+        else:
+            M, k, gamma, delta = params  # noqa: N806
+            pred = float(fresh_curve(row["ew"], M, k, gamma, delta))
+            if pred <= 0:
+                beta = None
+            else:
+                beta = math.log(row["rtf"] / pred)
+
+        group = row["group"]
+        bucket = points_by_group.setdefault(group, [])
+        bucket.append({
+            "exercise_id": row["exercise_id"],
+            "exercise_name": row["exercise_name"],
+            "set_id": row["set_id"],
+            "set_index": row["set_index"],
+            "set_order": row["set_order"],
+            "weight": row["weight"],
+            "reps_done": row["reps_done"],
+            "rtf": row["rtf"],
+            "beta": beta,
+        })
+        prior = first_order_by_group.get(group)
+        if prior is None or row["set_order"] < prior:
+            first_order_by_group[group] = row["set_order"]
+
+    ordered_groups = sorted(
+        points_by_group.keys(), key=lambda g: first_order_by_group[g]
+    )
+    return {
+        "groups": [
+            {
+                "group": g,
+                "points": sorted(points_by_group[g], key=lambda p: p["set_order"]),
+            }
+            for g in ordered_groups
+        ],
+    }
 
 
 def update_session_readiness(

@@ -99,6 +99,7 @@ function computeDomain(
   completedSets?: CompletedSet[],
   targetReps?: number,
   schemeRir?: number,
+  fullDomain?: boolean,
 ): { xMin: number; xMax: number; yMin: number; yMax: number } {
   // "Primary" points = today's sets (completed) + the spark (if active in
   // a pre/logging flow). Historical observations are secondary — included
@@ -203,7 +204,27 @@ function computeDomain(
     }
     yHi = newHi
   }
-  const yMax = Math.max(8, Math.ceil(yHi))
+  let yMax = Math.max(8, Math.ceil(yHi))
+
+  // Full-domain (completed-view zoom-out): anchor both axes at 0 and
+  // expand the window so the curve's x- and y-intercepts are fully on
+  // screen. x runs 0 → max-weight (rtf=0); y runs 0 → max-reps (curve
+  // value at a small weight, capped to avoid the W→0 asymptote).
+  if (fullDomain && curve) {
+    xMin = 0
+    const xIntercept = solveWeight(0, curve) as number
+    if (Number.isFinite(xIntercept) && xIntercept > 0) {
+      xMax = Math.max(xMax, Math.ceil(xIntercept))
+    }
+    const probeW = Math.max(xMax / 50, 0.5)
+    const yIntercept = predictReps(probeW, curve) as number
+    if (Number.isFinite(yIntercept) && yIntercept > 0) {
+      yMax = Math.max(yMax, Math.ceil(yIntercept))
+    }
+  } else if (fullDomain) {
+    xMin = 0
+  }
+
   return { xMin, xMax, yMin: 0, yMax }
 }
 
@@ -294,15 +315,16 @@ export default function CurvePane({
   // Sticky domain: seeded from curve + observations + initial spark, and
   // only expanded when the spark approaches the edges. This keeps the graph
   // from sliding around as the user drags.
+  const fullDomain = mode === 'completed'
   const [domain, setDomain] = useState(() =>
-    computeDomain(curve, sparkWeight, observations, completedSets, bootstrapTargetReps, schemeRir),
+    computeDomain(curve, sparkWeight, observations, completedSets, bootstrapTargetReps, schemeRir, fullDomain),
   )
 
   // Reset when the underlying fit or history changes (new prescription / refit).
   useEffect(() => {
-    setDomain(computeDomain(curve, sparkWeight, observations, completedSets, bootstrapTargetReps, schemeRir))
+    setDomain(computeDomain(curve, sparkWeight, observations, completedSets, bootstrapTargetReps, schemeRir, fullDomain))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [curve, observations, completedSets, bootstrapTargetReps, schemeRir])
+  }, [curve, observations, completedSets, bootstrapTargetReps, schemeRir, fullDomain])
 
   // Pan (never expand) the window when the spark approaches an edge. This
   // keeps the x/y ranges constant so the chart never zooms out to a scale

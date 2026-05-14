@@ -34,7 +34,7 @@ from app.session_readiness import (
     is_beta_clamped,
     readiness_label,
     readiness_pct,
-    session_beta_evolution,
+    session_per_set_betas,
 )
 from app.units import endurance_value_from_legacy, legacy_metric_fields
 
@@ -244,15 +244,14 @@ def get_beta_evolution(
     session: Session = Depends(get_session),
     _user: str = Depends(get_current_user),
 ):
-    """Per-exercise cumulative β trajectory within a single workout session.
+    """Per-set readiness β grouped by exercise group for one workout session.
 
-    Returns one point per exercise that has at least one logged set, in
-    completion order (defined by the maximum ``set_order`` of the
-    exercise's sets). For each prefix of exercises through the current
-    one, ``beta`` is the session β fit over those exercises' RPE-eligible
-    sets only — drives the in-session readiness sparkline that shows how
-    today's signal evolved as the user worked through their workout.
-    ``beta`` is ``null`` for prefixes with too few RPE-tagged sets.
+    Returns one β per RPE-eligible rep-mode set logged today, bucketed by
+    the set's exercise group (Push / Pull / Legs / Shoulders / Core /
+    Uncategorized). Each point's β is the single-set residual
+    ``log(rtf_obs / r_fresh(W_eff))`` against the exercise's prior fresh
+    curve — so the chart shows, per training group, how each individual
+    set landed relative to history.
 
     Lazy-cached via ``chart_cache``: invalidated by add/update/delete of
     workout sets in this session, plus same-exercise sets in any session
@@ -263,24 +262,30 @@ def get_beta_evolution(
     cached = cache_get(session, key)
     if cached is not None:
         return cached
-    points = session_beta_evolution(session, session_id)
-    if points is None:
+    payload = session_per_set_betas(session, session_id)
+    if payload is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    response = {
-        "session_id": session_id,
-        "points": [
-            {
+    groups_out = []
+    for group in payload["groups"]:
+        points_out = []
+        for p in group["points"]:
+            beta = p["beta"]
+            points_out.append({
                 "exercise_id": p["exercise_id"],
                 "exercise_name": p["exercise_name"],
-                "set_count": p["set_count"],
-                "beta": p["beta"],
-                "readiness_label": readiness_label(p["beta"]),
-                "readiness_pct": readiness_pct(p["beta"]),
-                "readiness_clamped": is_beta_clamped(p["beta"]),
-            }
-            for p in points
-        ],
-    }
+                "set_id": p["set_id"],
+                "set_index": p["set_index"],
+                "set_order": p["set_order"],
+                "weight": p["weight"],
+                "reps_done": p["reps_done"],
+                "rtf": p["rtf"],
+                "beta": beta,
+                "readiness_label": readiness_label(beta),
+                "readiness_pct": readiness_pct(beta),
+                "readiness_clamped": is_beta_clamped(beta),
+            })
+        groups_out.append({"group": group["group"], "points": points_out})
+    response = {"session_id": session_id, "groups": groups_out}
     cache_set(
         session, key, KIND_BETA_EVOL, response,
         workout_session_id=session_id,
