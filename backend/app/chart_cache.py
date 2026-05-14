@@ -40,12 +40,15 @@ from app.models import ChartCache, WorkoutSession, WorkoutSet
 logger = logging.getLogger(__name__)
 
 # Bump when payload shape or upstream computation semantics change.
-CACHE_VERSION = "v1"
+# v2 (this commit): scipy fit grid reduced + per-request bodyweight memo
+# changes the numerical curve values microscopically; bumping forces a
+# clean re-fit on first access so users see the new performance profile.
+CACHE_VERSION = "v2"
 
 # Per-kind versions override CACHE_VERSION on a single cache namespace
 # without invalidating the others. Bump when a particular endpoint's
 # payload semantics change without touching the rest.
-BETA_EVOL_VERSION = "v2"  # v2: per-exercise β (was: cumulative)
+BETA_EVOL_VERSION = "v3"  # v3: same scipy-grid bump as CACHE_VERSION v2
 
 KIND_CURVE = "curve_snapshot"
 KIND_BETA_EVOL = "beta_evolution"
