@@ -125,9 +125,41 @@ def ensure_runtime_db_ready(engine: Engine) -> None:
     import app.models  # noqa: F401
 
     create_db_and_tables(engine)
+    _ensure_runtime_indexes(engine)
     if _runtime_db_needs_manual_updates(engine):
         logger.info("Applying pending runtime database updates")
         apply_db_updates(engine)
+
+
+# Indexes that significantly speed up the hot path queries (curve fitting,
+# β/readiness, dashboard). ``CREATE INDEX IF NOT EXISTS`` is idempotent and
+# cheap, so we run this on every startup without a needs-check.
+_RUNTIME_INDEXES: tuple[tuple[str, str, str], ...] = (
+    ("ix_workout_sets_exercise_id", "workout_sets", "exercise_id"),
+    ("ix_workout_sets_session_id", "workout_sets", "session_id"),
+    ("ix_workout_sessions_date", "workout_sessions", "date"),
+)
+
+
+def _ensure_runtime_indexes(engine: Engine) -> None:
+    """Create hot-path indexes on existing DBs.
+
+    ``SQLModel.metadata.create_all`` only creates indexes for tables it is
+    actively creating; existing tables get no new indexes. This helper fills
+    the gap for DBs that existed before ``index=True`` was added to the model
+    fields, so the indexes land without requiring a full migration ceremony.
+    """
+    table_names = set(inspect(engine).get_table_names())
+    with engine.begin() as conn:
+        for index_name, table, column in _RUNTIME_INDEXES:
+            if table not in table_names:
+                continue
+            conn.execute(
+                text(
+                    f"CREATE INDEX IF NOT EXISTS {index_name} "
+                    f"ON {table}({column})"
+                )
+            )
 
 
 def apply_db_updates(engine: Engine) -> None:

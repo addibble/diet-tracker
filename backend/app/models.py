@@ -194,7 +194,7 @@ class TissueRelationship(SQLModel, table=True):
 class WorkoutSession(SQLModel, table=True):
     __tablename__ = "workout_sessions"
     id: int | None = Field(default=None, primary_key=True)
-    date: dt.date
+    date: dt.date = Field(index=True)
     started_at: datetime | None = None
     finished_at: datetime | None = None
     notes: str | None = None
@@ -208,8 +208,8 @@ class WorkoutSession(SQLModel, table=True):
 class WorkoutSet(SQLModel, table=True):
     __tablename__ = "workout_sets"
     id: int | None = Field(default=None, primary_key=True)
-    session_id: int = Field(foreign_key="workout_sessions.id")
-    exercise_id: int = Field(foreign_key="exercises.id")
+    session_id: int = Field(foreign_key="workout_sessions.id", index=True)
+    exercise_id: int = Field(foreign_key="exercises.id", index=True)
     set_order: int
     performed_side: str | None = None  # "left", "right", "center", "bilateral"
     weight: float | None = None  # lbs, null for bodyweight
