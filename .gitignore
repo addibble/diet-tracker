@@ -46,6 +46,13 @@ Thumbs.db
 # Logs
 backend/logs/
 
+# Local data + prod backups (never commit)
+backend/data/
+data/
+production_backup_*.zip
+production_backup_*.db
+production_backup_*/
+
 # Test / Coverage
 .pytest_cache/
 htmlcov/

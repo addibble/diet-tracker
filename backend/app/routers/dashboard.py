@@ -481,37 +481,40 @@ def get_daily_beta(
     too few RPE-eligible sets to fit.
     """
     from app.session_readiness import compute_session_exercise_betas
+    from app.telemetry import phase
 
     end = end_date or user_today()
     start = end - timedelta(days=days - 1)
     dates = [start + timedelta(days=i) for i in range(days)]
 
-    sessions = session.exec(
-        select(WorkoutSession)
-        .where(WorkoutSession.date >= start)
-        .where(WorkoutSession.date <= end)
-    ).all()
+    with phase("daily_beta.load_sessions"):
+        sessions = session.exec(
+            select(WorkoutSession)
+            .where(WorkoutSession.date >= start)
+            .where(WorkoutSession.date <= end)
+        ).all()
 
     by_date: dict[date, list[float]] = {}
     set_count_by_date: dict[date, int] = {}
     exercise_count_by_date: dict[date, int] = {}
     session_count_by_date: dict[date, int] = {}
-    for ws in sessions:
-        session_count_by_date[ws.date] = (
-            session_count_by_date.get(ws.date, 0) + 1
-        )
-        points = compute_session_exercise_betas(session, ws.id) or []
-        for p in points:
-            beta = p["beta"]
-            if beta is None:
-                continue
-            by_date.setdefault(ws.date, []).append(float(beta))
-            set_count_by_date[ws.date] = (
-                set_count_by_date.get(ws.date, 0) + int(p["set_count"])
+    with phase("daily_beta.fit_sessions"):
+        for ws in sessions:
+            session_count_by_date[ws.date] = (
+                session_count_by_date.get(ws.date, 0) + 1
             )
-            exercise_count_by_date[ws.date] = (
-                exercise_count_by_date.get(ws.date, 0) + 1
-            )
+            points = compute_session_exercise_betas(session, ws.id) or []
+            for p in points:
+                beta = p["beta"]
+                if beta is None:
+                    continue
+                by_date.setdefault(ws.date, []).append(float(beta))
+                set_count_by_date[ws.date] = (
+                    set_count_by_date.get(ws.date, 0) + int(p["set_count"])
+                )
+                exercise_count_by_date[ws.date] = (
+                    exercise_count_by_date.get(ws.date, 0) + 1
+                )
 
     points = []
     for d in dates:

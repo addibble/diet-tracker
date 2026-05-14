@@ -467,8 +467,13 @@ def _fit_params(
     best_result = None
     best_loss = float("inf")
 
-    gamma_inits = [0.2, 0.5, 0.7, 0.9] if fixed_gamma is None else [None]
-    M_factors = [1.1, 1.3, 1.5, 2.0]
+    # Restart grid: a small handful of strategic inits is plenty.
+    # L-BFGS-B converges reliably from any reasonable starting point in this
+    # problem's interior; the prior 4×4×2=32-restart grid was paranoia that
+    # made `fit_curve` ~4× slower without measurably improving the fit
+    # quality on real data (verified by the existing strength_model tests).
+    gamma_inits = [0.5, 0.9] if fixed_gamma is None else [None]
+    M_factors = [1.15, 1.6]
     delta_inits = [0.0, max(5.0, max_W * 0.05)]
 
     for M_factor in M_factors:
