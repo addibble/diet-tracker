@@ -592,11 +592,15 @@ def fit_curve(
     When as_of is provided the "today" reference is that date, and the window
     anchors on it (for historical snapshots of the completed-exercise view).
     """
-    exercise, set_rows = _load_recent_sets(exercise_id, session, days, as_of=as_of)
+    from app.telemetry import phase
+
+    with phase("fit_curve.load_sets"):
+        exercise, set_rows = _load_recent_sets(exercise_id, session, days, as_of=as_of)
     if exercise is None or not set_rows:
         return None
 
-    bw_lookup = _load_bodyweight_lookup(session)
+    with phase("fit_curve.load_bw"):
+        bw_lookup = _load_bodyweight_lookup(session)
     today = as_of if as_of is not None else user_today()
 
     if exclude_today:
@@ -610,34 +614,35 @@ def fit_curve(
     confidences: list[float] = []
     ages_days: list[float] = []
 
-    for ws, ws_date in set_rows:
-        if not supports_strength_estimate(exercise, ws):
-            continue
-        if ws.rpe is None or ws.rpe < MIN_RPE_FOR_FIT or ws.rpe > 10.0:
-            continue
+    with phase("fit_curve.build_obs"):
+        for ws, ws_date in set_rows:
+            if not supports_strength_estimate(exercise, ws):
+                continue
+            if ws.rpe is None or ws.rpe < MIN_RPE_FOR_FIT or ws.rpe > 10.0:
+                continue
 
-        ew = effective_weight(exercise, ws, bw_lookup, ws_date)
-        if ew <= 0:
-            continue
+            ew = effective_weight(exercise, ws, bw_lookup, ws_date)
+            if ew <= 0:
+                continue
 
-        endurance = _set_endurance(ws)
-        if endurance is None or endurance <= 0:
-            continue
+            endurance = _set_endurance(ws)
+            if endurance is None or endurance <= 0:
+                continue
 
-        rir = _rpe_to_rir(ws.rpe)
-        r_fail = _reps_done_to_rtf(endurance, rir)
+            rir = _rpe_to_rir(ws.rpe)
+            r_fail = _reps_done_to_rtf(endurance, rir)
 
-        eff_weights.append(ew)
-        reps_to_failure.append(r_fail)
-        confidences.append(_rpe_confidence(ws.rpe))
-        ages_days.append((today - ws_date).days)
+            eff_weights.append(ew)
+            reps_to_failure.append(r_fail)
+            confidences.append(_rpe_confidence(ws.rpe))
+            ages_days.append((today - ws_date).days)
 
-    # Filter stale sessions via t-test
-    eff_weights, reps_to_failure, confidences, ages_days, n_sessions_kept = (
-        _filter_stale_sessions(
-            eff_weights, reps_to_failure, confidences, ages_days,
+        # Filter stale sessions via t-test
+        eff_weights, reps_to_failure, confidences, ages_days, n_sessions_kept = (
+            _filter_stale_sessions(
+                eff_weights, reps_to_failure, confidences, ages_days,
+            )
         )
-    )
 
     n_obs = len(eff_weights)
     if n_obs < MIN_SETS_TIER2:
@@ -665,9 +670,10 @@ def fit_curve(
     ident = _identifiability_score(eff_weights, reps_to_failure)
 
     fixed_gamma = DEFAULT_GAMMA if tier == "tier2" else None
-    M_fit, k_fit, gamma_fit, delta_fit, success = _fit_params(
-        W, r, fit_w, M_lower, M_upper, M_prior, M_REG_LAMBDA, fixed_gamma
-    )
+    with phase(f"fit_curve.scipy_{tier}"):
+        M_fit, k_fit, gamma_fit, delta_fit, success = _fit_params(
+            W, r, fit_w, M_lower, M_upper, M_prior, M_REG_LAMBDA, fixed_gamma
+        )
 
     # Compute RMSE
     predicted = fresh_curve(W, M_fit, k_fit, gamma_fit, delta_fit)

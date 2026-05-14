@@ -62,7 +62,7 @@ def post_frontend_telemetry(
 @router.get("/debug/telemetry/summary")
 def get_telemetry_summary(
     _user: str = Depends(_verify_basic_auth),
-    hours: int = Query(default=24, ge=1, le=24 * 14),
+    hours: float = Query(default=24, ge=0.01, le=24 * 14),
 ) -> dict[str, Any]:
     """Return per-endpoint aggregates, slow queries, and frontend hot spots.
 

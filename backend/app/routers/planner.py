@@ -240,15 +240,18 @@ def curve_snapshot(
     cached = cache_get(session, key)
     if cached is not None:
         return cached
-    bw_lookup = _get_bw_lookup(session)
-    bw_lb = latest_bodyweight(bw_lookup, date)
-    payload = curve_snapshot_for_date(
-        exercise_id, session, date, bodyweight_lb=bw_lb,
-    )
-    cache_set(
-        session, key, KIND_CURVE, payload,
-        exercise_id=exercise_id, on_date=date,
-    )
+    from app.telemetry import phase
+    with phase("curve_snapshot.compute"):
+        bw_lookup = _get_bw_lookup(session)
+        bw_lb = latest_bodyweight(bw_lookup, date)
+        payload = curve_snapshot_for_date(
+            exercise_id, session, date, bodyweight_lb=bw_lb,
+        )
+    with phase("curve_snapshot.cache_set"):
+        cache_set(
+            session, key, KIND_CURVE, payload,
+            exercise_id=exercise_id, on_date=date,
+        )
     return payload
 
 

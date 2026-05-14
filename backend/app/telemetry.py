@@ -318,7 +318,7 @@ def record_frontend_event(
 # Read-side helpers --------------------------------------------------------
 
 
-def summary(*, hours: int = 24) -> dict[str, Any]:
+def summary(*, hours: float = 24) -> dict[str, Any]:
     """Return per-endpoint aggregates over the last ``hours`` hours."""
     init_db()
     cutoff_iso = datetime.fromtimestamp(datetime.now(UTC).timestamp() - hours * 3600, tz=UTC).isoformat()
@@ -394,6 +394,50 @@ def summary(*, hours: int = 24) -> dict[str, Any]:
                 (cutoff_iso,),
             ).fetchall()
 
+            # Phases are stored as a JSON map per request in
+            # ``requests.phases_json``. Decode + aggregate in Python since
+            # SQLite has no native JSON_EACH on every build we ship to.
+            phase_rows = conn.execute(
+                """
+                SELECT path, phases_json
+                FROM requests
+                WHERE ts >= ? AND phases_json IS NOT NULL
+                """,
+                (cutoff_iso,),
+            ).fetchall()
+
+    phase_totals: dict[tuple[str, str], dict[str, float]] = {}
+    for r in phase_rows:
+        try:
+            phases = json.loads(r["phases_json"])
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(phases, dict):
+            continue
+        for name, ms in phases.items():
+            try:
+                ms_f = float(ms)
+            except (TypeError, ValueError):
+                continue
+            key = (r["path"], name)
+            agg = phase_totals.setdefault(
+                key, {"n": 0.0, "total_ms": 0.0, "max_ms": 0.0},
+            )
+            agg["n"] += 1
+            agg["total_ms"] += ms_f
+            agg["max_ms"] = max(agg["max_ms"], ms_f)
+    phases_out = [
+        {
+            "path": path,
+            "phase": name,
+            "n": int(agg["n"]),
+            "avg_ms": agg["total_ms"] / agg["n"] if agg["n"] else 0.0,
+            "max_ms": agg["max_ms"],
+        }
+        for (path, name), agg in phase_totals.items()
+    ]
+    phases_out.sort(key=lambda p: p["avg_ms"] * p["n"], reverse=True)
+
     return {
         "window_hours": hours,
         "endpoints": [
@@ -403,6 +447,7 @@ def summary(*, hours: int = 24) -> dict[str, Any]:
             }
             for r in endpoints
         ],
+        "phases": phases_out[:50],
         "slow_queries": [dict(r) for r in slow_queries],
         "frontend_events": [dict(r) for r in frontend],
     }
