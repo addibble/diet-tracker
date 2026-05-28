@@ -13,6 +13,7 @@ still used by the WorkoutSetEditor/TrainingPage UI:
 
 import datetime
 import json
+import threading
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -21,8 +22,10 @@ from sqlmodel import Session, select
 
 from app.auth import get_current_user
 from app.chart_cache import (
+    KIND_BANDS,
     KIND_CURVE,
     KIND_FATIGUE,
+    bands_key,
     cache_get,
     cache_set,
     curve_key,
@@ -50,6 +53,7 @@ from app.planner_state import (
     reorder_plan_exercises,
 )
 from app.strength_model import (
+    bootstrap_curve_bands,
     check_burnout_availability,
     check_heavy_availability,
     curve_snapshot_for_date,
@@ -282,6 +286,81 @@ def get_fatigue_profile(
         exercise_id=exercise_id, on_date=session_date,
     )
     return payload
+
+
+# Single-flight lock map for bootstrap band computation. Bootstrap fits
+# are expensive (~600 ms cold) so we coalesce concurrent requests for the
+# same (db_url, exercise, date) tuple. Each request acquires the lock
+# only after the cache-miss check; warm reads stay lock-free. Entries
+# are never GCed: they're cheap (~one mutex each) and the keyspace is
+# bounded by users × exercises × distinct anchor dates.
+_BANDS_LOCKS: dict[tuple[str, int, str], threading.Lock] = {}
+_BANDS_LOCKS_MUTEX = threading.Lock()
+
+
+def _bands_lock(
+    db_url: str, exercise_id: int, on_date: datetime.date,
+) -> threading.Lock:
+    key = (db_url, exercise_id, on_date.isoformat())
+    with _BANDS_LOCKS_MUTEX:
+        lock = _BANDS_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _BANDS_LOCKS[key] = lock
+        return lock
+
+
+@router.get("/curve-bands/{exercise_id}")
+def get_curve_bands(
+    exercise_id: int,
+    date: datetime.date = Query(..., description="Anchor date for the bootstrap fit window"),
+    session: Session = Depends(get_session),
+    _user: str = Depends(get_current_user),
+):
+    """Bootstrap CI bands for the historical curve fit at ``date``.
+
+    Same data window as ``curve-snapshot`` but with session-level
+    resampling to produce p05/p25/p50/p75/p95 envelopes evaluated on an
+    entered-space W grid. The point fit (``curve-snapshot``) excludes
+    today's sets; the band uses the same ``exclude_today`` semantics so
+    they're directly comparable.
+
+    Returns ``{"has_bands": false}`` when the exercise has fewer than 3
+    distinct training sessions in the fit window, when the bootstrap
+    success rate is below ``MIN_BOOT_SUCCESS_FRAC``, or for
+    bodyweight-only exercises where the entered-weight axis collapses.
+
+    Cache-backed via ``chart_cache`` (kind=``curve_bands``); single-flight
+    via a process-level lock so concurrent cold requests for the same
+    (exercise, date) coalesce.
+    """
+    from app.telemetry import phase
+    key = bands_key(exercise_id, date)
+    cached = cache_get(session, key)
+    if cached is not None:
+        return cached
+    db_url = str(session.bind.url) if session.bind is not None else ""
+    lock = _bands_lock(db_url, exercise_id, date)
+    with lock:
+        # Re-check after acquiring lock: the previous holder may have
+        # populated the cache for this key.
+        cached = cache_get(session, key)
+        if cached is not None:
+            return cached
+        with phase("curve_bands.compute"):
+            payload = bootstrap_curve_bands(
+                exercise_id, session, as_of=date,
+            )
+        if payload is None:
+            response = {"has_bands": False}
+        else:
+            response = {"has_bands": True, **payload}
+        with phase("curve_bands.cache_set"):
+            cache_set(
+                session, key, KIND_BANDS, response,
+                exercise_id=exercise_id, on_date=date,
+            )
+        return response
 
 
 def _get_bw_lookup(session: Session) -> dict:

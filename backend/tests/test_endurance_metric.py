@@ -152,7 +152,7 @@ class TestBodyweightSuggestion:
                     s, ex.id, today - timedelta(days=offset),
                     [{"weight": 0, "reps": reps, "endurance_value": reps, "rpe": 8.0}],
                 )
-            sug = get_bodyweight_suggestion(ex.id, s)
+            sug = get_bodyweight_suggestion(ex.id, s, as_of=today)
             assert sug["metric_kind"] == "reps"
             assert sug["reps_per_set"] == 10
             assert sug["endurance_per_set"] == 10
@@ -170,7 +170,7 @@ class TestBodyweightSuggestion:
                     s, ex.id, today - timedelta(days=offset),
                     [{"weight": 0, "endurance_value": secs, "rpe": 8.0}],
                 )
-            sug = get_bodyweight_suggestion(ex.id, s)
+            sug = get_bodyweight_suggestion(ex.id, s, as_of=today)
             assert sug["metric_kind"] == "duration"
             assert sug["display_unit"] == "s"
             assert sug["endurance_per_set"] == 50  # median
@@ -188,7 +188,7 @@ class TestBodyweightSuggestion:
                     s, ex.id, today - timedelta(days=offset),
                     [{"weight": 0, "endurance_value": steps, "rpe": 8.0}],
                 )
-            sug = get_bodyweight_suggestion(ex.id, s)
+            sug = get_bodyweight_suggestion(ex.id, s, as_of=today)
             assert sug["metric_kind"] == "distance"
             assert sug["endurance_per_set"] == 20
 

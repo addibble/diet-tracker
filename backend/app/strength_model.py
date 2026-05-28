@@ -130,6 +130,11 @@ class CurveFit:
     # at fit time. delta = 0 reproduces the v2 form exactly so all callers
     # remain backward-compatible with default-constructed CurveFit instances.
     delta: float = 0.0
+    # Minimum observed weight (same space as max_observed_weight). Used by
+    # the frontend to clip the rendered curve to the support envelope. May
+    # be 0.0 for default-constructed CurveFit instances; that's the fallback
+    # signal that the support envelope is unknown.
+    min_observed_weight: float = 0.0
     # Weight space in which (M, max_observed_weight) are expressed. Backend
     # fitting always produces "effective"; `_curve_dict` ships those same
     # effective-space params to the frontend along with bw_offset/ext_mult,
@@ -412,16 +417,16 @@ def _curve_loss(
 ) -> float:
     """Weighted least squares loss with Brzycki prior on M and gamma.
 
-    ``delta`` is always part of the optimization vector (last element). When
-    ``fixed_gamma`` is set, params=(M, k, delta); otherwise (M, k, gamma, delta).
+    v2 form: ``r = k * (M/W - 1) ** gamma`` (delta pinned to 0). When
+    ``fixed_gamma`` is set, params=(M, k); otherwise (M, k, gamma).
     """
     if fixed_gamma is not None:
-        M, k, delta = params
+        M, k = params
         gamma = fixed_gamma
     else:
-        M, k, gamma, delta = params
+        M, k, gamma = params
 
-    predicted = fresh_curve(W, M, k, gamma, delta)
+    predicted = fresh_curve(W, M, k, gamma, 0.0)
     residuals = r - predicted
     data_loss = float(np.sum(fit_weights * residuals**2))
 
@@ -436,8 +441,6 @@ def _curve_loss(
     if fixed_gamma is None and GAMMA_REG_LAMBDA > 0 and gamma > 0:
         reg_gamma = GAMMA_REG_LAMBDA * avg_fw * math.log(gamma / GAMMA_PRIOR) ** 2
 
-    # delta has no regularization: let optimizer pull it to 0 when not
-    # identifiable (the bounds [0, 0.5*max_W] prevent pathology).
     return data_loss + reg_M + reg_gamma
 
 
@@ -451,69 +454,58 @@ def _fit_params(
     lambda_M: float,
     fixed_gamma: float | None = None,
 ) -> tuple[float, float, float, float, bool]:
-    """Run multi-restart optimization. Returns (M, k, gamma, delta, success)."""
+    """Run multi-restart optimization. Returns (M, k, gamma, delta, success).
+
+    The returned ``delta`` is always 0.0 — the optimizer no longer searches
+    over delta because empirical analysis on production data showed it is
+    non-identifiable (most exercises pin to the upper bound; median RMSE
+    improvement is negative). The 5-tuple return shape is kept for
+    backward compatibility with all callers.
+    """
     max_W = float(np.max(W))
-    # Cap delta at 50% of the observed weight range. The earlier
-    # `max(50.0, max_W * 0.5)` floor allowed delta to balloon to 50 lb on
-    # light exercises (e.g. rotator-cuff PT work with max_W ≈ 6-8 lb),
-    # making the (M, k, gamma, delta) fit non-identifiable and producing
-    # absurd extrapolations at small W (e.g. 30+ reps at 6 lb where v3
-    # predicted ~16). Tying the bound to max_W keeps delta on the same
-    # scale as the data the curve was trained on. We still enforce a tiny
-    # absolute floor so the optimizer has room to move on truly tiny
-    # weights (sub-1-lb exercises are rare, but max_W * 0.5 = 0 would
-    # collapse to v3 with no exploration).
-    delta_upper = max(0.5, max_W * 0.5)
     best_result = None
     best_loss = float("inf")
 
-    # Restart grid: with L-BFGS-B's robust convergence on this convex-ish
-    # interior, a single well-chosen M init plus a small γ/δ sweep matches
-    # the fit quality of the larger grids on real production data while
-    # cutting scipy time roughly in half. Verified against the 81 existing
-    # strength_model tests.
+    # Restart grid: with delta dropped, the search is 3-dim (or 2-dim when
+    # gamma is fixed) and is well-conditioned. One M init paired with two
+    # gamma seeds suffices.
     gamma_inits = [0.5, 0.9] if fixed_gamma is None else [None]
     M_factors = [1.3]
-    delta_inits = [0.0, max(5.0, max_W * 0.05)]
     # Cap L-BFGS-B iterations. Real production fits converge well within
-    # 30-40 iters; the scipy default of `max(50, 200*n)` means a 4-param
-    # tier1 fit can churn through 800 numerical-gradient evals per restart
-    # before the convergence check fires.
+    # 30-40 iters; the scipy default of `max(50, 200*n)` would churn
+    # through hundreds of numerical-gradient evals per restart before the
+    # convergence check fires.
     lbfgs_opts = {"maxiter": 80, "ftol": 1e-7, "gtol": 1e-6}
 
     for M_factor in M_factors:
         for g_init in gamma_inits:
-            for d_init in delta_inits:
-                M_init = float(np.clip(max_W * M_factor, M_lower, M_upper))
-                k_init = float(np.median(r))
-                d0 = float(np.clip(d_init, 0.0, delta_upper))
+            M_init = float(np.clip(max_W * M_factor, M_lower, M_upper))
+            k_init = float(np.median(r))
 
-                if fixed_gamma is not None:
-                    x0 = [M_init, k_init, d0]
-                    bounds = [
-                        (M_lower, M_upper), (0.5, 200.0), (0.0, delta_upper),
-                    ]
-                else:
-                    x0 = [M_init, k_init, g_init, d0]
-                    bounds = [
-                        (M_lower, M_upper), (0.5, 200.0),
-                        (GAMMA_MIN, GAMMA_MAX), (0.0, delta_upper),
-                    ]
+            if fixed_gamma is not None:
+                x0 = [M_init, k_init]
+                bounds = [(M_lower, M_upper), (0.5, 200.0)]
+            else:
+                x0 = [M_init, k_init, g_init]
+                bounds = [
+                    (M_lower, M_upper), (0.5, 200.0),
+                    (GAMMA_MIN, GAMMA_MAX),
+                ]
 
-                try:
-                    res = minimize(
-                        _curve_loss,
-                        x0=x0,
-                        args=(W, r, fit_weights, fixed_gamma, M_prior, lambda_M),
-                        method="L-BFGS-B",
-                        bounds=bounds,
-                        options=lbfgs_opts,
-                    )
-                    if res.fun < best_loss:
-                        best_loss = res.fun
-                        best_result = res
-                except Exception:
-                    continue
+            try:
+                res = minimize(
+                    _curve_loss,
+                    x0=x0,
+                    args=(W, r, fit_weights, fixed_gamma, M_prior, lambda_M),
+                    method="L-BFGS-B",
+                    bounds=bounds,
+                    options=lbfgs_opts,
+                )
+                if res.fun < best_loss:
+                    best_loss = res.fun
+                    best_result = res
+            except Exception:
+                continue
 
     if best_result is None:
         return (
@@ -525,10 +517,10 @@ def _fit_params(
         )
 
     if fixed_gamma is not None:
-        M_fit, k_fit, delta_fit = best_result.x
-        return (M_fit, k_fit, fixed_gamma, float(delta_fit), True)
-    M_fit, k_fit, gamma_fit, delta_fit = best_result.x
-    return (M_fit, k_fit, gamma_fit, float(delta_fit), True)
+        M_fit, k_fit = best_result.x
+        return (M_fit, k_fit, fixed_gamma, 0.0, True)
+    M_fit, k_fit, gamma_fit = best_result.x
+    return (M_fit, k_fit, gamma_fit, 0.0, True)
 
 
 # ── Data loading helpers ──
@@ -704,6 +696,7 @@ def fit_curve(
         n_obs=n_obs,
         rmse=rmse,
         max_observed_weight=float(np.max(W)),
+        min_observed_weight=float(np.min(W)),
         fit_tier=tier,
         identifiability=ident,
     )
@@ -763,6 +756,7 @@ def fit_from_data(
         M=M_fit, k=k_fit, gamma=gamma_fit, delta=delta_fit,
         n_obs=n_obs, rmse=rmse,
         max_observed_weight=float(np.max(W)),
+        min_observed_weight=float(np.min(W)),
         fit_tier=tier, identifiability=ident,
     )
 
@@ -840,6 +834,7 @@ def refit_from_data(
         M=M_fit, k=k_fit, gamma=gamma_fit, delta=delta_fit,
         n_obs=n_obs, rmse=rmse,
         max_observed_weight=float(np.max(W)),
+        min_observed_weight=float(np.min(W)),
         fit_tier=tier, identifiability=ident,
     )
 
@@ -1502,6 +1497,7 @@ def _curve_dict(fit: CurveFit, exercise: Exercise | None = None,
     mult = 1.0
     bw_offset = 0.0
     max_ew_entered = fit.max_observed_weight
+    min_ew_entered = fit.min_observed_weight
     metric = _metric_for(exercise) if exercise is not None else _METRIC_REPS
     if exercise is not None:
         m = exercise.external_load_multiplier or 1.0
@@ -1511,6 +1507,7 @@ def _curve_dict(fit: CurveFit, exercise: Exercise | None = None,
         # max_observed_weight on the fit lives in effective space; convert
         # back to entered-space so the chart X-domain stays correct.
         max_ew_entered = max(0.0, (fit.max_observed_weight - bw_offset) / mult)
+        min_ew_entered = max(0.0, (fit.min_observed_weight - bw_offset) / mult)
     return {
         "M": round(float(fit.M), 2),
         "k": round(float(fit.k), 4),
@@ -1518,8 +1515,9 @@ def _curve_dict(fit: CurveFit, exercise: Exercise | None = None,
         "delta": round(float(fit.delta), 4),
         "fit_tier": fit.fit_tier,
         "n_obs": fit.n_obs,
-        # Entered-space: for chart X-axis domain.
+        # Entered-space: for chart X-axis domain and clip envelope.
         "max_observed_weight": round(float(max_ew_entered), 2),
+        "min_observed_weight": round(float(min_ew_entered), 2),
         # M/k/γ live in effective space; evaluator must convert entered→eff.
         "weight_space": "effective",
         "x_axis_space": "entered",
@@ -2395,9 +2393,247 @@ def refit_with_observations(
         n_obs=n_obs,
         rmse=rmse,
         max_observed_weight=float(np.max(W)),
+        min_observed_weight=float(np.min(W)),
         fit_tier=tier,
         identifiability=ident,
     )
+
+
+# ── Bootstrap CI bands ──
+
+# Number of bootstrap resamples for the curve-bands endpoint. The
+# resampling loop dominates the wall-clock cost; with the v2 form
+# (delta dropped) each fit is ~15-30 ms so 150 boots ≈ 3-6 s on cold
+# cache. Cached payloads are cheap to read.
+DEFAULT_N_BOOT = 150
+
+# Minimum fraction of bootstrap resamples that must converge for the
+# band to be considered trustworthy. Below this we return None and the
+# frontend falls back to the point curve without overlay.
+MIN_BOOT_SUCCESS_FRAC = 0.5
+
+# Number of points on the entered-space W grid the bands are evaluated
+# at. 60 is dense enough for smooth polygon rendering at all chart
+# widths without bloating cache rows.
+BAND_GRID_POINTS = 60
+
+# How far the W grid extends beyond [W_lo_entered, W_hi_entered]. The
+# frontend clips the rendered band to ±20% of observed range, so we
+# need at least that much padding; ±50% gives the frontend room without
+# tying the backend grid to the clip choice.
+BAND_GRID_PAD_FRAC = 0.5
+
+# Minimum number of distinct training sessions in the fit window needed
+# to compute meaningful bands. With only 1-2 sessions, session-level
+# resampling with replacement collapses too often to the same dataset
+# and the band degenerates to zero width.
+MIN_SESSIONS_FOR_BANDS = 3
+
+
+def bootstrap_curve_bands(
+    exercise_id: int,
+    session: Session,
+    *,
+    days: int = 30,
+    n_boot: int = DEFAULT_N_BOOT,
+    seed: int = 0,
+    as_of: date | None = None,
+) -> dict | None:
+    """Bootstrap CI bands for the fresh-data fit.
+
+    Returns a payload with quantile bands evaluated on an entered-space
+    W grid, or ``None`` if data is insufficient or the bootstrap fails
+    too often.
+
+    Method:
+      1. Load the same data ``fit_curve(exclude_today=True, as_of=as_of)``
+         sees and group raw (pre-filter) observations by session_id.
+      2. For ``n_boot`` iterations:
+         - Sample sessions with replacement.
+         - Concatenate session observations.
+         - Apply the full production pipeline: t-test stale-session
+           filter → recency weighting × confidence → _fit_params.
+         - Convert the entered-space W grid to effective space using
+           the as-of bodyweight, evaluate the fit, and store the
+           predicted reps curve.
+      3. Compute q05/q25/q50/q75/q95 along the bootstrap axis.
+
+    Bodyweight-only exercises (no entered-weight axis) and exercises
+    with < MIN_SETS_TIER2 eligible historical observations return None.
+    """
+    from app.telemetry import phase
+
+    with phase("curve_bands.load_sets"):
+        exercise, set_rows = _load_recent_sets(
+            exercise_id, session, days, as_of=as_of,
+        )
+    if exercise is None or not set_rows:
+        return None
+
+    load_mode = exercise.load_input_mode or "external_weight"
+    if load_mode == "bodyweight":
+        # Bodyweight-only exercises have no entered-weight axis — the
+        # band has nothing to be plotted against.
+        return None
+
+    with phase("curve_bands.load_bw"):
+        bw_lookup = _load_bodyweight_lookup(session)
+    today = as_of if as_of is not None else user_today()
+
+    # Match fit_curve(exclude_today=True): drop today's sets.
+    set_rows = [(ws, d) for (ws, d) in set_rows if d < today]
+    if not set_rows:
+        return None
+
+    # Group raw observations by session_id. Each obs is a 5-tuple
+    # (eff_weight, r_fail, confidence, age_days, entered_weight).
+    by_session: dict[int, list[tuple[float, float, float, float, float]]] = {}
+    bw_today = latest_bodyweight(bw_lookup, today)
+    ext_mult = float(exercise.external_load_multiplier or 1.0) or 1.0
+    bw_offset_today = bw_today * float(exercise.bodyweight_fraction or 0.0)
+
+    with phase("curve_bands.build_obs"):
+        for ws, ws_date in set_rows:
+            if not supports_strength_estimate(exercise, ws):
+                continue
+            if ws.rpe is None or ws.rpe < MIN_RPE_FOR_FIT or ws.rpe > 10.0:
+                continue
+            ew = effective_weight(exercise, ws, bw_lookup, ws_date)
+            if ew <= 0:
+                continue
+            endurance = _set_endurance(ws)
+            if endurance is None or endurance <= 0:
+                continue
+            rir = _rpe_to_rir(ws.rpe)
+            r_fail = _reps_done_to_rtf(endurance, rir)
+            age_days = (today - ws_date).days
+            # Entered weight is what the user typed; for mixed/bodyweight-
+            # fraction exercises the chart x-axis uses this directly.
+            entered = float(ws.weight or 0.0)
+            by_session.setdefault(ws.session_id, []).append(
+                (ew, r_fail, _rpe_confidence(ws.rpe), float(age_days), entered)
+            )
+
+    sessions = sorted(by_session.keys())
+    if len(sessions) < MIN_SESSIONS_FOR_BANDS:
+        # Bootstrap from <3 sessions can't generate meaningful spread —
+        # session-level resamples collapse to the same dataset.
+        return None
+
+    # Compute the entered-space W grid from observed entered weights.
+    # Bodyweight-fraction exercises may have entered=0 — skip those when
+    # building the grid envelope.
+    all_entered = [
+        e for s in sessions for (_ew, _r, _c, _a, e) in by_session[s] if e > 0
+    ]
+    if not all_entered:
+        return None
+    W_lo_entered = float(min(all_entered))
+    W_hi_entered = float(max(all_entered))
+    if W_hi_entered <= W_lo_entered:
+        return None
+    pad = (W_hi_entered - W_lo_entered) * BAND_GRID_PAD_FRAC
+    grid_lo = max(0.0, W_lo_entered - pad)
+    grid_hi = W_hi_entered + pad
+    W_grid_entered = np.linspace(grid_lo, grid_hi, BAND_GRID_POINTS)
+    # Convert to effective-space once for evaluation.
+    W_grid_eff = W_grid_entered * ext_mult + bw_offset_today
+
+    def _full_pipeline_fit(
+        sub: list[tuple[float, float, float, float, float]],
+    ) -> tuple[float, float, float, bool]:
+        """Apply production pipeline (t-test → recency → fit) to a
+        bootstrap resample. Returns (M, k, gamma, success).
+        """
+        if not sub:
+            return (0.0, 0.0, DEFAULT_GAMMA, False)
+        eff_ws = [o[0] for o in sub]
+        rfails = [o[1] for o in sub]
+        confs = [o[2] for o in sub]
+        ages = [o[3] for o in sub]
+        eff_ws, rfails, confs, ages, n_sessions_kept = _filter_stale_sessions(
+            eff_ws, rfails, confs, ages
+        )
+        if len(eff_ws) < MIN_SETS_TIER2:
+            return (0.0, 0.0, DEFAULT_GAMMA, False)
+        W = np.array(eff_ws)
+        r_arr = np.array(rfails)
+        conf_arr = np.array(confs)
+        recency = _recency_weights(ages)
+        fit_w = conf_arr * recency
+        if float(fit_w.sum()) <= 0:
+            return (0.0, 0.0, DEFAULT_GAMMA, False)
+        distinct_w = len({round(w, 1) for w in eff_ws})
+        tier = (
+            "tier1"
+            if (len(eff_ws) >= MIN_SETS_TIER1
+                and distinct_w >= MIN_DISTINCT_WEIGHTS_TIER1
+                and n_sessions_kept >= 2)
+            else "tier2"
+        )
+        M_lower, M_upper, M_prior = _estimate_M_bounds(eff_ws, rfails)
+        fixed_gamma = DEFAULT_GAMMA if tier == "tier2" else None
+        M_fit, k_fit, gamma_fit, _delta_fit, success = _fit_params(
+            W, r_arr, fit_w, M_lower, M_upper, M_prior, M_REG_LAMBDA, fixed_gamma
+        )
+        return (M_fit, k_fit, gamma_fit, success)
+
+    # Quick gate: if the point fit (no bootstrap) fails, skip the loop.
+    point_obs = [o for s in sessions for o in by_session[s]]
+    M0, k0, g0, ok0 = _full_pipeline_fit(point_obs)
+    if not ok0:
+        return None
+
+    rng = np.random.default_rng(seed)
+    boot_curves = np.full((n_boot, len(W_grid_eff)), np.nan)
+    n_success = 0
+
+    with phase("curve_bands.bootstrap"):
+        for b in range(n_boot):
+            sample_ids = rng.choice(sessions, size=len(sessions), replace=True)
+            sub: list[tuple[float, float, float, float, float]] = []
+            for sid in sample_ids:
+                sub.extend(by_session[int(sid)])
+            if len({round(o[0], 1) for o in sub}) < 2:
+                continue
+            M_b, k_b, g_b, ok_b = _full_pipeline_fit(sub)
+            if not ok_b:
+                continue
+            boot_curves[b, :] = fresh_curve(W_grid_eff, M_b, k_b, g_b, 0.0)
+            n_success += 1
+
+    if n_success < max(2, int(MIN_BOOT_SUCCESS_FRAC * n_boot)):
+        return None
+
+    # Quantiles across the bootstrap axis (rows = boots, cols = W grid).
+    q05 = np.nanquantile(boot_curves, 0.05, axis=0)
+    q25 = np.nanquantile(boot_curves, 0.25, axis=0)
+    q50 = np.nanquantile(boot_curves, 0.50, axis=0)
+    q75 = np.nanquantile(boot_curves, 0.75, axis=0)
+    q95 = np.nanquantile(boot_curves, 0.95, axis=0)
+
+    # Enforce monotonic nesting (q05 ≤ q25 ≤ q50 ≤ q75 ≤ q95) — pathological
+    # bootstrap resamples can produce minor inversions due to NaN handling.
+    q25 = np.maximum(q25, q05)
+    q50 = np.maximum(q50, q25)
+    q75 = np.maximum(q75, q50)
+    q95 = np.maximum(q95, q75)
+
+    return {
+        "W_grid": [round(float(w), 3) for w in W_grid_entered],
+        "q05": [round(float(v), 4) for v in q05],
+        "q25": [round(float(v), 4) for v in q25],
+        "q50": [round(float(v), 4) for v in q50],
+        "q75": [round(float(v), 4) for v in q75],
+        "q95": [round(float(v), 4) for v in q95],
+        "n_boot": int(n_boot),
+        "n_boot_success": int(n_success),
+        "W_lo_entered": round(W_lo_entered, 3),
+        "W_hi_entered": round(W_hi_entered, 3),
+        "bw_offset": round(float(bw_offset_today), 3),
+        "ext_mult": round(float(ext_mult), 4),
+        "weight_space": "entered",
+    }
 
 
 # ── Heavy availability checker ──
@@ -2624,7 +2860,7 @@ def get_exercise_freshness(
 
 
 def get_bodyweight_suggestion(
-    exercise_id: int, session: Session
+    exercise_id: int, session: Session, as_of: date | None = None,
 ) -> dict:
     """Get a fixed-quantity suggestion for an exercise tracked as tier 3.
 
@@ -2632,12 +2868,17 @@ def get_bodyweight_suggestion(
     median-quantity instead of curve fitting). Reads ``endurance_value``
     so duration/distance bodyweight exercises (Weighted Plank, etc.) get
     suggestions in their native unit.
+
+    ``as_of`` anchors the 30-day recency window; defaults to
+    ``user_today()``. Tests with fixed historical dates should pass an
+    explicit ``as_of`` to avoid time-sensitive failures.
     """
     exercise = session.get(Exercise, exercise_id)
     metric = _metric_for(exercise) if exercise is not None else _metric_for(
         Exercise(name="", set_metric_mode="reps")
     )
-    cutoff = user_today() - timedelta(days=30)
+    anchor = as_of if as_of is not None else user_today()
+    cutoff = anchor - timedelta(days=30)
     stmt = (
         select(WorkoutSet.endurance_value)
         .join(WorkoutSession, WorkoutSet.session_id == WorkoutSession.id)

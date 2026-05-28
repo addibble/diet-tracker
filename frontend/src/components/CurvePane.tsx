@@ -15,6 +15,7 @@ import {
   type RepsDone,
   type Rir,
 } from '../lib/units'
+import type { CurveBandsPayload } from '../api/planner'
 
 export interface CurveObservation {
   weight: EnteredWeightLb
@@ -64,6 +65,13 @@ interface Props {
   fatigueBetaPerSet?: readonly number[]
   fatigueMaxSetIndex?: number
   fatigueBetaSource?: 'learned' | 'fallback'
+  // Optional bootstrap CI bands for the historical fit. When present,
+  // a filled polygon (q05↔q95 outer, q25↔q75 inner) is drawn behind the
+  // point curve along with a dashed q50 line. The band uses
+  // ``exclude_today`` semantics — it represents historical uncertainty
+  // of the fresh-data fit; the live point curve is the current best
+  // estimate including today's sets. A small caption clarifies this.
+  bands?: CurveBandsPayload
 }
 
 // Cool-palette colors for today's sets, in set order. Chosen to avoid
@@ -234,11 +242,15 @@ function curvePath(
   xMax: number,
   xToPxRaw: (x: number) => number,
   yToPxRaw: (y: number) => number,
+  clipLo?: number,
+  clipHi?: number,
 ): string {
   const n = 120
   const pts: string[] = []
   for (let i = 0; i <= n; i++) {
     const w = xMin + ((xMax - xMin) * i) / n
+    if (clipLo != null && w < clipLo) continue
+    if (clipHi != null && w > clipHi) continue
     const r = predictReps(w, curve)
     if (!Number.isFinite(r) || r <= 0) continue
     pts.push(`${xToPxRaw(w).toFixed(1)},${yToPxRaw(r).toFixed(1)}`)
@@ -254,14 +266,71 @@ function shiftedCurvePath(
   xMax: number,
   xToPxRaw: (x: number) => number,
   yToPxRaw: (y: number) => number,
+  clipLo?: number,
+  clipHi?: number,
 ): string {
   const n = 120
   const pts: string[] = []
   for (let i = 0; i <= n; i++) {
     const w = xMin + ((xMax - xMin) * i) / n
+    if (clipLo != null && w < clipLo) continue
+    if (clipHi != null && w > clipHi) continue
     const rFresh = predictReps(w, curve)
     if (!Number.isFinite(rFresh) || rFresh <= 0) continue
     const r = Math.max(0, rFresh + shiftReps)
+    pts.push(`${xToPxRaw(w).toFixed(1)},${yToPxRaw(r).toFixed(1)}`)
+  }
+  if (pts.length < 2) return ''
+  return `M ${pts.join(' L ')}`
+}
+
+// Build a closed filled polygon between two bootstrap quantile lines.
+// Both lines are sampled over the band's entered-space W grid; we walk
+// the lower line forward then the upper line backward to form a closed
+// path. Points outside [clipLo, clipHi] are dropped; if the resulting
+// vertex list is too short we skip the polygon entirely.
+function bandPolygonPath(
+  W_grid: readonly number[],
+  qLow: readonly number[],
+  qHigh: readonly number[],
+  xToPxRaw: (x: number) => number,
+  yToPxRaw: (y: number) => number,
+  clipLo: number,
+  clipHi: number,
+): string {
+  const lower: string[] = []
+  const upper: string[] = []
+  for (let i = 0; i < W_grid.length; i++) {
+    const w = W_grid[i]
+    if (w < clipLo || w > clipHi) continue
+    const rLo = qLow[i]
+    const rHi = qHigh[i]
+    if (!Number.isFinite(rLo) || !Number.isFinite(rHi)) continue
+    if (rHi < 0) continue
+    const x = xToPxRaw(w).toFixed(1)
+    lower.push(`${x},${yToPxRaw(Math.max(0, rLo)).toFixed(1)}`)
+    upper.push(`${x},${yToPxRaw(Math.max(0, rHi)).toFixed(1)}`)
+  }
+  if (lower.length < 2) return ''
+  // Close the polygon: forward along lower, backward along upper.
+  return `M ${lower.join(' L ')} L ${upper.reverse().join(' L ')} Z`
+}
+
+// Single quantile line (used for q50 dashed median).
+function quantileLinePath(
+  W_grid: readonly number[],
+  q: readonly number[],
+  xToPxRaw: (x: number) => number,
+  yToPxRaw: (y: number) => number,
+  clipLo: number,
+  clipHi: number,
+): string {
+  const pts: string[] = []
+  for (let i = 0; i < W_grid.length; i++) {
+    const w = W_grid[i]
+    if (w < clipLo || w > clipHi) continue
+    const r = q[i]
+    if (!Number.isFinite(r) || r < 0) continue
     pts.push(`${xToPxRaw(w).toFixed(1)},${yToPxRaw(r).toFixed(1)}`)
   }
   if (pts.length < 2) return ''
@@ -289,6 +358,7 @@ export default function CurvePane({
   fatigueBetaPerSet,
   fatigueMaxSetIndex = 3,
   fatigueBetaSource,
+  bands,
 }: Props) {
   const svgRef = useRef<SVGSVGElement | null>(null)
   const rafRef = useRef<number | null>(null)
@@ -398,6 +468,27 @@ export default function CurvePane({
     (y: number) => PAD_T + (1 - (y - yMin) / (yMax - yMin)) * PLOT_H,
     [yMin, yMax],
   )
+
+  // Clip envelope for the rendered curve, β-shifted lines, and bands.
+  // Priority: bands envelope (from bootstrap) → curve.min/max_observed
+  // (point fit) → fallback. We render only inside this envelope so
+  // unsupported regions aren't drawn with false confidence.
+  const clipEnvelope = useMemo(() => {
+    if (bands) {
+      // Per user: clip to ±20% of observed range.
+      return {
+        clipLo: bands.W_lo_entered * 0.8,
+        clipHi: bands.W_hi_entered * 1.2,
+      }
+    }
+    const lo = curve?.min_observed_weight
+    const hi = curve?.max_observed_weight
+    if (lo != null && hi != null && hi > lo) {
+      return { clipLo: lo * 0.8, clipHi: hi * 1.2 }
+    }
+    // No envelope known — don't clip (preserves prior behavior).
+    return { clipLo: undefined as number | undefined, clipHi: undefined as number | undefined }
+  }, [bands, curve?.min_observed_weight, curve?.max_observed_weight])
 
   const pxToData = useCallback(
     (clientX: number, clientY: number): { w: number; r: number } => {
@@ -785,10 +876,82 @@ export default function CurvePane({
           reps
         </text>
 
+        {/* Caption clarifying that the band excludes today's sets. */}
+        {bands && (
+          <text
+            x={PAD_L + PLOT_W - 2}
+            y={PAD_T + 8}
+            textAnchor="end"
+            fontSize="7"
+            fill="#10b981"
+            opacity={0.7}
+          >
+            historical 5–95% CI (excludes today)
+          </text>
+        )}
+
+        {/* Bootstrap CI bands (rendered behind everything else so the
+            point curve and observations sit on top). The band represents
+            historical uncertainty of the fresh-data fit excluding today's
+            sets — by design it stays stable through a session as today's
+            point curve updates. */}
+        {bands && clipEnvelope.clipLo != null && clipEnvelope.clipHi != null && (() => {
+          const clo = clipEnvelope.clipLo
+          const chi = clipEnvelope.clipHi
+          const outer = bandPolygonPath(
+            bands.W_grid, bands.q05, bands.q95,
+            xToPxRaw, yToPxRaw, clo, chi,
+          )
+          const inner = bandPolygonPath(
+            bands.W_grid, bands.q25, bands.q75,
+            xToPxRaw, yToPxRaw, clo, chi,
+          )
+          const median = quantileLinePath(
+            bands.W_grid, bands.q50,
+            xToPxRaw, yToPxRaw, clo, chi,
+          )
+          return (
+            <g>
+              {outer && (
+                <path
+                  d={outer}
+                  fill="#10b981"
+                  fillOpacity={0.07}
+                  stroke="none"
+                  clipPath="url(#curve-pane-plot-clip)"
+                />
+              )}
+              {inner && (
+                <path
+                  d={inner}
+                  fill="#10b981"
+                  fillOpacity={0.10}
+                  stroke="none"
+                  clipPath="url(#curve-pane-plot-clip)"
+                />
+              )}
+              {median && (
+                <path
+                  d={median}
+                  fill="none"
+                  stroke="#10b981"
+                  strokeWidth={1}
+                  strokeDasharray="2 2"
+                  opacity={0.5}
+                  clipPath="url(#curve-pane-plot-clip)"
+                />
+              )}
+            </g>
+          )
+        })()}
+
         {/* Prior curve (gray, dotted — matches history-point color) */}
         {isCompleted && priorCurve && (
           <path
-            d={curvePath(priorCurve, xMin, xMax, xToPxRaw, yToPxRaw)}
+            d={curvePath(
+              priorCurve, xMin, xMax, xToPxRaw, yToPxRaw,
+              clipEnvelope.clipLo, clipEnvelope.clipHi,
+            )}
             fill="none"
             stroke="#9ca3af"
             strokeWidth={1.25}
@@ -821,6 +984,7 @@ export default function CurvePane({
                     key={`beta-${i + 2}`}
                     d={shiftedCurvePath(
                       curve, b, xMin, xMax, xToPxRaw, yToPxRaw,
+                      clipEnvelope.clipLo, clipEnvelope.clipHi,
                     )}
                     fill="none"
                     stroke={color}
@@ -837,7 +1001,10 @@ export default function CurvePane({
         {/* Curve or flat target line */}
         {curve ? (
           <path
-            d={curvePath(curve, xMin, xMax, xToPxRaw, yToPxRaw)}
+            d={curvePath(
+              curve, xMin, xMax, xToPxRaw, yToPxRaw,
+              clipEnvelope.clipLo, clipEnvelope.clipHi,
+            )}
             fill="none"
             stroke="#10b981"
             strokeWidth={1.5}

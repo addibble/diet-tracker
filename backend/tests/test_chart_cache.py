@@ -5,9 +5,11 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from app.chart_cache import (
+    KIND_BANDS,
     KIND_BETA_EVOL,
     KIND_CURVE,
     KIND_FATIGUE,
+    bands_key,
     beta_evol_key,
     cache_get,
     cache_set,
@@ -284,3 +286,94 @@ class TestInvalidateAll:
         session.commit()
         for k in ("a", "b", "c"):
             assert cache_get(session, k) is None
+
+
+class TestBandsInvalidation:
+    """Bands use ``exclude_today`` semantics: a set on ``D`` does NOT
+    invalidate the band anchored at ``D``, but DOES invalidate later
+    anchors within the 30-day window because those anchors include
+    ``D`` in their fit data."""
+
+    def test_set_change_drops_strictly_later_bands(self, session):
+        ex = _ex(session)
+        d0 = date(2026, 1, 15)
+        # Band anchored at d0 (same-day) — should be preserved.
+        # Bands at d0+1, d0+15, d0+30 — should be dropped (in window).
+        # Band at d0+31 — preserved (outside fit window).
+        # Band at d0-1 — preserved (before the set).
+        offsets_dropped = (1, 15, 30)
+        offsets_kept = (0, 31, -1)
+        for offset in offsets_dropped + offsets_kept:
+            anchor = d0 + timedelta(days=offset)
+            cache_set(
+                session, bands_key(ex.id, anchor), KIND_BANDS,
+                {"o": offset}, exercise_id=ex.id, on_date=anchor,
+            )
+        ws = _ws(session, d0)
+        invalidate_for_set_change(session, ws.id, ex.id, d0)
+        session.commit()
+        for offset in offsets_dropped:
+            anchor = d0 + timedelta(days=offset)
+            assert cache_get(session, bands_key(ex.id, anchor)) is None, (
+                f"band anchored at d0+{offset} should be dropped"
+            )
+        for offset in offsets_kept:
+            anchor = d0 + timedelta(days=offset)
+            assert cache_get(session, bands_key(ex.id, anchor)) is not None, (
+                f"band anchored at d0+{offset} should be kept"
+            )
+
+    def test_set_change_does_not_drop_other_exercise_bands(self, session):
+        ex1 = _ex(session, name="Bench")
+        ex2 = _ex(session, name="Squat")
+        d0 = date(2026, 1, 15)
+        d_later = d0 + timedelta(days=10)
+        cache_set(
+            session, bands_key(ex1.id, d_later), KIND_BANDS,
+            {"e": 1}, exercise_id=ex1.id, on_date=d_later,
+        )
+        cache_set(
+            session, bands_key(ex2.id, d_later), KIND_BANDS,
+            {"e": 2}, exercise_id=ex2.id, on_date=d_later,
+        )
+        ws = _ws(session, d0)
+        invalidate_for_set_change(session, ws.id, ex1.id, d0)
+        session.commit()
+        assert cache_get(session, bands_key(ex1.id, d_later)) is None
+        assert cache_get(session, bands_key(ex2.id, d_later)) == {"e": 2}
+
+    def test_session_delete_drops_all_bands_for_affected_exercise(self, session):
+        ex1 = _ex(session, name="Bench")
+        ex2 = _ex(session, name="Squat")
+        d0 = date(2026, 1, 15)
+        ws = _ws(session, d0)
+        # Bands at various anchors for both exercises.
+        for anchor in (d0, d0 + timedelta(days=10), d0 + timedelta(days=100)):
+            cache_set(
+                session, bands_key(ex1.id, anchor), KIND_BANDS,
+                {"a": str(anchor)}, exercise_id=ex1.id, on_date=anchor,
+            )
+            cache_set(
+                session, bands_key(ex2.id, anchor), KIND_BANDS,
+                {"a": str(anchor)}, exercise_id=ex2.id, on_date=anchor,
+            )
+        invalidate_for_session_delete(session, ws.id, d0, [ex1.id])
+        session.commit()
+        # All ex1 bands dropped regardless of anchor (session deletes are
+        # destructive; safer to nuke than to do windowed cleanup).
+        for anchor in (d0, d0 + timedelta(days=10), d0 + timedelta(days=100)):
+            assert cache_get(session, bands_key(ex1.id, anchor)) is None
+        # ex2 bands preserved.
+        for anchor in (d0, d0 + timedelta(days=10), d0 + timedelta(days=100)):
+            assert cache_get(session, bands_key(ex2.id, anchor)) is not None
+
+    def test_invalidate_all_charts_drops_bands(self, session):
+        ex = _ex(session)
+        d0 = date(2026, 1, 15)
+        cache_set(
+            session, bands_key(ex.id, d0), KIND_BANDS,
+            {"x": 1}, exercise_id=ex.id, on_date=d0,
+        )
+        invalidate_all_charts(session)
+        session.commit()
+        assert cache_get(session, bands_key(ex.id, d0)) is None

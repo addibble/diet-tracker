@@ -274,6 +274,7 @@ export interface CurveSnapshotResponse {
     fit_tier?: string;
     n_obs?: number;
     max_observed_weight?: number;
+    min_observed_weight?: number;
     weight_space?: 'entered' | 'effective';
     x_axis_space?: 'entered';
     bw_offset?: number;
@@ -287,6 +288,7 @@ export interface CurveSnapshotResponse {
     fit_tier?: string;
     n_obs?: number;
     max_observed_weight?: number;
+    min_observed_weight?: number;
     weight_space?: 'entered' | 'effective';
     x_axis_space?: 'entered';
     bw_offset?: number;
@@ -303,6 +305,34 @@ export interface CurveSnapshotResponse {
 export const getCurveSnapshot = (exerciseId: number, date: string) =>
   request<CurveSnapshotResponse>(
     `/planner/curve-snapshot/${exerciseId}?date=${encodeURIComponent(date)}`,
+  );
+
+// Bootstrap confidence-interval bands for the historical curve fit.
+// Returns has_bands: false when the exercise has too few sessions or
+// is bodyweight-only. Cached server-side; first call per day per
+// exercise costs ~1s of bootstrap computation, subsequent calls are
+// cheap reads.
+export interface CurveBandsPayload {
+  W_grid: number[];
+  q05: number[];
+  q25: number[];
+  q50: number[];
+  q75: number[];
+  q95: number[];
+  n_boot_success: number;
+  W_lo_entered: number;
+  W_hi_entered: number;
+  bw_offset: number;
+  ext_mult: number;
+}
+
+export type CurveBandsResponse =
+  | ({ has_bands: true } & CurveBandsPayload)
+  | { has_bands: false };
+
+export const getCurveBands = (exerciseId: number, date: string) =>
+  request<CurveBandsResponse>(
+    `/planner/curve-bands/${exerciseId}?date=${encodeURIComponent(date)}`,
   );
 
 export interface FatigueProfileResponse {

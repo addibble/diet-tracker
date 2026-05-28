@@ -40,19 +40,21 @@ from app.models import ChartCache, WorkoutSession, WorkoutSet
 logger = logging.getLogger(__name__)
 
 # Bump when payload shape or upstream computation semantics change.
-# v2 (this commit): scipy fit grid reduced + per-request bodyweight memo
-# changes the numerical curve values microscopically; bumping forces a
-# clean re-fit on first access so users see the new performance profile.
-CACHE_VERSION = "v2"
+# v2: scipy fit grid reduced + per-request bodyweight memo
+# v3 (this commit): δ removed from optimizer; cached payloads with
+# nonzero delta would produce visually inconsistent curves vs newly
+# fit ones. Bump invalidates everything implicitly on first read.
+CACHE_VERSION = "v3"
 
 # Per-kind versions override CACHE_VERSION on a single cache namespace
 # without invalidating the others. Bump when a particular endpoint's
 # payload semantics change without touching the rest.
-BETA_EVOL_VERSION = "v3"  # v3: same scipy-grid bump as CACHE_VERSION v2
+BETA_EVOL_VERSION = "v4"  # v4: δ removal — fresh fits now pin delta=0
 
 KIND_CURVE = "curve_snapshot"
 KIND_BETA_EVOL = "beta_evolution"
 KIND_FATIGUE = "fatigue_profile"
+KIND_BANDS = "curve_bands"
 
 # Match fit_curve's lookback window in strength_model.
 WINDOW_DAYS = 30
@@ -71,6 +73,10 @@ def fatigue_key(
 ) -> str:
     sd = session_date.isoformat() if session_date is not None else "auto"
     return f"fatigue:{CACHE_VERSION}:{exercise_id}:{days}:{sd}"
+
+
+def bands_key(exercise_id: int, on_date: date) -> str:
+    return f"bands:{CACHE_VERSION}:{exercise_id}:{on_date.isoformat()}"
 
 
 def cache_get(session: Session, key: str) -> dict[str, Any] | None:
@@ -213,6 +219,41 @@ def _drop_fatigue_for_exercise(
     )
 
 
+def _drop_bands_after(
+    session: Session, exercise_id: int, anchor: date,
+) -> None:
+    """Drop curve_bands rows for ``exercise_id`` whose ``on_date`` is
+    strictly after ``anchor``. The bootstrap fit uses ``exclude_today``
+    semantics, so a set landing on date ``D`` does NOT affect bands
+    anchored at ``D`` (the band excludes that date already). But it DOES
+    affect bands anchored at ``D + n`` for any ``n`` in
+    ``(0, WINDOW_DAYS]`` because those bands include ``D`` in their
+    fit window. We cap the window at WINDOW_DAYS to match the fit
+    lookback so we don't leak invalidations past the affected range."""
+    end = anchor + timedelta(days=WINDOW_DAYS)
+    session.exec(
+        delete(ChartCache).where(
+            ChartCache.kind == KIND_BANDS,
+            ChartCache.exercise_id == exercise_id,
+            ChartCache.on_date > anchor,
+            ChartCache.on_date <= end,
+        )
+    )
+
+
+def _drop_bands_for_exercise(
+    session: Session, exercise_id: int,
+) -> None:
+    """Drop all band rows for an exercise (used on session delete and
+    on exercise-model edits where any cached band could be stale)."""
+    session.exec(
+        delete(ChartCache).where(
+            ChartCache.kind == KIND_BANDS,
+            ChartCache.exercise_id == exercise_id,
+        )
+    )
+
+
 def invalidate_for_set_change(
     session: Session,
     workout_session_id: int,
@@ -234,6 +275,7 @@ def invalidate_for_set_change(
         session, exercise_id, on_date,
     )
     _drop_fatigue_for_exercise(session, exercise_id)
+    _drop_bands_after(session, exercise_id, on_date)
 
 
 def invalidate_for_session_delete(
@@ -251,6 +293,7 @@ def invalidate_for_session_delete(
             session, ex_id, on_date,
         )
         _drop_fatigue_for_exercise(session, ex_id)
+        _drop_bands_for_exercise(session, ex_id)
 
 
 def invalidate_all_charts(session: Session) -> None:

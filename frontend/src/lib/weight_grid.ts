@@ -42,6 +42,8 @@ export interface CurveFit {
   ext_mult?: number
   /** Entered-space max observed weight, for chart X-domain. */
   max_observed_weight?: number
+  /** Entered-space min observed weight, for clipping the rendered curve. */
+  min_observed_weight?: number
 }
 
 function effectiveWeight(w: number, fit: CurveFit): number {
