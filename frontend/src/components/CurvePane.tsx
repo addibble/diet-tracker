@@ -100,6 +100,27 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v))
 }
 
+function computeClipEnvelope(
+  bands: CurveBandsPayload | null | undefined,
+  curve: CurveFit | null,
+): { clipLo: number | undefined; clipHi: number | undefined } {
+  // Bootstrap bands carry the entered-space observed range directly.
+  // Per design we clip rendering (and the viewport) to ±20% of that range
+  // so we don't extrapolate visually past where the data supports the fit.
+  if (bands) {
+    return {
+      clipLo: bands.W_lo_entered * 0.8,
+      clipHi: bands.W_hi_entered * 1.2,
+    }
+  }
+  const lo = curve?.min_observed_weight
+  const hi = curve?.max_observed_weight
+  if (lo != null && hi != null && hi > lo) {
+    return { clipLo: lo * 0.8, clipHi: hi * 1.2 }
+  }
+  return { clipLo: undefined, clipHi: undefined }
+}
+
 function computeDomain(
   curve: CurveFit | null,
   sparkWeight: number,
@@ -108,6 +129,7 @@ function computeDomain(
   targetReps?: number,
   schemeRir?: number,
   fullDomain?: boolean,
+  clipEnvelope?: { clipLo: number | undefined; clipHi: number | undefined },
 ): { xMin: number; xMax: number; yMin: number; yMax: number } {
   // "Primary" points = today's sets (completed) + the spark (if active in
   // a pre/logging flow). Historical observations are secondary — included
@@ -214,23 +236,39 @@ function computeDomain(
   }
   let yMax = Math.max(8, Math.ceil(yHi))
 
-  // Full-domain (completed-view zoom-out): anchor both axes at 0 and
-  // expand the window so the curve's x- and y-intercepts are fully on
-  // screen. x runs 0 → max-weight (rtf=0); y runs 0 → max-reps (curve
-  // value at a small weight, capped to avoid the W→0 asymptote).
-  if (fullDomain && curve) {
-    xMin = 0
-    const xIntercept = solveWeight(0, curve) as number
-    if (Number.isFinite(xIntercept) && xIntercept > 0) {
-      xMax = Math.max(xMax, Math.ceil(xIntercept))
+  // Full-domain (completed-view zoom-out): when we have a clip envelope
+  // (from bootstrap bands or curve.min/max_observed), use it directly so
+  // the viewport matches what's actually drawn. Without an envelope, fall
+  // back to anchoring at 0 and extending to the curve's x-intercept.
+  if (fullDomain) {
+    const clipLo = clipEnvelope?.clipLo
+    const clipHi = clipEnvelope?.clipHi
+    if (clipLo != null && clipHi != null && clipHi > clipLo) {
+      xMin = Math.max(0, Math.floor(clipLo))
+      xMax = Math.ceil(clipHi)
+      // Y: the highest point on the clipped curve sits at xMin (curve is
+      // monotonically decreasing in W). Use that plus headroom so the
+      // band's q95 (which extends a bit above the median) stays visible.
+      if (curve) {
+        const yAtLo = predictReps(clipLo, curve) as number
+        if (Number.isFinite(yAtLo) && yAtLo > 0) {
+          yMax = Math.max(yMax, Math.ceil(yAtLo * 1.25))
+        }
+      }
+    } else if (curve) {
+      xMin = 0
+      const xIntercept = solveWeight(0, curve) as number
+      if (Number.isFinite(xIntercept) && xIntercept > 0) {
+        xMax = Math.max(xMax, Math.ceil(xIntercept))
+      }
+      const probeW = Math.max(xMax / 50, 0.5)
+      const yIntercept = predictReps(probeW, curve) as number
+      if (Number.isFinite(yIntercept) && yIntercept > 0) {
+        yMax = Math.max(yMax, Math.ceil(yIntercept))
+      }
+    } else {
+      xMin = 0
     }
-    const probeW = Math.max(xMax / 50, 0.5)
-    const yIntercept = predictReps(probeW, curve) as number
-    if (Number.isFinite(yIntercept) && yIntercept > 0) {
-      yMax = Math.max(yMax, Math.ceil(yIntercept))
-    }
-  } else if (fullDomain) {
-    xMin = 0
   }
 
   return { xMin, xMax, yMin: 0, yMax }
@@ -382,19 +420,29 @@ export default function CurvePane({
     sparkRef.current = { w: sparkWeight, r: sparkReps }
   }, [sparkWeight, sparkReps])
 
+  // Clip envelope for the rendered curve, β-shifted lines, and bands.
+  // Priority: bands envelope (from bootstrap) → curve.min/max_observed
+  // (point fit) → fallback. We render only inside this envelope so
+  // unsupported regions aren't drawn with false confidence, and in
+  // ``completed`` mode the viewport is sized to match.
+  const clipEnvelope = useMemo(
+    () => computeClipEnvelope(bands, curve),
+    [bands, curve],
+  )
+
   // Sticky domain: seeded from curve + observations + initial spark, and
   // only expanded when the spark approaches the edges. This keeps the graph
   // from sliding around as the user drags.
   const fullDomain = mode === 'completed'
   const [domain, setDomain] = useState(() =>
-    computeDomain(curve, sparkWeight, observations, completedSets, bootstrapTargetReps, schemeRir, fullDomain),
+    computeDomain(curve, sparkWeight, observations, completedSets, bootstrapTargetReps, schemeRir, fullDomain, clipEnvelope),
   )
 
   // Reset when the underlying fit or history changes (new prescription / refit).
   useEffect(() => {
-    setDomain(computeDomain(curve, sparkWeight, observations, completedSets, bootstrapTargetReps, schemeRir, fullDomain))
+    setDomain(computeDomain(curve, sparkWeight, observations, completedSets, bootstrapTargetReps, schemeRir, fullDomain, clipEnvelope))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [curve, observations, completedSets, bootstrapTargetReps, schemeRir, fullDomain])
+  }, [curve, observations, completedSets, bootstrapTargetReps, schemeRir, fullDomain, clipEnvelope])
 
   // Pan (never expand) the window when the spark approaches an edge. This
   // keeps the x/y ranges constant so the chart never zooms out to a scale
@@ -468,27 +516,6 @@ export default function CurvePane({
     (y: number) => PAD_T + (1 - (y - yMin) / (yMax - yMin)) * PLOT_H,
     [yMin, yMax],
   )
-
-  // Clip envelope for the rendered curve, β-shifted lines, and bands.
-  // Priority: bands envelope (from bootstrap) → curve.min/max_observed
-  // (point fit) → fallback. We render only inside this envelope so
-  // unsupported regions aren't drawn with false confidence.
-  const clipEnvelope = useMemo(() => {
-    if (bands) {
-      // Per user: clip to ±20% of observed range.
-      return {
-        clipLo: bands.W_lo_entered * 0.8,
-        clipHi: bands.W_hi_entered * 1.2,
-      }
-    }
-    const lo = curve?.min_observed_weight
-    const hi = curve?.max_observed_weight
-    if (lo != null && hi != null && hi > lo) {
-      return { clipLo: lo * 0.8, clipHi: hi * 1.2 }
-    }
-    // No envelope known — don't clip (preserves prior behavior).
-    return { clipLo: undefined as number | undefined, clipHi: undefined as number | undefined }
-  }, [bands, curve?.min_observed_weight, curve?.max_observed_weight])
 
   const pxToData = useCallback(
     (clientX: number, clientY: number): { w: number; r: number } => {

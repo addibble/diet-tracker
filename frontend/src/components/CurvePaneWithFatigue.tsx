@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import CurvePane from './CurvePane'
 import type { ComponentProps } from 'react'
 import { getFatigueProfile } from '../api/planner'
@@ -32,6 +32,14 @@ export default function CurvePaneWithFatigue({
   const [bandsFetchedFor, setBandsFetchedFor] = useState<
     { exerciseId: number; date: string } | null
   >(null)
+  // Lazy-load bands when the chart scrolls into view. Bootstrap bands
+  // are an expensive backend compute (~7-14s cold per exercise on prod),
+  // so kicking off requests for off-screen charts wastes CPU and starves
+  // the throttle queue from serving the visible chart first.
+  const [bandsEligible, setBandsEligible] = useState<boolean>(
+    () => typeof IntersectionObserver === 'undefined',
+  )
+  const containerRef = useRef<HTMLDivElement | null>(null)
 
   const setCount = rest.completedSets?.length ?? 0
 
@@ -60,6 +68,27 @@ export default function CurvePaneWithFatigue({
     return () => { cancelled = true }
   }, [exerciseId, sessionDate, setCount])
 
+  // Observe the container so we only fetch bands when the chart is
+  // (about to be) visible. ``rootMargin`` of 400px starts the fetch a
+  // bit before scroll-in so the band paints by the time the user lands
+  // on it. Once eligible we stay eligible — no need to re-disable.
+  useEffect(() => {
+    if (bandsEligible) return
+    const node = containerRef.current
+    if (!node) return
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setBandsEligible(true)
+          obs.disconnect()
+        }
+      },
+      { rootMargin: '400px' },
+    )
+    obs.observe(node)
+    return () => obs.disconnect()
+  }, [bandsEligible])
+
   // Bands fetch keyed only on (exerciseId, bandDate) — NOT setCount,
   // because the band uses ``exclude_today`` semantics so today's logged
   // sets don't change today's band cache. This also avoids hammering the
@@ -69,6 +98,7 @@ export default function CurvePaneWithFatigue({
   // on a matching id) so we don't need a synchronous reset here.
   useEffect(() => {
     if (!exerciseId) return
+    if (!bandsEligible) return
     const bandDate = sessionDate ?? new Date().toISOString().slice(0, 10)
     let cancelled = false
     fetchCurveBandsThrottled(exerciseId, bandDate)
@@ -100,7 +130,7 @@ export default function CurvePaneWithFatigue({
         }
       })
     return () => { cancelled = true }
-  }, [exerciseId, sessionDate])
+  }, [exerciseId, sessionDate, bandsEligible])
 
   // Treat beta as stale if the exerciseId changed since the last fetch.
   const effectiveBeta = fetchedFor === exerciseId ? beta : null
@@ -111,12 +141,14 @@ export default function CurvePaneWithFatigue({
       : null
 
   return (
-    <CurvePane
-      {...rest}
-      fatigueBetaPerSet={effectiveBeta ?? undefined}
-      fatigueBetaSource={effectiveSource}
-      fatigueMaxSetIndex={fatigueMaxSetIndex}
-      bands={effectiveBands ?? undefined}
-    />
+    <div ref={containerRef}>
+      <CurvePane
+        {...rest}
+        fatigueBetaPerSet={effectiveBeta ?? undefined}
+        fatigueBetaSource={effectiveSource}
+        fatigueMaxSetIndex={fatigueMaxSetIndex}
+        bands={effectiveBands ?? undefined}
+      />
+    </div>
   )
 }
