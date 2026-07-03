@@ -27,11 +27,21 @@ class Settings(BaseSettings):
     webauthn_challenge_ttl_seconds: int = 300
     cookie_secure: bool = False  # set True in production
 
+    # CurveFit storage-sync ---------------------------------------------
+    # Comma-separated list of allowed CurveFit origins for CORS (the sync API
+    # is called cross-origin with a bearer token). e.g.
+    # "https://curvefit.app,https://www.curvefit.app".
+    curvefit_origins: str = ""
+
     model_config = {
         "env_file": str(_env_file) if _env_file.exists() else ".env",
         "env_file_encoding": "utf-8",
         "extra": "ignore",
     }
+
+    @property
+    def curvefit_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.curvefit_origins.split(",") if o.strip()]
 
 
 settings = Settings()

@@ -9,8 +9,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import telemetry
 from app.bootstrap import run_bootstrap
+from app.config import settings
 from app.database import _wire_auth_dep
 from app.routers.admin import router as admin_router
+from app.routers.curvefit_sync import router as curvefit_sync_router
 from app.routers.daily import router as daily_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.database import router as database_router
@@ -65,16 +67,17 @@ app = FastAPI(title="Diet Tracker", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["http://localhost:5173", *settings.curvefit_origins_list],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Server-Timing"],
+    expose_headers=["Server-Timing", "ETag"],
 )
 
 app.include_router(webauthn_router)
 app.include_router(admin_router)
 app.include_router(database_router)
+app.include_router(curvefit_sync_router)
 app.include_router(food_search_router)
 app.include_router(foods_router)
 app.include_router(macro_targets_router)

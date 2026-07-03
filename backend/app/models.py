@@ -423,3 +423,23 @@ class MacroTarget(SQLModel, table=True):
     fiber: float
     protein: float
     created_at: datetime = Field(default_factory=_utcnow)
+
+
+class CurveFitSyncMap(SQLModel, table=True):
+    """Maps CurveFit-originated external ids to diet-tracker internal ids.
+
+    Only rows *created by CurveFit* (whose external ids are opaque uuids or
+    ``catalog:``/``user:`` slugs) need an entry; rows that originated in
+    diet-tracker are addressed by their embedded ``dt:<kind>:<internal_id>``
+    external id and never appear here. This makes repeated pushes idempotent
+    and lets the projection echo back the exact external id CurveFit used, so a
+    round-tripped row doesn't duplicate against its local copy.
+    """
+
+    __tablename__ = "curvefit_sync_map"
+    __table_args__ = (UniqueConstraint("kind", "external_id"),)
+    id: int | None = Field(default=None, primary_key=True)
+    kind: str = Field(index=True)  # "exercise" | "session" | "set"
+    external_id: str = Field(index=True)
+    internal_id: int = Field(index=True)
+    created_at: datetime = Field(default_factory=_utcnow)

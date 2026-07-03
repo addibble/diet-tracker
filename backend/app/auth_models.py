@@ -97,6 +97,24 @@ class AuthState(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=_utcnow)
 
 
+class CurveFitSyncToken(SQLModel, table=True):
+    """Scoped bearer token for the CurveFit storage-sync API.
+
+    The raw token is shown once at creation; only its SHA-256 hash is stored
+    (same pattern as ``AuthSession.token_hash``). A token authenticates the
+    owning user against ``/api/curvefit-sync`` from the cross-origin CurveFit
+    app — no passkey cookie required.
+    """
+
+    __tablename__ = "auth_curvefit_sync_tokens"
+    token_hash: str = Field(primary_key=True)
+    user_id: str = Field(foreign_key="auth_users.id", index=True)
+    label: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+    last_used_at: datetime | None = None
+    disabled_at: datetime | None = None
+
+
 AUTH_TABLE_NAMES: set[str] = {
     "auth_users",
     "auth_webauthn_credentials",
@@ -104,6 +122,7 @@ AUTH_TABLE_NAMES: set[str] = {
     "auth_sessions",
     "auth_invites",
     "auth_state",
+    "auth_curvefit_sync_tokens",
 }
 
 
@@ -111,6 +130,7 @@ __all__ = [
     "AUTH_TABLE_NAMES",
     "AuthSession",
     "AuthState",
+    "CurveFitSyncToken",
     "Invite",
     "User",
     "WebAuthnChallenge",
