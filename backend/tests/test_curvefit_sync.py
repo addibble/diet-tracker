@@ -357,3 +357,29 @@ def test_validated_origin_rejects_injection_and_gates_localhost():
         assert _validated_curvefit_origin("https://evil.example.com") is None
     finally:
         settings.curvefit_origins = prior
+
+
+def test_put_accepts_weak_etag_if_match(session, client):
+    """A Cloudflare-weakened If-Match (W/"...") must still match (no 412)."""
+    from app.main import app
+    from app.routers.curvefit_sync import get_sync_session, get_sync_user
+
+    class _U:
+        id = "test-user"
+        disabled_at = None
+
+    app.dependency_overrides[get_sync_user] = lambda: _U()
+    app.dependency_overrides[get_sync_session] = lambda: session
+    try:
+        strong = client.get("/api/curvefit-sync").headers["ETag"]
+        weak = "W/" + strong  # what a compressing proxy sends back
+        doc = _push_doc(
+            sets=[_cf_set("cf-set-1", "cf-sess-1", "catalog:barbell-curl")],
+            sessions=[_cf_session("cf-sess-1")],
+            exercises=[_cf_exercise("catalog:barbell-curl", "Barbell Curl")],
+        )
+        res = client.put("/api/curvefit-sync", json=doc, headers={"If-Match": weak})
+        assert res.status_code == 200
+    finally:
+        app.dependency_overrides.pop(get_sync_user, None)
+        app.dependency_overrides.pop(get_sync_session, None)

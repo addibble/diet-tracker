@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import secrets
 from collections.abc import Generator
 from datetime import UTC, datetime
@@ -34,6 +35,8 @@ from app.curvefit_projection import build_curvefit_document
 from app.db_engines import user_engine
 
 router = APIRouter(prefix="/api/curvefit-sync", tags=["curvefit-sync"])
+
+logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
@@ -87,6 +90,24 @@ def _document_etag(document: dict) -> str:
     return f'"{digest}"'
 
 
+def _normalize_etag(etag: str | None) -> str:
+    """Normalize a validator for comparison.
+
+    A compressing proxy in front of the origin (e.g. Cloudflare) rewrites the
+    strong ``ETag: "abc"`` we emit into a *weak* ``W/"abc"`` when it gzip/brotli
+    the response. The client sends that weak value back as ``If-Match``, so a
+    raw string compare against our freshly-recomputed strong tag always fails
+    (=> perpetual 412). Strip the ``W/`` prefix and surrounding quotes so the
+    comparison is proxy-agnostic.
+    """
+    if not etag:
+        return ""
+    value = etag.strip()
+    if value[:2].upper() == "W/":
+        value = value[2:]
+    return value.strip().strip('"')
+
+
 # ── Sync document endpoints ────────────────────────────────────────────────
 
 
@@ -113,7 +134,12 @@ def put_document(
     """
     if if_match is not None:
         current = _document_etag(build_curvefit_document(session))
-        if if_match != current:
+        if _normalize_etag(if_match) != _normalize_etag(current):
+            logger.info(
+                "curvefit-sync PUT If-Match mismatch: sent=%r computed=%r",
+                if_match,
+                current,
+            )
             raise HTTPException(status_code=412, detail="Version conflict")
     summary = ingest_curvefit_document(session, document)
     new_etag = _document_etag(build_curvefit_document(session))
