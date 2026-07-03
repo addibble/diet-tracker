@@ -442,4 +442,8 @@ class CurveFitSyncMap(SQLModel, table=True):
     kind: str = Field(index=True)  # "exercise" | "session" | "set"
     external_id: str = Field(index=True)
     internal_id: int = Field(index=True)
+    # The client's own `updated_at` (ISO string) for the mapped row, echoed by
+    # the projection so a round-trip can't revert local customization the
+    # projection can't reproduce (exercise group / notes / rep target).
+    updated_at: str | None = Field(default=None)
     created_at: datetime = Field(default_factory=_utcnow)

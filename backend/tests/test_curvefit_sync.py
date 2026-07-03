@@ -268,3 +268,92 @@ def test_put_endpoint_if_match(session, client):
     finally:
         app.dependency_overrides.pop(get_sync_user, None)
         app.dependency_overrides.pop(get_sync_session, None)
+
+
+# ── Review fixes: timestamps, map updated_at echo, session upsert, origin ────
+
+
+def test_projection_timestamps_are_utc_tagged(session):
+    _seed(session)
+    doc = build_curvefit_document(session)
+    for s in doc["workout_sets"]:
+        assert s["updated_at"].endswith("+00:00")
+        assert s["created_at"].endswith("+00:00")
+    sess = doc["workout_sessions"][0]
+    assert sess["updated_at"].endswith("+00:00")
+    assert sess["started_at"].endswith("+00:00")
+    for e in doc["exercises"]:
+        assert e["updated_at"].endswith("+00:00")
+
+
+def test_roundtrip_echoes_client_updated_at(session):
+    stamp = "2026-05-12T00:00:00+00:00"
+    doc = _push_doc(
+        sets=[{**_cf_set("cf-set-a", "cf-sess-a", "user:myex"), "updated_at": stamp}],
+        sessions=[{**_cf_session("cf-sess-a"), "updated_at": stamp}],
+        exercises=[{**_cf_exercise("user:myex", "My Ex"), "updated_at": stamp}],
+    )
+    ingest_curvefit_document(session, doc)
+    proj = build_curvefit_document(session)
+    # Echoed client updated_at (not the DB push time) so LWW can't revert
+    # local customization the projection can't reproduce.
+    assert proj["workout_sets"][0]["updated_at"] == stamp
+    assert proj["workout_sessions"][0]["updated_at"] == stamp
+    ex = next(e for e in proj["exercises"] if e["id"] == "user:myex")
+    assert ex["updated_at"] == stamp
+
+
+def test_session_upsert_updates_finished_at(session):
+    ingest_curvefit_document(session, _push_doc(
+        sets=[_cf_set("s1", "cf-sess-f", "user:e")],
+        sessions=[{**_cf_session("cf-sess-f"), "finished_at": None}],
+        exercises=[_cf_exercise("user:e", "E")],
+    ))
+    finished = "2026-05-12T13:00:00+00:00"
+    ingest_curvefit_document(session, _push_doc(
+        sets=[_cf_set("s1", "cf-sess-f", "user:e")],
+        sessions=[{**_cf_session("cf-sess-f"), "finished_at": finished}],
+        exercises=[_cf_exercise("user:e", "E")],
+    ))
+    rows = session.exec(select(WorkoutSession)).all()
+    assert len(rows) == 1  # not duplicated
+    assert rows[0].finished_at is not None  # finished workout no longer active
+
+
+def test_zero_set_session_syncs(session):
+    summary = ingest_curvefit_document(session, _push_doc(
+        sets=[], sessions=[_cf_session("cf-empty")], exercises=[],
+    ))
+    assert summary["created"]["sessions"] == 1
+    assert len(session.exec(select(WorkoutSession)).all()) == 1
+
+
+def test_noop_reingest_reports_no_updates(session):
+    doc = _push_doc(
+        sets=[_cf_set("cf-set-1", "cf-sess-1", "user:e")],
+        sessions=[_cf_session("cf-sess-1")],
+        exercises=[_cf_exercise("user:e", "E")],
+    )
+    ingest_curvefit_document(session, doc)
+    summary = ingest_curvefit_document(session, doc)  # identical re-push
+    assert summary["updated"]["sets"] == 0  # no cosmetic no-op churn
+
+
+def test_validated_origin_rejects_injection_and_gates_localhost():
+    from app.config import settings
+    from app.routers.curvefit_sync import _validated_curvefit_origin
+
+    prior = settings.curvefit_origins
+    try:
+        # Dev mode (no prod origins): localhost allowed, injection rejected.
+        settings.curvefit_origins = ""
+        assert _validated_curvefit_origin("http://localhost:7676") == "http://localhost:7676"
+        assert _validated_curvefit_origin('http://localhost:1"</script><script>alert(1)</script>') is None
+        assert _validated_curvefit_origin("http://localhost:7676/evil") is None
+        # Prod mode: only the exact allowlist; arbitrary localhost rejected.
+        settings.curvefit_origins = "https://curvefit.app"
+        assert _validated_curvefit_origin("https://curvefit.app") == "https://curvefit.app"
+        assert _validated_curvefit_origin("http://localhost:7676") is None
+        assert _validated_curvefit_origin("https://evil.example.com") is None
+    finally:
+        settings.curvefit_origins = prior

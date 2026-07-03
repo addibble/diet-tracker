@@ -19,8 +19,9 @@ import json
 import secrets
 from collections.abc import Generator
 from datetime import UTC, datetime
+from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlmodel import Session, select
@@ -124,35 +125,52 @@ def put_document(
 
 
 def _validated_curvefit_origin(origin: str) -> str | None:
-    """Return ``origin`` if it's an allowed CurveFit origin, else None.
+    """Return ``origin`` iff it is an allowed CurveFit origin, else None.
 
-    Accepts the configured production origins plus localhost (dev). This is the
-    only origin the link page will ``postMessage`` the token to.
+    Accepts the configured production origins exactly. Localhost is allowed
+    **only when no production origins are configured** (dev), and is validated
+    by parsing the URL (exact host, numeric port, no path/query/userinfo) so a
+    crafted value like ``http://localhost:1"</script>...`` can't slip through a
+    substring check and get reflected into the page.
     """
     if not origin:
         return None
     if origin in settings.curvefit_origins_list:
         return origin
-    if origin.startswith("http://localhost:") or origin.startswith("http://127.0.0.1:"):
-        return origin
-    return None
+    if settings.curvefit_origins_list:
+        return None  # prod: only the configured allowlist, never arbitrary localhost
+    try:
+        parsed = urlparse(origin)
+        port = parsed.port  # raises ValueError on a non-numeric port
+    except ValueError:
+        return None
+    if parsed.scheme not in ("http", "https"):
+        return None
+    if parsed.hostname not in ("localhost", "127.0.0.1"):
+        return None
+    if parsed.path or parsed.query or parsed.fragment or parsed.username or parsed.password:
+        return None
+    canonical = f"{parsed.scheme}://{parsed.hostname}"
+    if port is not None:
+        canonical += f":{port}"
+    return canonical if canonical == origin else None
 
 
 @router.get("/link", response_class=HTMLResponse)
-def link_page(request: Request, origin: str = ""):
+def link_page(origin: str = ""):
     """Serve the passkey-gated linking page opened by CurveFit in a popup.
 
     Runs on diet-tracker's own origin, so the user's existing passkey session
     cookie authorizes the token mint. On success the token is posted back to
     the (validated) CurveFit opener via ``postMessage`` and the popup closes.
+
+    The validated origin is embedded with ``json.dumps`` (never raw string
+    interpolation), and the page derives its own API base from
+    ``window.location.origin`` so it works behind TLS-terminating proxies
+    without mixed-content failures.
     """
     target = _validated_curvefit_origin(origin)
-    # Same-origin base for the API calls the page makes.
-    api_base = f"{request.url.scheme}://{request.url.netloc}/api/curvefit-sync"
-    target_js = "null" if target is None else f'"{target}"'
-    html = _LINK_PAGE_HTML.replace("__TARGET_ORIGIN__", target_js).replace(
-        "__API_BASE__", api_base
-    )
+    html = _LINK_PAGE_HTML.replace("__TARGET_ORIGIN__", json.dumps(target))
     return HTMLResponse(html)
 
 
@@ -262,7 +280,9 @@ _LINK_PAGE_HTML = """<!doctype html>
   </div>
 <script>
   var TARGET_ORIGIN = __TARGET_ORIGIN__;
-  var API_BASE = "__API_BASE__";
+  // Derive the API base from the browser's own origin so this works behind a
+  // TLS-terminating proxy (uvicorn may see http; the page is loaded over https).
+  var API_BASE = window.location.origin + "/api/curvefit-sync";
   var msg = document.getElementById("msg");
   var btn = document.getElementById("go");
 
@@ -301,7 +321,8 @@ _LINK_PAGE_HTML = """<!doctype html>
       btn.style.display = "none";
       setTimeout(function () { window.close(); }, 1200);
     }).catch(function (e) {
-      msg.innerHTML = '<span class="err">Failed: ' + e.message + '</span>';
+      // textContent (not innerHTML) so an error string can never inject markup.
+      msg.textContent = "Failed: " + e.message;
       btn.disabled = false;
     });
   });

@@ -47,10 +47,30 @@ def _map_get(session: Session, kind: str, external_id: str) -> int | None:
     return row.internal_id if row else None
 
 
-def _map_put(session: Session, kind: str, external_id: str, internal_id: int) -> None:
-    if _map_get(session, kind, external_id) is not None:
+def _map_put(
+    session: Session,
+    kind: str,
+    external_id: str,
+    internal_id: int,
+    updated_at: str | None = None,
+) -> None:
+    """Upsert a map entry, refreshing the echoed client ``updated_at``."""
+    row = session.exec(
+        select(CurveFitSyncMap)
+        .where(CurveFitSyncMap.kind == kind)
+        .where(CurveFitSyncMap.external_id == external_id)
+    ).first()
+    if row is not None:
+        row.internal_id = internal_id
+        if updated_at is not None:
+            row.updated_at = updated_at
+        session.add(row)
         return
-    session.add(CurveFitSyncMap(kind=kind, external_id=external_id, internal_id=internal_id))
+    session.add(
+        CurveFitSyncMap(
+            kind=kind, external_id=external_id, internal_id=internal_id, updated_at=updated_at
+        )
+    )
 
 
 def _parse_dt(value: str | None) -> dt.datetime | None:
@@ -83,10 +103,12 @@ class _Ingestor:
         dtid = _parse_dt_id(ext, "exercise")
         if dtid is not None and self.session.get(Exercise, dtid) is not None:
             return dtid
+        ex_doc = self.ex_docs.get(ext)
+        updated_at = ex_doc.get("updated_at") if ex_doc else None
         mapped = _map_get(self.session, "exercise", ext)
         if mapped is not None and self.session.get(Exercise, mapped) is not None:
+            _map_put(self.session, "exercise", ext, mapped, updated_at)  # refresh ts
             return mapped
-        ex_doc = self.ex_docs.get(ext)
         if ex_doc is None:
             return None
         name = (ex_doc.get("name") or "").strip()
@@ -96,42 +118,65 @@ class _Ingestor:
             select(Exercise).where(func.lower(Exercise.name) == name.lower())
         ).first()
         if existing is not None and existing.id is not None:
-            _map_put(self.session, "exercise", ext, existing.id)
+            _map_put(self.session, "exercise", ext, existing.id, updated_at)
             return existing.id
         created = Exercise(name=name, load_input_mode="external_weight", set_metric_mode="reps")
         self.session.add(created)
         self.session.flush()
         assert created.id is not None
-        _map_put(self.session, "exercise", ext, created.id)
+        _map_put(self.session, "exercise", ext, created.id, updated_at)
         self.created["exercises"] += 1
         return created.id
 
+    def upsert_session(self, sess_doc: dict) -> int | None:
+        """Create or update a session. CurveFit-owned (mapped) sessions get
+        their started_at/finished_at/notes updated so a finished workout stops
+        looking active; diet-tracker-native (dt:) sessions are left untouched.
+        """
+        ext = sess_doc["id"]
+        updated_at = sess_doc.get("updated_at")
+        dtid = _parse_dt_id(ext, "session")
+        if dtid is not None and self.session.get(WorkoutSession, dtid) is not None:
+            return dtid  # native diet-tracker session: never clobber
+        mapped = _map_get(self.session, "session", ext)
+        if mapped is not None:
+            row = self.session.get(WorkoutSession, mapped)
+            if row is not None:
+                row.started_at = _parse_dt(sess_doc.get("started_at")) or row.started_at
+                row.finished_at = _parse_dt(sess_doc.get("finished_at"))
+                if sess_doc.get("notes") is not None:
+                    row.notes = sess_doc.get("notes")
+                self.session.add(row)
+                _map_put(self.session, "session", ext, mapped, updated_at)
+                return mapped
+        try:
+            date = dt.date.fromisoformat(str(sess_doc["date"]))
+        except (KeyError, ValueError):
+            return None
+        created = WorkoutSession(
+            date=date,
+            started_at=_parse_dt(sess_doc.get("started_at")),
+            finished_at=_parse_dt(sess_doc.get("finished_at")),
+            notes=sess_doc.get("notes"),
+        )
+        self.session.add(created)
+        self.session.flush()
+        assert created.id is not None
+        _map_put(self.session, "session", ext, created.id, updated_at)
+        self.created["sessions"] += 1
+        return created.id
+
     def resolve_session(self, ext: str) -> int | None:
+        """Look up a session id (created up-front by ``upsert_session``)."""
         dtid = _parse_dt_id(ext, "session")
         if dtid is not None and self.session.get(WorkoutSession, dtid) is not None:
             return dtid
         mapped = _map_get(self.session, "session", ext)
         if mapped is not None and self.session.get(WorkoutSession, mapped) is not None:
             return mapped
-        doc = self.sess_docs.get(ext)
-        if doc is None:
-            return None
-        try:
-            date = dt.date.fromisoformat(str(doc["date"]))
-        except (KeyError, ValueError):
-            return None
-        created = WorkoutSession(
-            date=date,
-            started_at=_parse_dt(doc.get("started_at")),
-            finished_at=_parse_dt(doc.get("finished_at")),
-            notes=doc.get("notes"),
-        )
-        self.session.add(created)
-        self.session.flush()
-        assert created.id is not None
-        _map_put(self.session, "session", ext, created.id)
-        self.created["sessions"] += 1
-        return created.id
+        # Not seen in workout_sessions; fall back to creating from the set's
+        # denormalized data so an orphan set still lands somewhere.
+        return self.upsert_session(self.sess_docs.get(ext, {"id": ext, "date": None}))
 
     # ── upserts ────────────────────────────────────────────────────────────
 
@@ -149,7 +194,9 @@ class _Ingestor:
 
         # Locate an existing row (dt: embedded id, or previously mapped uuid).
         dtid = _parse_dt_id(ext, "set")
-        internal = dtid if (dtid is not None and self.session.get(WorkoutSet, dtid)) else _map_get(self.session, "set", ext)
+        is_dt = dtid is not None and self.session.get(WorkoutSet, dtid) is not None
+        internal = dtid if is_dt else _map_get(self.session, "set", ext)
+        new_rpe = _rir_to_rpe(rir)
 
         if internal is not None:
             row = self.session.get(WorkoutSet, internal)
@@ -157,13 +204,22 @@ class _Ingestor:
                 return
             # Only CurveFit-owned fields; never touch performed_side /
             # training_mode / rep_completion / timestamps.
+            changed = (
+                row.weight != weight
+                or row.endurance_value != reps
+                or row.set_order != set_order
+                or (rir is not None and row.rpe != new_rpe)
+            )
             row.weight = weight
             row.endurance_value = reps
             row.set_order = set_order
             if rir is not None:  # never null out an existing RPE from a push
-                row.rpe = _rir_to_rpe(rir)
+                row.rpe = new_rpe
             self.session.add(row)
-            self.updated["sets"] += 1
+            if not is_dt:  # curvefit-owned → refresh echoed timestamp
+                _map_put(self.session, "set", ext, internal, set_doc.get("updated_at"))
+            if changed:
+                self.updated["sets"] += 1
             return
 
         row = WorkoutSet(
@@ -172,12 +228,12 @@ class _Ingestor:
             set_order=set_order,
             weight=weight,
             endurance_value=reps,
-            rpe=_rir_to_rpe(rir),
+            rpe=new_rpe,
         )
         self.session.add(row)
         self.session.flush()
         assert row.id is not None
-        _map_put(self.session, "set", ext, row.id)
+        _map_put(self.session, "set", ext, row.id, set_doc.get("updated_at"))
         self.created["sets"] += 1
 
     # ── deletes ────────────────────────────────────────────────────────────
@@ -226,6 +282,10 @@ class _Ingestor:
             self.session.delete(map_row)
 
     def run(self) -> dict:
+        # Sessions first so zero-set sessions still sync and set upserts can
+        # resolve their parent from the map.
+        for sess_doc in self.document.get("workout_sessions", []):
+            self.upsert_session(sess_doc)
         for set_doc in self.document.get("workout_sets", []):
             self.upsert_set(set_doc)
         for tomb in self.document.get("tombstones", []):
